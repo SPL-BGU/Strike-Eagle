@@ -425,7 +425,7 @@ class ClientNaiveAgent(Thread):
 
         else:
             self.repeated_gt_counter += 1
-            if self.repeated_gt_counter > self.gt_patient:
+            if self.repeated_gt_counter > self.gt_patient: # If we tried to play this level more than gt_patient
                 self.logger.warning("counter %s reached, game state set to lost"%(self.gt_patient))
                 self.repeated_gt_counter = 0
                 return GameState.LOST
@@ -437,20 +437,21 @@ class ClientNaiveAgent(Thread):
             self.logger.info("no pig or birds found")
             return self.ar.get_game_state()
 
-        if self.show_ground_truth:
+        if self.show_ground_truth:# TODO: check what is show_ground_truth
             vision.showResult()
 
         sling = vision.find_slingshot_mbr()[0]
-        #TODO: look into the width and height issue of Traj planner
+        #TODO: look into the width and height issue of Traj planner, a bug of replaced height and width
         sling.width,sling.height = sling.height,sling.width
 
         # get all the pigs
         pigs = vision.find_pigs_mbr()
         self.logger.info("no of pigs: " + str(len(vision.find_pigs_mbr() )))
         for pig in pigs:
-            self.logger.info("pig location: " + str(pig.get_centre_point()))
+            self.logger.info("pig location: " + str(pig.get_centre_point())) # Get pigs center location
         state = self.ar.get_game_state()
 
+        # TODO: move to a module
         # if there is a sling, then play, otherwise skip.
         if sling != None:
             #If there are pigs, we pick up a pig randomly and shoot it.
@@ -466,6 +467,7 @@ class ClientNaiveAgent(Thread):
 
                 # if the target is very close to before, randomly choose a
                 # point near it
+                # If we did not elimenate the pig slightly adjust
                 if self.prev_target != None and self.prev_target.distance(_tpt) < 10:
                     _angle = random.uniform(0, 1) * pi * 2
                     _tpt.X = _tpt.X + int(cos(_angle)) * 10

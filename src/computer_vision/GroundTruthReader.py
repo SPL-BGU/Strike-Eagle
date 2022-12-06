@@ -84,7 +84,7 @@ class GroundTruthReader:
 
     def is_vaild(self):
         '''
-        check if the stats received are vaild or not
+        check if the stats received are vaild or not, basically if there are pigs or birds and therfore the level is playable
 
         for vaild state, there has to be at least one pig and one bird.
         '''
