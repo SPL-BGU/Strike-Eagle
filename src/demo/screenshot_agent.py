@@ -19,7 +19,7 @@ import scipy.misc
 from PIL import Image
 
 class ScreenshotAgent(Thread):
-    """agent which takes screenshot of each level and save them to file at ./screenshots"""
+    """agents which takes screenshot of each level and save them to file at ./screenshots"""
     def __init__(self):
         #Wrapper of the communicating messages
 

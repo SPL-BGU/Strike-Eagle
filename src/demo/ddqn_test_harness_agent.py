@@ -22,7 +22,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-This version of the agent is based on the work presented in: https://arxiv.org/abs/1910.01806
+This version of the agents is based on the work presented in: https://arxiv.org/abs/1910.01806
 
 When using this work please cite:
 
@@ -296,7 +296,7 @@ class MultiDQN():
 
     def __init__(self):
         # TRAINING/ EVALUATION SWITCH Parameters
-        self.IS_IN_TRAINING_MODE = True  # indicates if the agent is in training mode, switching it off will stop agent from training
+        self.IS_IN_TRAINING_MODE = True  # indicates if the agents is in training mode, switching it off will stop agents from training
         self.EXPLORATION_EPSILON_BEFORE_EVAL = 0.13  # just needed to preserve exploration after evaluation is done
         self.EVAL_LEVELS_NUMBER = 51  # total number of eval levels
         self.TRAIN_LEVELS_NUMBER = 1501  # total number of train levels
@@ -308,13 +308,13 @@ class MultiDQN():
         # EVAL_SET_TIMES = -1 # num of times all eval levels were played
 
     def reset_agent(self, sess, saver, memory, my_multiid):
-        print("Reseting agent")
+        print("Reseting agents")
         if (len(os.listdir(ORIG_MODEL_PATH + "_" + str(my_multiid))) > 0):
             print('Loading Model...')
             checkpoint = tf.train.get_checkpoint_state(ORIG_MODEL_PATH + "_" + str(my_multiid))
             saver.restore(sess, checkpoint.model_checkpoint_path)
         memory.memory = []
-        self.IS_IN_TRAINING_MODE = True  # indicates if the agent is in training mode, switching it off will stop agent from training
+        self.IS_IN_TRAINING_MODE = True  # indicates if the agents is in training mode, switching it off will stop agents from training
         self.EXPLORATION_EPSILON_BEFORE_EVAL = 0.13  # just needed to preserve exploration after evaluation is done
 
     def run(self, my_multiid):
@@ -395,7 +395,7 @@ class MultiDQN():
                                                           novelty_level, novelty_description)
                     elif game_state == GameState.NEWTRIAL:
                         print("NEWTRIAL")
-                        # Make a fresh agent to continue with a new trial (evaluation)
+                        # Make a fresh agents to continue with a new trial (evaluation)
                         self.reset_agent(sess, saver, memory, my_multiid)
                         s = 'None'
                         s_previous = 'None'
@@ -411,7 +411,7 @@ class MultiDQN():
                         (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
                          allowNoveltyInfo) = rl_client.ar.ready_for_new_set()
                     elif game_state == GameState.NEWTESTSET:
-                        # DO something to clone a test only agent that does not learn
+                        # DO something to clone a test only agents that does not learn
                         print("NEWTESTSET")
                         self.reset_agent(sess, saver, memory, my_multiid)
                         s = 'None'
@@ -430,7 +430,7 @@ class MultiDQN():
                          allowNoveltyInfo) = rl_client.ar.ready_for_new_set()
                         # rl_client.ar.ready_for_new_set()
                     elif game_state == GameState.NEWTRAININGSET:
-                        # DO something to resume the training agent
+                        # DO something to resume the training agents
                         print("NEWTRAININGSET")
                         self.reset_agent(sess, saver, memory, my_multiid)
                         s = 'None'
@@ -467,7 +467,7 @@ class MultiDQN():
                          allowNoveltyInfo) = rl_client.ar.ready_for_new_set()
                     elif game_state == GameState.EVALUATION_TERMINATED:
                         print("EVALUATION_TERMINATED")
-                        # store info and disconnect the agent as the evaluation is finished
+                        # store info and disconnect the agents as the evaluation is finished
                         print("Done evaluating")
                         exit(1)
                         pass
@@ -480,7 +480,7 @@ class MultiDQN():
                             highest_total_score_EVAL = self.EVAL_SCORES[:, 0].sum(0)
                         print("Training mode... interactions so far: " + str(
                             env_step) + " current total score of evaluation set: " + str(self.EVAL_SCORES[:, 0].sum(0)) +
-                              " highest ever total score: " + str(highest_total_score_EVAL) + " agent id: " +str(my_multiid))
+                              " highest ever total score: " + str(highest_total_score_EVAL) + " agents id: " +str(my_multiid))
 
                         # Start exploring
                         epsilon = self.EXPLORATION_EPSILON_BEFORE_EVAL
@@ -510,7 +510,7 @@ class MultiDQN():
                             highest_total_score_TRAIN = self.TRAINING_SCORES[:, 0].sum(0)
                         print("Evaluating Agent... interactions so far: " + str(
                             env_step) + " current total score of training set: " + str(self.TRAINING_SCORES[:, 0].sum(0)) +
-                              " highest ever total score: " + str(highest_total_score_TRAIN) + " agent id: " +str(my_multiid))
+                              " highest ever total score: " + str(highest_total_score_TRAIN) + " agents id: " +str(my_multiid))
 
                         # Stop exploring
                         self.EXPLORATION_EPSILON_BEFORE_EVAL = epsilon
@@ -790,7 +790,7 @@ class MultiDQN():
                                 # Store the summaries
                                 # if(all_levels_played_count == 3):
                                 episode_summary.value.add(simple_value=r_total, tag="reward_total")
-                                print("Total score over levels: " + str(r_total) + " agent id: " +str(my_multiid))
+                                print("Total score over levels: " + str(r_total) + " agents id: " +str(my_multiid))
                                 r_total = 0
                                 all_levels_played_count += 1
                             summary_writer.summary_writer.add_summary(episode_summary, OFFSET + env_step)

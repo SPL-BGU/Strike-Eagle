@@ -1,6 +1,8 @@
 import threading
 import time
 import src.demo.naive_agent_groundtruth as na
+from agents import BirdsInBoots
+
 import argparse
 import json
 
@@ -12,7 +14,7 @@ class AgentThread(threading.Thread):
         Parameters
         ----------
         agent_configs :
-        agent_ind : agent ID , typically a number
+        agent_ind : agents ID , typically a number
         """
         self.agent_ind = agent_ind
         self.agent_configs = agent_configs
@@ -20,18 +22,18 @@ class AgentThread(threading.Thread):
 
     def run(self):
         """
-        Runs a single agent
+        Runs a single agents
         Returns
         -------
 
         """
-        agent = na.ClientNaiveAgent(self.agent_ind, self.agent_configs)
+        agent = BirdsInBoots(self.agent_ind, self.agent_configs)
         agent.run()
 
 
 def main(agent_configs, *args):
     for x in range(1):
-        print('naive agent %s running' % str(x))
+        print('naive agents %s running' % str(x))
         agent = AgentThread(agent_configs, agent_ind=str(x))
         agent.start()
         time.sleep(5)
@@ -95,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--observer_host", default=default_observer_host, required=False,
                         help="host ip address")
     parser.add_argument("-o", "--observer_port", type=int, default=default_observer_port, required=False,
-                        help="host port for observer agent")
+                        help="host port for observer agents")
     args = parser.parse_args()
 
     main(args)

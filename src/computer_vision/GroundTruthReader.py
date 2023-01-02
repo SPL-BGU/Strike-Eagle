@@ -133,6 +133,7 @@ class GroundTruthReader:
 
         predicts = intercept + model_coef @ obj_matrix
         predict_class = predicts.argmax(0)
+        predict_class = predicts.argmax(0)
         predict_class = np.array(list(map(lambda x : self.target_class[x],predict_class)))
         obj_types[obj_types=='0.0'] =  predict_class[obj_types=='0.0']
 
