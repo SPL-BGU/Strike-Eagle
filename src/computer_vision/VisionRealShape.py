@@ -27,7 +27,7 @@ class VisionRealShape:
 
     def findAllObj(self):
         '''
-        let's only return the bounding box for the naive agent
+        let's only return the bounding box for the naive agents
         '''
         allObj = {}
         object_type =  {2:'hill',3:'slingshot',4:'redBird',5:'yellowBird',6:'blueBird',7:'blackBird',8:'whiteBird',

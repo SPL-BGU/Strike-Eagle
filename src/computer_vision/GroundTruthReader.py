@@ -84,7 +84,7 @@ class GroundTruthReader:
 
     def is_vaild(self):
         '''
-        check if the stats received are vaild or not
+        check if the stats received are vaild or not, basically if there are pigs or birds and therfore the level is playable
 
         for vaild state, there has to be at least one pig and one bird.
         '''
@@ -132,6 +132,7 @@ class GroundTruthReader:
         model_coef = self.model[:,1:]
 
         predicts = intercept + model_coef @ obj_matrix
+        predict_class = predicts.argmax(0)
         predict_class = predicts.argmax(0)
         predict_class = np.array(list(map(lambda x : self.target_class[x],predict_class)))
         obj_types[obj_types=='0.0'] =  predict_class[obj_types=='0.0']

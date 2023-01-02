@@ -29,7 +29,7 @@ import logging
 
 
 class ClientNaiveAgent(Thread):
-    """Naive agent (server/client version)"""
+    """Naive agents (server/client version)"""
     def __init__(self, agent_ind, agent_configs):
 
         #test for a single shot
@@ -69,7 +69,7 @@ class ClientNaiveAgent(Thread):
 
         self.ar = AgentClient(agent_ip, agent_port, logger = self.logger)
 
-        #the observer agent can only execute 6 command: configure, screenshot
+        #the observer agents can only execute 6 command: configure, screenshot
         #and the four groundtruth related ones
         #self.observer_ar = AgentClient(observer_ip, observer_port)
 
@@ -107,7 +107,7 @@ class ClientNaiveAgent(Thread):
 
     def sample_state(self, request = RequestCodes.GetNoisyGroundTruthWithScreenshot, frequency = 0.5):
         """
-         sample a state from the observer agent
+         sample a state from the observer agents
          this method allows to be run in a different thread
          NOTE: Setting the frequency too high, i.e. <0.01 may cause lag in science birds game
                due to the calculation of the groundtruth
@@ -311,7 +311,7 @@ class ClientNaiveAgent(Thread):
 
             elif state == GameState.NEWTRIAL:
                 self.repeated_gt_counter = 0
-                #Make a fresh agent to continue with a new trial (evaluation)
+                #Make a fresh agents to continue with a new trial (evaluation)
                 self.logger.critical("new trial state received")
                 (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
                 self.current_level = 0
@@ -320,7 +320,7 @@ class ClientNaiveAgent(Thread):
             elif state == GameState.NEWTESTSET:
                 self.repeated_gt_counter = 0
                 self.logger.critical("new test set state received")
-                #DO something to clone a test-only agent that does not learn
+                #DO something to clone a test-only agents that does not learn
                 (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
 
                 if change_from_training:
@@ -330,7 +330,7 @@ class ClientNaiveAgent(Thread):
 
             elif state == GameState.NEWTRAININGSET:
                 self.repeated_gt_counter = 0
-                #DO something to start a fresh agent for a new training set
+                #DO something to start a fresh agents for a new training set
                 self.logger.critical("new training set state received")
                 (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
                 self.current_level = 0
@@ -339,14 +339,14 @@ class ClientNaiveAgent(Thread):
 
             elif state == GameState.RESUMETRAINING:
                 self.repeated_gt_counter = 0
-                #DO something to resume the training agent to the previous training
+                #DO something to resume the training agents to the previous training
                 self.logger.critical("resume training set state received")
                 (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
                 change_from_training = True
                 self.current_level = self.training_level_backup
 
             elif state == GameState.EVALUATION_TERMINATED:
-                #store info and disconnect the agent as the evaluation is finished
+                #store info and disconnect the agents as the evaluation is finished
                 self.logger.critical("Evaluation terminated.")
                 exit(0)
     def _update_reader(self, dtype, if_check_gt=False):
@@ -418,39 +418,35 @@ class ClientNaiveAgent(Thread):
 
         #####################################################################
         # for skipping the level
-        # if agent receives over 10 gt truth per level, skip the level
+        # if agents receives over 10 gt truth per level, skip the level
 
         if game_state != GameState.PLAYING:
             return game_state
 
         else:
             self.repeated_gt_counter += 1
-            if self.repeated_gt_counter > self.gt_patient:
-                self.logger.warning("counter %s reached, game state set to lost"%(self.gt_patient))
-                self.repeated_gt_counter = 0
-                return GameState.LOST
-
-        #####################################################################
+    ################################################################
 
         vision = self._update_reader(ground_truth_type, self.if_check_gt)
         if not vision.is_vaild():
             self.logger.info("no pig or birds found")
             return self.ar.get_game_state()
 
-        if self.show_ground_truth:
+        if self.show_ground_truth:# TODO: check what is show_ground_truth
             vision.showResult()
 
         sling = vision.find_slingshot_mbr()[0]
-        #TODO: look into the width and height issue of Traj planner
+        #TODO: look into the width and height issue of Traj planner, a bug of replaced height and width
         sling.width,sling.height = sling.height,sling.width
 
         # get all the pigs
         pigs = vision.find_pigs_mbr()
         self.logger.info("no of pigs: " + str(len(vision.find_pigs_mbr() )))
         for pig in pigs:
-            self.logger.info("pig location: " + str(pig.get_centre_point()))
+            self.logger.info("pig location: " + str(pig.get_centre_point())) # Get pigs center location
         state = self.ar.get_game_state()
 
+        # TODO: move to a module
         # if there is a sling, then play, otherwise skip.
         if sling != None:
             #If there are pigs, we pick up a pig randomly and shoot it.
@@ -466,6 +462,7 @@ class ClientNaiveAgent(Thread):
 
                 # if the target is very close to before, randomly choose a
                 # point near it
+                # If we did not elimenate the pig slightly adjust
                 if self.prev_target != None and self.prev_target.distance(_tpt) < 10:
                     _angle = random.uniform(0, 1) * pi * 2
                     _tpt.X = _tpt.X + int(cos(_angle)) * 10

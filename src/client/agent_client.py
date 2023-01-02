@@ -72,7 +72,7 @@ class RequestCodes(Enum):
     GetInitialStateScreenShot = 71
     NoveltyHint = 72
 class AgentClient:
-    """Science Birds agent API"""
+    """Science Birds agents API"""
 
     def __init__(
             self,
@@ -178,7 +178,7 @@ class AgentClient:
         return (round_number, limit, levels)
 
     def ready_for_new_set(self):
-        self._logger.info("Ready for new data set with appropriate agent.")
+        self._logger.info("Ready for new data set with appropriate agents.")
         self._send_command(RequestCodes.ReadyForNewSet)
         (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self._read_from_buff("IIIIBBB")
         return (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo)
