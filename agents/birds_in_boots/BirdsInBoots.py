@@ -213,7 +213,7 @@ class BirdsInBoots(BaselineAgent):
         self.nn_model = model
         return model
 
-    def get_n_degrees_possibilities(self):
+    def get_n_degrees_possibilities(self) -> int:
         return int((self.max_deg - self.min_deg) / self.deg_step)
 
     def get_degree(self, possibility: int):
@@ -355,5 +355,6 @@ class BirdsInBoots(BaselineAgent):
                 self.streak.append((release_angle, v))
             if len(self.streak) == 10: # epoch
                 self.train_model()
+
     def train_model(self):
         x=0

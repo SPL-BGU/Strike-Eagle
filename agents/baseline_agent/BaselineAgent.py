@@ -183,40 +183,41 @@ class BaselineAgent(Thread):
         # self.logger.info('No of Levels: ' + str(n_levels))
 
         return n_levels
+
     def run(self):
         self.ar.configure(self.id)
-        #do not use observer
-        #self.observer_ar.configure(self.id)
+        # do not use observer
+        # self.observer_ar.configure(self.id)
         self.ar.set_game_simulation_speed(self.sim_speed)
-        #n_levels = self.update_no_of_levels()
+        # n_levels = self.update_no_of_levels()
 
-        #self.solved = [0 for x in range(n_levels)]
+        # self.solved = [0 for x in range(n_levels)]
 
-        #load next available level
-        #self.current_level = self.ar.load_next_available_level()
-        #self.novelty_existence = self.ar.get_novelty_info()
+        # load next available level
+        # self.current_level = self.ar.load_next_available_level()
+        # self.novelty_existence = self.ar.get_novelty_info()
 
         '''
         Uncomment this section to run TEST for requesting groudtruth via different thread
         '''
-        #gt_thread = Thread(target=self.sample_state)
-        #gt_thread.start()
+        # gt_thread = Thread(target=self.sample_state)
+        # gt_thread.start()
         '''
         END TEST
         '''
 
-        #indicates if the previous game level set is a training set
+        # indicates if the previous game level set is a training set
         change_from_training = False
 
-        #ar.load_level((byte)9)
+        # ar.load_level((byte)9)
         while True:
-            #test purpose only
-            #sim_speed = random.randint(1, 50)
-            #self.ar.set_game_simulation_speed(sim_speed)
-            #print(‘simulation speed set to ', sim_speed)
+            # test purpose only
+            # sim_speed = random.randint(1, 50)
+            # self.ar.set_game_simulation_speed(sim_speed)
+            # print(‘simulation speed set to ', sim_speed)
 
-            #test for multi-thread groundtruth reading
-            #if not self.shot_done:
+            # test for multi-thread groundtruth reading
+            # if not self.shot_done:
             state = self.solve()
             # try:
             #     state = self.solve()
@@ -224,15 +225,14 @@ class BaselineAgent(Thread):
             #     self.logger.warning("Erros in solving level %s, state is set to lost"%(self.current_level))
             #     state = GameState.LOST
 
-
-            #If the level is solved , go to the next level
+            # If the level is solved , go to the next level
             if state == GameState.WON:
                 self.repeated_gt_counter = 0
-                #check for change of number of levels in the game
+                # check for change of number of levels in the game
                 n_levels = self.update_no_of_levels()
 
-                #/System.out.println(" loading the level " + (self.current_level + 1) )
-                #self.check_current_level_score()
+                # /System.out.println(" loading the level " + (self.current_level + 1) )
+                # self.check_current_level_score()
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
 
@@ -241,14 +241,14 @@ class BaselineAgent(Thread):
 
             elif state == GameState.LOST:
                 self.repeated_gt_counter = 0
-                #check for change of number of levels in the game
-                #n_levels = self.update_no_of_levels()
+                # check for change of number of levels in the game
+                # n_levels = self.update_no_of_levels()
 
                 self.check_current_level_score()
 
-                #If lost, then restart the level
+                # If lost, then restart the level
                 self.failed_counter += 1
-                if self.failed_counter > 0: #for testing , go directly to the next level
+                if self.failed_counter > 60:  # for testing , go directly to the next level
 
                     self.failed_counter = 0
                     self.current_level = self.ar.load_next_available_level()
@@ -260,45 +260,48 @@ class BaselineAgent(Thread):
 
             elif state == GameState.LEVEL_SELECTION:
                 self.logger.info("unexpected level selection page, go to the last current level : " \
-                , self.current_level)
+                                 , self.current_level)
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
 
             elif state == GameState.MAIN_MENU:
                 self.repeated_gt_counter = 0
-                self.logger.info("unexpected main menu page, reload the level : %s"%self.current_level)
+                self.logger.info("unexpected main menu page, reload the level : %s" % self.current_level)
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
 
             elif state == GameState.EPISODE_MENU:
-                self.logger.info("unexpected episode menu page, reload the level:  %s"%self.current_level)
+                self.logger.info("unexpected episode menu page, reload the level:  %s" % self.current_level)
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
 
             elif state == GameState.REQUESTNOVELTYLIKELIHOOD:
-                #Require report novelty likelihood and then playing can be resumed
-                #dummy likelihoods:
+                # Require report novelty likelihood and then playing can be resumed
+                # dummy likelihoods:
                 self.logger.info("received request of novelty likelihood")
-                novelty_likelihood=0.9
-                non_novelty_likelihood=0.1
-                novel_obj_ids = {1,-2,-398879789}
+                novelty_likelihood = 0.9
+                non_novelty_likelihood = 0.1
+                novel_obj_ids = {1, -2, -398879789}
                 novelty_level = 0
                 novelty_description = "";
-                self.ar.report_novelty_likelihood(novelty_likelihood,non_novelty_likelihood,novel_obj_ids,novelty_level,novelty_description)
+                self.ar.report_novelty_likelihood(novelty_likelihood, non_novelty_likelihood, novel_obj_ids,
+                                                  novelty_level, novelty_description)
 
             elif state == GameState.NEWTRIAL:
                 self.repeated_gt_counter = 0
-                #Make a fresh agents to continue with a new trial (evaluation)
+                # Make a fresh agents to continue with a new trial (evaluation)
                 self.logger.critical("new trial state received")
-                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
+                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
+                 allowNoveltyInfo) = self.ar.ready_for_new_set()
                 self.current_level = 0
                 self.training_level_backup = 0
 
             elif state == GameState.NEWTESTSET:
                 self.repeated_gt_counter = 0
                 self.logger.critical("new test set state received")
-                #DO something to clone a test-only agents that does not learn
-                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
+                # DO something to clone a test-only agents that does not learn
+                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
+                 allowNoveltyInfo) = self.ar.ready_for_new_set()
 
                 if change_from_training:
                     self.training_level_backup = self.current_level
@@ -307,26 +310,27 @@ class BaselineAgent(Thread):
 
             elif state == GameState.NEWTRAININGSET:
                 self.repeated_gt_counter = 0
-                #DO something to start a fresh agents for a new training set
+                # DO something to start a fresh agents for a new training set
                 self.logger.critical("new training set state received")
-                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
+                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
+                 allowNoveltyInfo) = self.ar.ready_for_new_set()
                 self.current_level = 0
                 self.training_level_backup = 0
                 change_from_training = True
 
             elif state == GameState.RESUMETRAINING:
                 self.repeated_gt_counter = 0
-                #DO something to resume the training agents to the previous training
+                # DO something to resume the training agents to the previous training
                 self.logger.critical("resume training set state received")
-                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set, allowNoveltyInfo) = self.ar.ready_for_new_set()
+                (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
+                 allowNoveltyInfo) = self.ar.ready_for_new_set()
                 change_from_training = True
                 self.current_level = self.training_level_backup
 
             elif state == GameState.EVALUATION_TERMINATED:
-                #store info and disconnect the agents as the evaluation is finished
+                # store info and disconnect the agents as the evaluation is finished
                 self.logger.critical("Evaluation terminated.")
                 exit(0)
-
 
     def _update_reader(self, dtype, if_check_gt=False):
         '''
@@ -381,9 +385,9 @@ class BaselineAgent(Thread):
             print(batch_gt, file=batch_gt_file)
 
     def solve(self):
-       raise NotImplementedError("Need to implement solve")
+        raise NotImplementedError("Need to implement solve")
 
-    def get_taptime(self,release_point,_tpt, vision, sling):
+    def get_taptime(self, release_point, _tpt, vision, sling):
         tap_interval = 0
         birds = vision.find_birds()
         bird_on_sling = vision.find_bird_on_sling(birds, sling)
@@ -403,3 +407,19 @@ class BaselineAgent(Thread):
             tap_interval = 60
 
         return self.tp.get_tap_time(sling, release_point, _tpt, tap_interval)
+
+    def shoot_bird_by_angle(self, release_angle, sling):
+        release_point = self.tp.find_release_point(sling, release_angle * pi / 180.0)  # neeed to tranfer to radians
+        tap_time = 0
+        if release_point != None:
+            # release_angle = self.tp.get_release_angle(sling, release_point)
+            self.logger.info("Release Point: %s" % release_point)
+            self.logger.info("Release Angle: %s" % release_angle)
+            print("Release Angle: %s" % release_angle)
+        else:
+            raise NotImplementedError()
+
+        sling.width, sling.height = sling.height, sling.width
+        self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, tap_time, 1, 0)
+        # Sleep till shooting done
+        time.sleep(2)

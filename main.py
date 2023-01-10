@@ -2,6 +2,7 @@ import threading
 import time
 import src.demo.naive_agent_groundtruth as na
 from agents import BirdsInBoots
+from agents import QLearning
 
 import argparse
 import json
@@ -27,7 +28,8 @@ class AgentThread(threading.Thread):
         -------
 
         """
-        agent = BirdsInBoots(self.agent_ind, self.agent_configs)
+        #agent = na.ClientNaiveAgent(self.agent_ind,self.agent_configs)
+        agent = QLearning(self.agent_ind, self.agent_configs)
         agent.run()
 
 
