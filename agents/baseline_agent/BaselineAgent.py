@@ -418,8 +418,6 @@ class BaselineAgent(Thread):
             print("Release Angle: %s" % release_angle)
         else:
             raise NotImplementedError()
-
-        sling.width, sling.height = sling.height, sling.width
         self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, tap_time, 1, 0)
         # Sleep till shooting done
-        time.sleep(2)
+        time.sleep(1)

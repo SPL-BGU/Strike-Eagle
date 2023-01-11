@@ -7,4 +7,5 @@ class GameSessionWonException(Exception):
 
 class GameSessionLossException(Exception):
     def __init__(self, reward):
+        super().__init__("LOSE")
         self.reward = reward

@@ -29,7 +29,7 @@ import logging
 class QLearning(BaselineAgent):
     """Birds in boots (server/client version)"""
 
-    def __init__(self, agent_ind, agent_configs, min_deg: int = 8, max_deg: int = 20, deg_step: float = 1):
+    def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 0.3):
 
         super().__init__(
             agent_ind=agent_ind,
@@ -37,7 +37,8 @@ class QLearning(BaselineAgent):
 
         self.alpha = 0.1  # Learning rate
         self.n_episodes = 100
-        self.epsilon = 0.2
+        self.epsilon = 0.1
+        self.gamma = 0.9 # discount factor
 
         # degrees
         self.min_deg = min_deg
@@ -60,35 +61,27 @@ class QLearning(BaselineAgent):
         self.n_states = len(vision.find_birds().keys())
         # actions
         self.n_actions = get_n_degrees_possibilities(self.min_deg, self.max_deg, self.deg_step)
-        # discount factor
-        self.gamma = 0.9  # Discount factor
         # Set up the Q-table with all zeros
         self.Q = np.zeros([self.n_states, self.n_actions])
-        self.winlose_Q = np.array([-1, 1])
         current_state = 0 # start from the first bird
         # For each episode
         for episode in range(self.n_episodes):
+            # Retake vision for episode
+            vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+            sling = vision.find_slingshot_mbr()[0]
             # Choose an action according to an exploration policy (e.g. Epsilon-Greedy)
             action = self.choose_action(current_state)
-            current_level = self.current_level
             # Take the action and observe the reward and next state
             try:
                 reward, next_state = self.take_action(current_state, action, sling)
                 # Update the Q-value of the current state and action using the Bellman equation
-                self.Q[current_state, action] = (1 - self.alpha) * self.Q[current_state, action] + self.alpha * \
+                self.Q[current_state, action] = self.alpha * self.Q[current_state, action] + (1- self.alpha) * \
                                                 (reward + self.gamma * np.max(self.Q[next_state, :]))
                 self.ar.load_next_available_level()
-            except GameSessionLossException as e:
+            except (GameSessionLossException,GameSessionWonException) as e:
                 # Update the Q-value of the current state and action using the Bellman equation
-                self.Q[current_state, action] = (1 - self.alpha) * self.Q[current_state, action] + self.alpha * \
-                                           (e.reward + self.gamma * self.winlose_Q[0])
+                self.Q[current_state, action] = self.alpha * self.Q[current_state, action] + (1-self.alpha) * e.reward
                 self.ar.load_next_available_level()
-            except GameSessionWonException as e:
-                # Update the Q-value of the current state and action using the Bellman equation
-                self.Q[current_state, action] = (1 - self.alpha) * self.Q[current_state, action] + self.alpha * \
-                                                (e.reward + self.gamma * self.winlose_Q[1])
-                # self.ar.load_next_available_level()
-                #self.ar.load_level(self.current_level)
         x=0
         #return (state, release_angle)
 
@@ -105,7 +98,6 @@ class QLearning(BaselineAgent):
         # Shoot the bird
         deg = get_deg_from_index(self.min_deg, self.deg_step,action)
         self.shoot_bird_by_angle(deg, sling)
-
         # Check score diff
         score = self.check_current_level_score() - score
         # Get next_state
@@ -114,7 +106,7 @@ class QLearning(BaselineAgent):
         if game_state == GameState.WON:
             raise GameSessionWonException(reward=score)
         if game_state == GameState.LOST:
-            raise GameSessionLossException(reward=score)
+            raise GameSessionLossException(reward=-1000) # TODO: constant reward for loss, need to think this differently
         next_state = state + 1
         return score, next_state
 
