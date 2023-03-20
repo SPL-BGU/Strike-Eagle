@@ -1,0 +1,16 @@
+ManifestFileVersion: 0
+CRC: 2891284522
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 9d801e84e75980b3ee3211d334ef3c7b
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 5ad585dd02dfb5016c0dad519eab8f49
+HashAppended: 0
+ClassTypes:
+- Class: 49
+  Script: {instanceID: 0}
+Assets:
+- Assets/Scripts/Editor/AssetsToCompile/level_3_config.txt
+Dependencies: []

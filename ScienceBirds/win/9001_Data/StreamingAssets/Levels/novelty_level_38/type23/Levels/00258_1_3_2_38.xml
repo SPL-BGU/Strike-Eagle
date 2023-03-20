@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-4.0152" y="-0.4827" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-4.0152" y="-3.3579" rotation="0.0" />
+    <Platform type="Platform" material="" x="-5.349" y="-0.864" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.019" y="1.8161" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.165" y="0.4561" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-7.235" y="1.8161" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-5.925" y="2.101" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.502" y="3.5075" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.502" y="2.6474" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.502" y="4.3661" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.375" y="3.5075" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.375" y="2.6474" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.375" y="4.3661" rotation="0.0" />
+    <Block type="SquareTiny" material="ice" x="-2.7133" y="-3.39" rotation="0" />
+    <Block type="SquareTiny" material="ice" x="-5.6406" y="-3.39" rotation="0" />
+    <Block type="RectMedium" material="ice" x="-8.8767" y="-3.39" rotation="0" />
+    <Block type="CircleSmall" material="wood" x="2.2813" y="-3.275" rotation="0" />
+    <Block type="RectFat" material="stone" x="8.8508" y="-3.285" rotation="0" />
+    <ExternalAgent type="Butterfly" material="" x="-10.047" y="-2.84" rotation="0" />
+  </GameObjects>
+</Level>

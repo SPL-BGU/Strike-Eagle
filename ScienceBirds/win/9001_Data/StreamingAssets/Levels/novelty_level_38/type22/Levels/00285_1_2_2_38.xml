@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-4.2877" y="-0.4878" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-4.2877" y="-3.3631" rotation="0.0" />
+    <Platform type="Platform" material="" x="-5.6215" y="-0.8692" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.2915" y="1.8109" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.4375" y="0.4509" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-7.5075" y="1.8109" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-6.1975" y="2.0958" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.7745" y="3.5024" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.7745" y="2.6423" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.7745" y="4.3609" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.6475" y="3.5024" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.6475" y="2.6423" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.6475" y="4.3609" rotation="0.0" />
+    <Block type="RectBig" material="ice" x="-6.7529" y="-3.39" rotation="0" />
+    <Block type="RectFat" material="ice" x="0.6778" y="-3.285" rotation="0" />
+    <Block type="RectFat" material="ice" x="-1.6192" y="-3.285" rotation="0" />
+    <Block type="RectBig" material="ice" x="-9.2242" y="-3.39" rotation="0" />
+    <Block type="TriangleHole" material="stone" x="7.9006" y="-3.09" rotation="0" />
+    <ExternalAgent type="Wizard" material="" x="-0.4354" y="2.3468" rotation="0" />
+  </GameObjects>
+</Level>

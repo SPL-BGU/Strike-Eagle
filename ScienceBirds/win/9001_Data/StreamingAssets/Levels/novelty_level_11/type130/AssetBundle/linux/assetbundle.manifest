@@ -1,0 +1,41 @@
+ManifestFileVersion: 0
+CRC: 4286469184
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: d3619a16e2d791ef97550ee5c601f044
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 92cffa10910344351de987cb5069debe
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 50
+  Script: {instanceID: 0}
+- Class: 61
+  Script: {instanceID: 0}
+- Class: 62
+  Script: {instanceID: 0}
+- Class: 114
+  Script: {fileID: 11500000, guid: 175a0df2c8fa04f8183e0687f10da674, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 1496dfd57e5ea402e9851887ca688cd3, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+- Class: 212
+  Script: {instanceID: 0}
+- Class: 213
+  Script: {instanceID: 0}
+Assets:
+- Assets/Resources/Materials/novel_material_1013.physicsMaterial2D
+- Assets/Resources/Prefabs/GameWorld/Blocks/novel_object_1013.prefab
+Dependencies: []

@@ -1,0 +1,10 @@
+*__pycache__*
+.idea/
+ScienceBirds/linux.zip
+ScienceBirds/MacOS.zip
+ScienceBirds/win.zip
+ScienceBirds/win/*.log
+ScienceBirds/win/Agent_*/*
+ScienceBirds/win/bestscore*
+ScienceBirds/win/*levelscore*.txt
+log/

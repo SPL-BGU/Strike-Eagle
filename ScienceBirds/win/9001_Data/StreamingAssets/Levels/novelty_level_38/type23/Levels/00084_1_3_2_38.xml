@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-4.1636" y="-0.4611" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-4.1636" y="-3.3364" rotation="0.0" />
+    <Platform type="Platform" material="" x="-5.4974" y="-0.8425" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.1674" y="1.8376" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.3134" y="0.4776" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-7.3834" y="1.8376" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-6.0734" y="2.1225" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6504" y="3.5291" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6504" y="2.669" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6504" y="4.3876" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5234" y="3.5291" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5234" y="2.669" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5234" y="4.3876" rotation="0.0" />
+    <Block type="TriangleHole" material="wood" x="8.6508" y="-3.09" rotation="0" />
+    <Block type="TriangleHole" material="ice" x="-1.5216" y="-3.09" rotation="0" />
+    <Block type="Triangle" material="stone" x="2.0258" y="-3.09" rotation="0" />
+    <Block type="SquareTiny" material="stone" x="0.0519" y="-3.39" rotation="0" />
+    <Platform type="Platform" material="" x="-8.4258" y="-3.18" rotation="0" scaleX="1.0" scaleY="1.0" />
+    <ExternalAgent type="Butterfly" material="" x="-9.46" y="-2.84" rotation="0" />
+  </GameObjects>
+</Level>

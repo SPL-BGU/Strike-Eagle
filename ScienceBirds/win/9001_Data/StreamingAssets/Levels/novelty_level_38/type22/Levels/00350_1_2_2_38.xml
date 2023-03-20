@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-4.8436" y="-0.4863" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-4.8436" y="-3.3616" rotation="0.0" />
+    <Platform type="Platform" material="" x="-6.1775" y="-0.8677" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.8475" y="1.8124" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.9935" y="0.4524" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-8.0635" y="1.8124" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-6.7535" y="2.0973" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.3305" y="3.5039" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.3305" y="2.6438" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.3305" y="4.3624" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.2035" y="3.5039" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.2035" y="2.6438" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.2035" y="4.3624" rotation="0.0" />
+    <Block type="TriangleHole" material="wood" x="-6.1584" y="-3.09" rotation="0" />
+    <Block type="SquareHole" material="stone" x="5.2762" y="-3.08" rotation="0" />
+    <Block type="SquareTiny" material="stone" x="7.2445" y="-3.39" rotation="0" />
+    <Block type="CircleSmall" material="wood" x="2.7413" y="-3.275" rotation="0" />
+    <Block type="CircleSmall" material="stone" x="-7.6875" y="-3.275" rotation="0" />
+    <ExternalAgent type="Wizard" material="" x="0.9376" y="0.3839" rotation="0" />
+  </GameObjects>
+</Level>
