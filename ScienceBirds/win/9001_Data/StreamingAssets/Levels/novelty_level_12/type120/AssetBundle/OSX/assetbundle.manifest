@@ -1,0 +1,48 @@
+ManifestFileVersion: 0
+CRC: 1806508492
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 4a1bf8b49f1a5b33ca020304c91890d7
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: d8f7efb265c978df095a110de5867913
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 50
+  Script: {instanceID: 0}
+- Class: 58
+  Script: {instanceID: 0}
+- Class: 60
+  Script: {instanceID: 0}
+- Class: 62
+  Script: {instanceID: 0}
+- Class: 74
+  Script: {instanceID: 0}
+- Class: 91
+  Script: {instanceID: 0}
+- Class: 95
+  Script: {instanceID: 0}
+- Class: 114
+  Script: {fileID: 11500000, guid: 1496dfd57e5ea402e9851887ca688cd3, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 7c2677f554f484d188dcfaebf29ce472, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+- Class: 212
+  Script: {instanceID: 0}
+- Class: 213
+  Script: {instanceID: 0}
+Assets:
+- Assets/Resources/Prefabs/GameWorld/Characters/Birds/novel_object_1012.prefab
+Dependencies: []

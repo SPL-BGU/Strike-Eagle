@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-5.3861" y="-0.431" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-5.3861" y="-3.3062" rotation="0.0" />
+    <Platform type="Platform" material="" x="-6.7199" y="-0.8123" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-5.3899" y="1.8678" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.5359" y="0.5078" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-8.6059" y="1.8678" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-7.2959" y="2.1527" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.8729" y="3.5593" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.8729" y="2.6991" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.8729" y="4.4178" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.7459" y="3.5593" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.7459" y="2.6991" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.7459" y="4.4178" rotation="0.0" />
+    <Block type="RectMedium" material="stone" x="0.6952" y="-3.39" rotation="0" />
+    <Block type="RectMedium" material="wood" x="3.5916" y="-3.39" rotation="0" />
+    <Block type="SquareHole" material="ice" x="-1.2453" y="-3.08" rotation="0" />
+    <Block type="RectMedium" material="ice" x="6.6148" y="-3.39" rotation="0" />
+    <Block type="RectMedium" material="stone" x="-7.5536" y="-3.39" rotation="0" />
+    <ExternalAgent type="Butterfly" material="" x="-9.7111" y="-2.84" rotation="0" />
+  </GameObjects>
+</Level>

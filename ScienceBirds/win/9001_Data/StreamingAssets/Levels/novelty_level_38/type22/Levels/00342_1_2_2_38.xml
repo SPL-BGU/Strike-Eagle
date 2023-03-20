@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-5.4917" y="-0.4976" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-5.4917" y="-3.3729" rotation="0.0" />
+    <Platform type="Platform" material="" x="-6.8256" y="-0.879" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-5.4956" y="1.8012" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.6416" y="0.4411" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-8.7116" y="1.8012" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-7.4016" y="2.086" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.9786" y="3.4926" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.9786" y="2.6325" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.9786" y="4.3512" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.8516" y="3.4926" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.8516" y="2.6325" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.8516" y="4.3512" rotation="0.0" />
+    <Block type="CircleSmall" material="stone" x="7.0416" y="-3.275" rotation="0" />
+    <Block type="SquareTiny" material="stone" x="9.3874" y="-3.39" rotation="0" />
+    <Block type="SquareSmall" material="wood" x="-7.5332" y="-3.285" rotation="0" />
+    <Block type="SquareTiny" material="wood" x="2.0115" y="-3.39" rotation="0" />
+    <Block type="SquareHole" material="wood" x="-1.972" y="-3.08" rotation="0" />
+    <ExternalAgent type="Wizard" material="" x="-1.3733" y="-1.4849" rotation="0" />
+  </GameObjects>
+</Level>

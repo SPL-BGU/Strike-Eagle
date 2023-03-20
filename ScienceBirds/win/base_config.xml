@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-16"?>
+<evaluation>
+  <novelty_detection_measurement step="1" measure_in_training="True" measure_in_testing="True" />
+  <trials>
+    <trial id="0" number_of_executions="1" checkpoint_time_limit="200" checkpoint_interaction_limit="200" notify_novelty="True">
+      <game_level_set mode="training" time_limit="2760" total_interaction_limit="60000" attempt_limit_per_level="20" allow_level_selection="True">
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type10/Levels/00155_1_0_1_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type10/Levels/00303_1_0_1_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type11/Levels/00070_1_1_1_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type12/Levels/00051_1_2_1_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type13/Levels/00314_1_3_1_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type14/Levels/00349_1_4_1_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type20/Levels/00124_1_0_2_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type21/Levels/00292_1_1_2_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type22/Levels/00198_2_2_2_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type23/Levels/00128_2_3_2_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_36/type24/Levels/00287_2_4_2_36.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_37/type10/Levels/00093_1_0_1_37.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_37/type20/Levels/00072_1_0_2_37.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00134_1_0_1_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type11/Levels/00184_1_1_1_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type12/Levels/00144_1_2_1_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type13/Levels/00119_1_3_1_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type14/Levels/00246_1_4_1_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type20/Levels/00136_1_0_2_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type21/Levels/00003_1_1_2_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type22/Levels/00022_1_2_2_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type23/Levels/00006_1_3_2_38.xml" />
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type24/Levels/00288_1_4_2_38.xml" />
+      </game_level_set>
+    </trial>
+  </trials>
+</evaluation>

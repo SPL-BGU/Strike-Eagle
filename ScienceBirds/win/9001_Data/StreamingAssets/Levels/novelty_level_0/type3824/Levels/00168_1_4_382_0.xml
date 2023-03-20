@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-0.4599" y="-0.1356" rotation="0.9321" />
+    <Pig type="BasicSmall" material="" x="-2.3352" y="-0.1373" rotation="359.6748" />
+    <Platform type="Platform" material="" x="-1.8963" y="-0.5213" rotation="0.0" scaleX="6.2566" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.7473" y="-0.0403" rotation="90.0" scaleX="2.0" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-0.0563" y="-0.0306" rotation="90.0" scaleX="1.979" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-1.9333" y="0.1087" rotation="90.0" scaleX="1.5158" scaleY="0.5" />
+    <Block type="SquareHole" material="wood" x="3.2124" y="-3.08" rotation="0" />
+    <Block type="RectFat" material="wood" x="5.8669" y="-3.285" rotation="0" />
+    <ExternalAgent type="Worm" material="" x="-1.8963" y="-0.5213" rotation="0" />
+  </GameObjects>
+</Level>
