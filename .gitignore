@@ -1,0 +1,7 @@
+*__pycache__*
+.idea/
+ScienceBirds/linux.zip
+ScienceBirds/MacOS.zip
+ScienceBirds/win.zip
+
+log/
