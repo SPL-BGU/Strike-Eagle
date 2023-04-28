@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-5.6219" y="-0.4719" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-5.6219" y="-3.3472" rotation="0.0" />
+    <Platform type="Platform" material="" x="-6.9557" y="-0.8533" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-5.6257" y="1.8269" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.7717" y="0.4668" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-8.8417" y="1.8269" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-7.5317" y="2.1117" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.1087" y="3.5183" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.1087" y="2.6582" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.1087" y="4.3769" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.9817" y="3.5183" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.9817" y="2.6582" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.9817" y="4.3769" rotation="0.0" />
+    <Block type="RectSmall" material="wood" x="-0.4938" y="-3.39" rotation="0" />
+    <Block type="SquareTiny" material="ice" x="7.9874" y="-3.39" rotation="0" />
+    <Block type="RectFat" material="ice" x="-4.295" y="-3.285" rotation="0" />
+    <Block type="RectSmall" material="stone" x="5.3475" y="-3.39" rotation="0" />
+    <Block type="SquareTiny" material="stone" x="3.8457" y="-3.39" rotation="0" />
+    <ExternalAgent type="Butterfly" material="" x="8.8501" y="-2.84" rotation="0" />
+  </GameObjects>
+</Level>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-4.1922" y="-0.4575" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-4.1922" y="-3.3327" rotation="0.0" />
+    <Platform type="Platform" material="" x="-5.5261" y="-0.8388" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.1961" y="1.8413" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.3421" y="0.4813" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-7.4121" y="1.8413" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-6.1021" y="2.1262" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6791" y="3.5328" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6791" y="2.6726" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6791" y="4.3913" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5521" y="3.5328" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5521" y="2.6726" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5521" y="4.3913" rotation="0.0" />
+    <Platform type="Platform" material="" x="-1.6321" y="-3.18" rotation="0" scaleX="1.0" scaleY="1.0" />
+    <Block type="RectSmall" material="wood" x="0.874" y="-3.39" rotation="0" />
+    <Platform type="Platform" material="" x="2.5405" y="-3.18" rotation="0" scaleX="1.0" scaleY="1.0" />
+    <Platform type="Platform" material="" x="-9.5224" y="-3.18" rotation="0" scaleX="1.0" scaleY="1.0" />
+    <Block type="RectTiny" material="stone" x="-6.7807" y="-3.39" rotation="0" />
+    <ExternalAgent type="Butterfly" material="" x="8.7002" y="-2.84" rotation="0" />
+  </GameObjects>
+</Level>

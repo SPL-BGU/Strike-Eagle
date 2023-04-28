@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-4.19" y="-0.4907" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-4.19" y="-3.366" rotation="0.0" />
+    <Platform type="Platform" material="" x="-5.5239" y="-0.8721" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-4.1939" y="1.808" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-3.3399" y="0.448" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-7.4099" y="1.808" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-6.0999" y="2.0929" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6769" y="3.4995" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6769" y="2.6394" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-5.6769" y="4.358" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5499" y="3.4995" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5499" y="2.6394" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-6.5499" y="4.358" rotation="0.0" />
+    <Block type="RectMedium" material="wood" x="4.1981" y="-3.39" rotation="0" />
+    <Block type="SquareHole" material="wood" x="-6.1269" y="-3.08" rotation="0" />
+    <Block type="SquareHole" material="ice" x="-2.3911" y="-3.08" rotation="0" />
+    <Block type="RectMedium" material="wood" x="0.4879" y="-3.39" rotation="0" />
+    <Block type="RectBig" material="stone" x="9.3275" y="-3.39" rotation="0" />
+    <ExternalAgent type="Wizard" material="" x="-0.2472" y="-0.135" rotation="0" />
+  </GameObjects>
+</Level>

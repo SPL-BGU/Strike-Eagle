@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-16"?>
+<Level width="2">
+  <Camera x="0" y="-1" minWidth="25" maxWidth="35" />
+  <Score highScore="0" />
+  <Birds>
+    <Bird type="BirdRed"/>
+    <Bird type="BirdRed"/>
+  </Birds>
+  <Slingshot x="-12.0" y="-2.5" />
+  <GameObjects>
+    <Pig type="BasicSmall" material="" x="-5.9255" y="-0.4144" rotation="0.0" />
+    <Pig type="BasicSmall" material="" x="-5.9255" y="-3.2896" rotation="0.0" />
+    <Platform type="Platform" material="" x="-7.2593" y="-0.7957" rotation="0.0" scaleX="7.2436" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-5.9293" y="1.8844" rotation="0.0" scaleX="3.1733" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-5.0753" y="0.5244" rotation="90.0" scaleX="4.1031" scaleY="0.5" />
+    <Platform type="Platform" material="" x="-9.1453" y="1.8844" rotation="0.0" scaleX="1.2332" scaleY="0.5" />
+    <Block type="novel_object_38_2_1" material="stone" x="-7.8353" y="2.1693" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.4123" y="3.5759" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.4123" y="2.7157" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-7.4123" y="4.4344" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-8.2853" y="3.5759" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-8.2853" y="2.7157" rotation="0.0" />
+    <Block type="SquareHole" material="stone" x="-8.2853" y="4.4344" rotation="0.0" />
+    <Block type="SquareHole" material="ice" x="1.0063" y="-3.08" rotation="0" />
+    <Block type="SquareSmall" material="ice" x="-8.3429" y="-3.285" rotation="0" />
+    <Block type="RectFat" material="stone" x="-3.4694" y="-3.285" rotation="0" />
+    <Block type="RectMedium" material="stone" x="-1.3837" y="-3.39" rotation="0" />
+    <Block type="Circle" material="stone" x="-9.9389" y="-3.1" rotation="0" />
+    <ExternalAgent type="Butterfly" material="" x="6.5226" y="-2.84" rotation="0" />
+  </GameObjects>
+</Level>

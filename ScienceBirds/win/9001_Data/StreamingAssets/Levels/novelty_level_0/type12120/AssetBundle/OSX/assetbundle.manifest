@@ -1,0 +1,61 @@
+ManifestFileVersion: 0
+CRC: 889558293
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 144f516a7328aed190287aeaf85ff428
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 18a2de28c5ee16e6446f9430a328b85a
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 50
+  Script: {instanceID: 0}
+- Class: 58
+  Script: {instanceID: 0}
+- Class: 60
+  Script: {instanceID: 0}
+- Class: 62
+  Script: {instanceID: 0}
+- Class: 74
+  Script: {instanceID: 0}
+- Class: 91
+  Script: {instanceID: 0}
+- Class: 95
+  Script: {instanceID: 0}
+- Class: 114
+  Script: {fileID: 11500000, guid: b2b3df01e7ca54038bd1328817eb5b8d, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 2a99c77137289464d967f41f41a98957, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 1496dfd57e5ea402e9851887ca688cd3, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 9bd625463460a054c97d740367774053, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 79b24d573b73a44af8afe6cb1395fd9f, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+- Class: 212
+  Script: {instanceID: 0}
+- Class: 213
+  Script: {instanceID: 0}
+Assets:
+- Assets/Scripts/Editor/AssetsToCompile/novel_object_3.prefab
+- Assets/Scripts/Editor/AssetsToCompile/novel_material_0.physicsMaterial2D
+- Assets/Scripts/Editor/AssetsToCompile/novel_material_3.physicsMaterial2D
+- Assets/Scripts/Editor/AssetsToCompile/novel_object_1.prefab
+- Assets/Scripts/Editor/AssetsToCompile/novel_object_2.prefab
+- Assets/Scripts/Editor/AssetsToCompile/novel_material_2.physicsMaterial2D
+- Assets/Scripts/Editor/AssetsToCompile/novel_object_4.prefab
+- Assets/Scripts/Editor/AssetsToCompile/novel_material_1.physicsMaterial2D
+Dependencies: []

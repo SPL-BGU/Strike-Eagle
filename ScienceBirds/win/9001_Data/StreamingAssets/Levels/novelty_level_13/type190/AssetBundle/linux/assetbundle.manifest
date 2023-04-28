@@ -1,0 +1,35 @@
+ManifestFileVersion: 0
+CRC: 1403468572
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 3a199e00a5dd25d504a21477b963b2b4
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: de2cb2571f12a2ff4646b39de6ed32c1
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 50
+  Script: {instanceID: 0}
+- Class: 61
+  Script: {instanceID: 0}
+- Class: 62
+  Script: {instanceID: 0}
+- Class: 212
+  Script: {instanceID: 0}
+- Class: 213
+  Script: {instanceID: 0}
+Assets:
+- Assets/Resources/Prefabs/GameWorld/novel_object_1019.prefab
+- Assets/Resources/Materials/novel_material_1019.physicsMaterial2D
+Dependencies: []

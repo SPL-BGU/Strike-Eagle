@@ -1,0 +1,49 @@
+ManifestFileVersion: 0
+CRC: 291389807
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: f87de5bd57f848d3bf3a5511b0ee800c
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: de52dcdb0eed30177343947f18e0e660
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 28
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 50
+  Script: {instanceID: 0}
+- Class: 58
+  Script: {instanceID: 0}
+- Class: 60
+  Script: {instanceID: 0}
+- Class: 62
+  Script: {instanceID: 0}
+- Class: 74
+  Script: {instanceID: 0}
+- Class: 91
+  Script: {instanceID: 0}
+- Class: 95
+  Script: {instanceID: 0}
+- Class: 114
+  Script: {fileID: 11500000, guid: b2b3df01e7ca54038bd1328817eb5b8d, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 1496dfd57e5ea402e9851887ca688cd3, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+- Class: 212
+  Script: {instanceID: 0}
+- Class: 213
+  Script: {instanceID: 0}
+Assets:
+- Assets/Resources/Materials/novel_material_1014.physicsMaterial2D
+- Assets/Resources/Prefabs/GameWorld/Characters/Pigs/novel_object_1014.prefab
+Dependencies: []
