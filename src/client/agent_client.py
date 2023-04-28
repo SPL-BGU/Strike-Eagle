@@ -364,7 +364,6 @@ class AgentClient:
 #        print("received ground truth frames ", ground_truths_count)
         return gt_jsons
 
-
     def restart_level(self):
         """Request to restart level"""
         self._send_command(RequestCodes.RestartLevel)

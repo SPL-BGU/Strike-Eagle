@@ -1,4 +1,3 @@
-
 import numpy as np
 import random
 from agents import BaselineAgent
@@ -7,10 +6,6 @@ from agents.utility.exceptions import *
 
 import socket
 from math import cos, sin, degrees, pi
-
-
-
-
 
 from src.client.agent_client import AgentClient, GameState, RequestCodes
 from src.trajectory_planner.trajectory_planner import SimpleTrajectoryPlanner
@@ -26,7 +21,7 @@ import tensorflow as tf
 import logging
 
 
-class QLearning(BaselineAgent):
+class QuatzelAgent(BaselineAgent):
     """Birds in boots (server/client version)"""
 
     def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 0.3):
@@ -35,10 +30,12 @@ class QLearning(BaselineAgent):
             agent_ind=agent_ind,
             agent_configs=agent_configs)
 
+        self.n_actions = None
+        self.n_states = None
         self.alpha = 0.1  # Learning rate
         self.n_episodes = 100
         self.epsilon = 0.1
-        self.gamma = 0.9 # discount factor
+        self.gamma = 0.9  # discount factor
 
         # degrees
         self.min_deg = min_deg
@@ -49,21 +46,19 @@ class QLearning(BaselineAgent):
 
     def solve(self):
         """
-        * Solve a particular level by shooting birds directly to pigs
+        * Solve a particular level by using q learning
         * @return GameState: the game state after shots.
         """
         # Initialization
         ground_truth_type = GroundTruthType.ground_truth_screenshot
-        game_state = self.ar.get_game_state()
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
-        sling = vision.find_slingshot_mbr()[0]
         # states
         self.n_states = len(vision.find_birds().keys())
         # actions
         self.n_actions = get_n_degrees_possibilities(self.min_deg, self.max_deg, self.deg_step)
         # Set up the Q-table with all zeros
         self.Q = np.zeros([self.n_states, self.n_actions])
-        current_state = 0 # start from the first bird
+        current_state = 0  # start from the first bird
         # For each episode
         for episode in range(self.n_episodes):
             # Retake vision for episode
@@ -75,17 +70,16 @@ class QLearning(BaselineAgent):
             try:
                 reward, next_state = self.take_action(current_state, action, sling)
                 # Update the Q-value of the current state and action using the Bellman equation
-                self.Q[current_state, action] = self.alpha * self.Q[current_state, action] + (1- self.alpha) * \
+                self.Q[current_state, action] = self.alpha * self.Q[current_state, action] + (1 - self.alpha) * \
                                                 (reward + self.gamma * np.max(self.Q[next_state, :]))
-                self.ar.load_next_available_level()
-            except (GameSessionLossException,GameSessionWonException) as e:
-                # Update the Q-value of the current state and action using the Bellman equation
-                self.Q[current_state, action] = self.alpha * self.Q[current_state, action] + (1-self.alpha) * e.reward
-                self.ar.load_next_available_level()
-        x=0
-        #return (state, release_angle)
 
-    def choose_action(self, state: int ):
+            except (GameSessionLossException, GameSessionWonException) as e:
+                # Update the Q-value of the current state and action using the Bellman equation
+                self.Q[current_state, action] = self.alpha * self.Q[current_state, action] + (1 - self.alpha) * e.reward
+                #self.ar.load_next_available_level()
+                return
+
+    def choose_action(self, state: int):
         if np.random.uniform() < self.epsilon:
             # Explore: choose a random action
             return np.random.randint(self.n_actions)
@@ -96,7 +90,7 @@ class QLearning(BaselineAgent):
     def take_action(self, state: int, action: int, sling):
         score = self.check_current_level_score()
         # Shoot the bird
-        deg = get_deg_from_index(self.min_deg, self.deg_step,action)
+        deg = get_deg_from_index(self.min_deg, self.deg_step, action)
         self.shoot_bird_by_angle(deg, sling)
         # Check score diff
         score = self.check_current_level_score() - score
@@ -106,7 +100,7 @@ class QLearning(BaselineAgent):
         if game_state == GameState.WON:
             raise GameSessionWonException(reward=score)
         if game_state == GameState.LOST:
-            raise GameSessionLossException(reward=-1000) # TODO: constant reward for loss, need to think this differently
+            raise GameSessionLossException(reward=-1000)  # TODO: constant reward for loss, need to think this differently
         next_state = state + 1
         return score, next_state
 
@@ -170,7 +164,8 @@ class QLearning(BaselineAgent):
                     self.ar.restart_level()
 
             elif state == GameState.LEVEL_SELECTION:
-                self.logger.info("unexpected level selection page, go to the last current level : " + self.current_level)
+                self.logger.info(
+                    "unexpected level selection page, go to the last current level : " + self.current_level)
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
 
@@ -245,4 +240,3 @@ class QLearning(BaselineAgent):
                 # store info and disconnect the agents as the evaluation is finished
                 self.logger.critical("Evaluation terminated.")
                 exit(0)
-

@@ -206,25 +206,10 @@ class BaselineAgent(Thread):
         END TEST
         '''
 
-        # indicates if the previous game level set is a training set
         change_from_training = False
 
-        # ar.load_level((byte)9)
         while True:
-            # test purpose only
-            # sim_speed = random.randint(1, 50)
-            # self.ar.set_game_simulation_speed(sim_speed)
-            # print(‘simulation speed set to ', sim_speed)
-
-            # test for multi-thread groundtruth reading
-            # if not self.shot_done:
-            state = self.solve()
-            # try:
-            #     state = self.solve()
-            # except:
-            #     self.logger.warning("Erros in solving level %s, state is set to lost"%(self.current_level))
-            #     state = GameState.LOST
-
+            state = self.ar.get_game_state()
             # If the level is solved , go to the next level
             if state == GameState.WON:
                 self.repeated_gt_counter = 0
@@ -256,11 +241,11 @@ class BaselineAgent(Thread):
 
                 else:
                     self.logger.info("fail level count does not reach the limit, restart the level")
-                    self.ar.restart_level()
+                    self.ar.load_next_available_level()
 
             elif state == GameState.LEVEL_SELECTION:
-                self.logger.info("unexpected level selection page, go to the last current level : " \
-                                 , self.current_level)
+                self.logger.info(
+                    "unexpected level selection page, go to the last current level : " + self.current_level)
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
 
@@ -274,6 +259,14 @@ class BaselineAgent(Thread):
                 self.logger.info("unexpected episode menu page, reload the level:  %s" % self.current_level)
                 self.current_level = self.ar.load_next_available_level()
                 self.novelty_existence = self.ar.get_novelty_info()
+
+            elif state == GameState.PLAYING:
+                mode = os.environ["mode"] if "mode" in os.environ else "test"
+                if mode == "train":
+                    self.train()
+                if mode == "test":
+                    self.solve()
+
 
             elif state == GameState.REQUESTNOVELTYLIKELIHOOD:
                 # Require report novelty likelihood and then playing can be resumed
@@ -384,6 +377,8 @@ class BaselineAgent(Thread):
         with open(path, "w") as batch_gt_file:
             print(batch_gt, file=batch_gt_file)
 
+    def train(self):
+        raise NotImplementedError("Need to implement train")
     def solve(self):
         raise NotImplementedError("Need to implement solve")
 
@@ -421,3 +416,17 @@ class BaselineAgent(Thread):
         self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, tap_time, 1, 0)
         # Sleep till shooting done
         time.sleep(1)
+
+    def shoot_bird_by_angle_with_img_trail(self, release_angle, sling, time_duration: int = 1):
+        release_point = self.tp.find_release_point(sling, release_angle * pi / 180.0)  # neeed to tranfer to radians
+        tap_time = 0
+        if release_point != None:
+            # release_angle = self.tp.get_release_angle(sling, release_point)
+            self.logger.info("Release Point: %s" % release_point)
+            self.logger.info("Release Angle: %s" % release_angle)
+            print("Release Angle: %s" % release_angle)
+        else:
+            raise NotImplementedError()
+
+        shoots = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, tap_time, 1, 0)
+        return [GroundTruthReader(shoot, self.model, self.target_class) for shoot in shoots]
