@@ -241,7 +241,7 @@ class BaselineAgent(Thread):
 
                 else:
                     self.logger.info("fail level count does not reach the limit, restart the level")
-                    self.ar.restart_level()
+                    self.ar.load_next_available_level()
 
             elif state == GameState.LEVEL_SELECTION:
                 self.logger.info(

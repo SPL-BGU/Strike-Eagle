@@ -33,8 +33,8 @@ class OwlerAgent(BaselineAgent):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
-        self.min_deg = min_deg,
-        self.max_deg = max_deg,
+        self.min_deg = min_deg
+        self.max_deg = max_deg
         self.deg_step = deg_step
 
         # Override sim speed from 20
@@ -61,17 +61,18 @@ class OwlerAgent(BaselineAgent):
 
         # TODO: get deg
         random_deg = get_random_deg(deg_range=(self.min_deg, self.max_deg), step=self.deg_step)
-        # trajectory = self.shoot_bird_by_angle_with_img_trail(random_deg, sling)
+        trajectory = self.shoot_bird_by_angle_with_img_trail(-4, sling, state_prev)
         #
         # # TODO: formulate trajectory
         # # For now just take last image
-        # state_post = self.formulate_state(trajectory[-1])
+        state_post = self.formulate_trajectory(state_prev, trajectory)[-1]
         #
-        # # # TODO: compute effects
-        # # state_effect = self.compute_effect(state_prev, state_post)
+        # TODO: compute effects
+        state_effect = self.compute_effect(state_prev, state_post)
 
         #   TODO: update KB
-        self.update_kb(vision, state_prev, random_deg)
+        self.update_kb(vision, state_effect, random_deg)
+        time.sleep(2)
 
     def solve(self):
         """
@@ -79,7 +80,7 @@ class OwlerAgent(BaselineAgent):
         * @return GameState: the game state after shots.
         """
         # Initialization
-        game_state = self.ar.get_game_state()
+        # game_state = self.ar.get_game_state()
 
         # take pre vision
         vision = self._update_reader(self.ground_truth_type.value, self.if_check_gt)
@@ -105,16 +106,49 @@ class OwlerAgent(BaselineAgent):
         next_state = state + 1
         return score, next_state
 
-    def formulate_state(self, vision):
+    def formulate_state(self, vision, base_vector_vision=None) -> VectorVision:
         """
         Formulate_image
         """
         vector_vision = VectorVision(vision)
-        vector_vision.formulate_from_base_vision()
+        if base_vector_vision:
+            vector_vision.formulate_from_base_vision()
+            vector_vision.update_dead(base_vector_vision)
+        else:
+            vector_vision.formulate_from_base_vision()
         return vector_vision
 
-    def compute_effect(self, prev, post):
-        pass
+    def formulate_trajectory(self, base_vision: VectorVision, trajectory: list):
+        """
+        Formulate an untire trajectory ( list of visions) to trajectory Vector Vision
+        :param base_vision: base vision to start from
+        :type base_vision: VectorVision
+        :param trajectory: trajectory
+        :type trajectory:
+        :return:
+        :rtype:
+        """
+        vector_trajectory = [base_vision]
+        for vision in trajectory:
+            vector_trajectory.append(self.formulate_state(vision, vector_trajectory[-1]))
+        return vector_trajectory
+
+    def compute_effect(self, prev: VectorVision, post: VectorVision) -> dict:
+        """
+        Compute the effect by substracting post and prev matrices
+        :param prev:
+        :type prev:
+        :param post:
+        :type post:
+        :return:
+        :rtype:
+        """
+        # update post matrix
+        post.update_matrix(prev)
+        return {
+            "effect": post.matrix - prev.matrix,
+            "frame": 0
+        }
 
     def update_kb(self, state, effect, action) -> bool:
         """
@@ -122,12 +156,16 @@ class OwlerAgent(BaselineAgent):
         :return
             bool depending on if the KB has been updated
         """
-        path = "TrainKB/train_data.pickle"
+        folder = "TrainKB"
+        file = "train_data.pickle"
+        path = os.path.join(folder, file)
         # Load KB from data
-        if not os.path.exists(path):
+        if os.path.exists(path):
             with open(path, 'rb') as handle:
-                data = pickle.load(handle)
-        data = effect
+                data: list = pickle.load(handle)
+        else:
+            data = list()
+        data.append(effect)
         with open(path, 'wb') as handle:
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
