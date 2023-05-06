@@ -5,7 +5,7 @@ import numpy as np
 from src.computer_vision.GroundTruthReader import GroundTruthReader
 from src.computer_vision.game_object import GameObject
 from agents.utility.vision.relations import *
-
+import copy
 
 class VectorVision(GroundTruthReader):
     def __init__(self, vision: GroundTruthReader):
@@ -67,3 +67,18 @@ class VectorVision(GroundTruthReader):
             if o_t[1] == "Dead":
                 self.matrix = np.insert(self.matrix, i, 0, axis=0)
                 self.matrix = np.insert(self.matrix, i, 0, axis=1)
+
+    def make_dead(self):
+        for i in range(len(self.game_objects["object_types"])):
+            if self.game_objects["object_types"][i][0] == "pig":
+                # Update Dead
+                self.game_objects["object_types"][i] = ("pig","Dead")
+
+
+def end_goal(state: VectorVision):
+    end_state: VectorVision = copy.deepcopy(state)
+
+    # Update dead
+    end_state.make_dead()
+    end_state.update_matrix()
+    return end_state
