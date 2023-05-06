@@ -1,7 +1,7 @@
 import math
 import numpy as np
-def get_n_degrees_possibilities(min_deg: int, max_deg: int, step: float) -> int:
-    return int((max_deg - min_deg) / step)
+def get_n_degrees_possibilities(deg_range: tuple, step: float) -> int:
+    return int((deg_range[1]-deg_range[0]) / step)
 
 
 def get_deg_from_index(min_deg: int, step: float, index: int) -> float:

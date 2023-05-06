@@ -21,13 +21,13 @@ from src.computer_vision.game_object import GameObject
 from agents.utility.vision.vector_vision import VectorVision
 import logging
 import time
-from agents.utility.vision.vector_vision import VectorVision
+from agents.utility.vision.vector_vision import VectorVision, end_goal
 
 
 class OwlerAgent(BaselineAgent):
     """Birds in boots (server/client version)"""
 
-    def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 0.3,
+    def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 1,
                  learn: bool = False):
 
         super().__init__(
@@ -55,13 +55,13 @@ class OwlerAgent(BaselineAgent):
         # take pre vision
         vision = self._update_reader(self.ground_truth_type.value, self.if_check_gt)
         sling = vision.find_slingshot_mbr()[0]
-
         # TODO: formulate vision into better domain set
         state_prev = self.formulate_state(vision)
+        state_end = end_goal(state_prev)
 
         # TODO: get deg
         random_deg = get_random_deg(deg_range=(self.min_deg, self.max_deg), step=self.deg_step)
-        trajectory = self.shoot_bird_by_angle_with_img_trail(-4, sling, state_prev)
+        trajectory = self.shoot_bird_by_angle_with_img_trail(random_deg, sling)
         #
         # # TODO: formulate trajectory
         # # For now just take last image
@@ -87,24 +87,6 @@ class OwlerAgent(BaselineAgent):
         vector_vision = VectorVision(vision)
         vector_vision.formulate_from_base_vision()
         x = 0
-
-    def take_action(self, state: int, action: int, sling):
-        score = self.check_current_level_score()
-        # Shoot the bird
-        deg = get_deg_from_index(self.min_deg, self.deg_step, action)
-        self.shoot_bird_by_angle_with_img_trail(deg, sling)
-        # Check score diff
-        score = self.check_current_level_score() - score
-        # Get next_state
-        game_state = self.ar.get_game_state()
-        # If the level is solved , go to the next level
-        if game_state == GameState.WON:
-            raise GameSessionWonException(reward=score)
-        if game_state == GameState.LOST:
-            raise GameSessionLossException(
-                reward=-1000)  # TODO: constant reward for loss, need to think this differently
-        next_state = state + 1
-        return score, next_state
 
     def formulate_state(self, vision, base_vector_vision=None) -> VectorVision:
         """
@@ -144,13 +126,13 @@ class OwlerAgent(BaselineAgent):
         :rtype:
         """
         # update post matrix
-        post.update_matrix(prev)
+        post.update_matrix()
         return {
             "effect": post.matrix - prev.matrix,
             "frame": 0
         }
 
-    def update_kb(self, state, effect, action) -> bool:
+    def update_kb(self, state, effect, action,frame=0) -> bool:
         """
         Update KB based on the new information
         :return
@@ -165,9 +147,15 @@ class OwlerAgent(BaselineAgent):
                 data: list = pickle.load(handle)
         else:
             data = list()
-        data.append(effect)
+        data.append({
+                "state": state,
+                "action": action,
+                "frame": frame,
+                "effect": effect
+            })
         with open(path, 'wb') as handle:
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            return True
 
     def choose_action(self, current_state):
         """
