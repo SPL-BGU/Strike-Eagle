@@ -4,16 +4,16 @@
   <trials>
     <trial id="0" number_of_executions="1" checkpoint_time_limit="200" checkpoint_interaction_limit="200" notify_novelty="True">
       <game_level_set mode="training" time_limit="1200" total_interaction_limit="60000" attempt_limit_per_level="1" allow_level_selection="False">
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type11/Levels/00041_1_1_1_36.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type20/Levels/00075_1_0_2_36.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type21/Levels/00134_2_1_2_36.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type22/Levels/00031_1_2_2_36.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type23/Levels/00124_1_3_2_36.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type24/Levels/00290_2_4_2_36.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_37\type10/Levels/00145_1_0_1_37.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_37\type20/Levels/00085_1_0_2_37.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_38\type10/Levels/00136_1_0_1_38.xml" />
-        <game_levels level_path="E:/תואר שני/Thesis/Code/NerdyBirds/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_38\type20/Levels/00296_1_0_2_38.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type11/Levels/00088_1_1_1_36.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type20/Levels/00155_2_0_2_36.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type21/Levels/00306_1_1_2_36.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type22/Levels/00284_1_2_2_36.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type23/Levels/00257_2_3_2_36.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_36\type24/Levels/00036_1_4_2_36.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_37\type10/Levels/00060_1_0_1_37.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_37\type20/Levels/00201_1_0_2_37.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_38\type10/Levels/00163_1_0_1_38.xml" />
+        <game_levels level_path="C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/ScienceBirds/win/9001_Data/StreamingAssets/Levels\novelty_level_38\type20/Levels/00138_1_0_2_38.xml" />
       </game_level_set>
     </trial>
   </trials>
