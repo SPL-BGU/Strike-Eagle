@@ -1,12 +1,9 @@
-import pddl_plus_parser
 import os.path
 import numpy as np
 import random
-
-import unified_planning.model
-
 from agents import BaselineAgent
 from agents.utility import GroundTruthType
+import pddl
 from agents.utility.exceptions import *
 import pickle
 from functools import reduce
@@ -25,12 +22,8 @@ from agents.utility.vision.vector_vision import VectorVision
 import logging
 import time
 from agents.utility.vision.vector_vision import VectorVision, end_goal
-from unified_planning.shortcuts import *
-from unified_planning.model import Type
-from pddl import parse_domain
-from pddl.formatter import problem_to_string
-from pddl.core import Problem,Domain,Requirements
-from pddl.logic import constants, Predicate
+
+
 class PDDLAgent(BaselineAgent):
     """Birds in boots (server/client version)"""
 
@@ -73,33 +66,41 @@ class PDDLAgent(BaselineAgent):
         """
         Formulate_image
         """
-        # GET DOMAIN
-        domain = parse_domain('agents/pddl/pddl_files/domain.pddl')
+        # GET Problem
+        initial_angle = self.min_deg
+        angle_rate = self.deg_step
+        active_bird = 0
+        bounce_count = 0
+        gravity = 10
+        # Define birds
+        BIRD_TYPES = [GameObjectType.REDBIRD, GameObjectType.YELLOWBIRD, GameObjectType.BLACKBIRD,
+                      GameObjectType.WHITEBIRD, GameObjectType.BLUEBIRD]
+        bird_id = 0
+        problem_data = list()
+        birds_types = vision.find_birds()
+        for bird_type, birds in birds_types.items():
+            for bird in birds:
+                problem_data.append({
+                    "bird_x": bird.X,
+                    "bird_y": bird.Y,
+                    "bird_id": bird_id,
+                    "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
+                    "bird_m": bird.width * bird.height,  # check this because it is not mandatory
+                    "bird_radius": min(bird.width, bird.height) / 2  # check this
 
-        requirements = [Requirements.STRIPS, Requirements.TYPING]
+                })
+            bird_id += 1
 
-        # SET OBJECTS
-        objects = []
-        for bird_type,birds in vision.find_birds().items():
-            objects += [constants(bird_type+str(i),types=[bird_type])[0] for i in range(len(birds))]
-        for pig_index in range(len(vision.find_pigs_mbr())):
-            objects.append(constants("pig" + str(pig_index),types=['pig'])[0])
-        objects.append(constants('slingshot',types=['slingshot'])[0])
+        # add pigs
 
-        # predicates
-        predicate = Predicate("at-location", objects[0], objects[-1]) # bird is at location
+        pig_id = 0
+        pigs = vision.find_pigs_mbr()
+        for pig in pigs:
+            problem_data.append({
+                "pig_x": pig.X,
+                "pig_y": pig.Y,
+                "pig_m": pig.width * pig.height,  # check this because it is not mandatory
+                "pig_radius": min(pig.width, pig.height) / 2,  # check this
+                "pig_life": 1  # check
 
-        # goal
-        goal = Predicate("at-location", objects[0], objects[1])  # bird is at location
-
-        problem = Problem(
-            name='angry-birds-level',
-            domain=domain,
-            requirements=requirements,
-            objects=objects,
-            init=[predicate],
-            goal=goal,
-
-        )
-        print(problem_to_string(problem))
-
+            })
