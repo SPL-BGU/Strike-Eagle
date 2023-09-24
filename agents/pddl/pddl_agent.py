@@ -14,14 +14,7 @@ from src.client.agent_client import AgentClient, GameState, RequestCodes
 from src.trajectory_planner.trajectory_planner import SimpleTrajectoryPlanner
 from src.computer_vision.GroundTruthReader import GroundTruthReader, NotVaildStateError
 from src.computer_vision.game_object import GameObjectType
-from src.computer_vision.GroundTruthTest import GroundTruthTest
-from src.utils.point2D import Point2D
-from agents.utility.degrees import *
-from src.computer_vision.game_object import GameObject
-from agents.utility.vision.vector_vision import VectorVision
-import logging
-import time
-from agents.utility.vision.vector_vision import VectorVision, end_goal
+from agents.pddl.pddl_files.pddl_parser import generate_pddl,write_problem_file
 
 
 class PDDLAgent(BaselineAgent):
@@ -38,7 +31,7 @@ class PDDLAgent(BaselineAgent):
         self.deg_step = deg_step
 
         # Override sim speed from 20
-        self.sim_speed = 10
+        self.sim_speed = 5
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
 
@@ -76,19 +69,21 @@ class PDDLAgent(BaselineAgent):
         BIRD_TYPES = [GameObjectType.REDBIRD, GameObjectType.YELLOWBIRD, GameObjectType.BLACKBIRD,
                       GameObjectType.WHITEBIRD, GameObjectType.BLUEBIRD]
         bird_id = 0
-        problem_data = list()
+        problem_data = dict()
         birds_types = vision.find_birds()
         for bird_type, birds in birds_types.items():
             for bird in birds:
-                problem_data.append({
-                    "bird_x": bird.X,
-                    "bird_y": bird.Y,
+                problem_data[f"bird_{bird_id}"] = {
+                    "x_bird": bird.X + min(bird.width, bird.height) / 2, #move to center
+                    "y_bird": bird.Y + min(bird.width, bird.height) / 2,
                     "bird_id": bird_id,
                     "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
-                    "bird_m": bird.width * bird.height,  # check this because it is not mandatory
-                    "bird_radius": min(bird.width, bird.height) / 2  # check this
+                    "m_bird": bird.width * bird.height,  # check this because it is not mandatory
+                    "bird_radius": min(bird.width, bird.height) / 2,  # check this
 
-                })
+                    # "bird_radius": 8,  # check this
+                    "v_bird": 80
+                }
             bird_id += 1
 
         # add pigs
@@ -96,11 +91,18 @@ class PDDLAgent(BaselineAgent):
         pig_id = 0
         pigs = vision.find_pigs_mbr()
         for pig in pigs:
-            problem_data.append({
-                "pig_x": pig.X,
-                "pig_y": pig.Y,
-                "pig_m": pig.width * pig.height,  # check this because it is not mandatory
+            problem_data[f"pig_{pig_id}"] = {
+                "x_pig": pig.X,
+                "y_pig": pig.Y,
+                "m_pig": pig.width * pig.height,  # check this because it is not mandatory
                 "pig_radius": min(pig.width, pig.height) / 2,  # check this
                 "pig_life": 1  # check
 
-            })
+            }
+            pig_id += 1
+
+        data_objects = list()
+        predicates = list()
+
+
+        write_problem_file('agents/pddl/pddl_files/problem.pddl',problem_data,5,0.2)

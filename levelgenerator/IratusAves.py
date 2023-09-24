@@ -16,8 +16,8 @@ number_levels = 10
 # Minimum and Maximum number of pigs
 # Number of pigs in a level is selected uniformly at random between these two values
 # Value will be reduced automatically if there is not enough space in the level
-minimum_number_pigs = 4
-maximum_number_pigs = 8
+minimum_number_pigs = 1
+maximum_number_pigs = 1
 
 # Precision for the values in the level file
 rounding_digits_file_write = 4
@@ -32,10 +32,10 @@ number_birds_weight = 1.0
 # E.g. increasing the value for number_blue_birds_weight to 2.0 will give the player twice as many blue birds as normal
 # These weights are all considered relative to each other, so increasing all values to 2.0 will make no difference.
 number_red_birds_weight = 1.0
-number_blue_birds_weight = 1.0
-number_yellow_birds_weight = 1.0
-number_black_birds_weight = 1.0
-number_white_birds_weight = 1.0
+number_blue_birds_weight = 0.0
+number_yellow_birds_weight = 0.0
+number_black_birds_weight = 0.0
+number_white_birds_weight = 0.0
 
 # Probability of selecting each block type when generating structures
 # Giving higher probabilities to larger blocks will reduce the average number of blocks in a structure, and vice versa.
@@ -47,6 +47,7 @@ probability_table_blocks = {'1':0.11870840863728756, '2':0.1114263927034903, '3'
                             '9':0.048982179880264536, '10':0.11503886132727455, '11':0.015224307126955784,
                             '12':0.15079620524923362, '13':0.02281128804929053}
 
+
 # Probability of selecting each material when selecting the material for a block
 # 1 = wood, 2 = ice, 3 = stone
 # The values for these probabilities are all considered relative to each other, so doubling all probabilities will make no difference.
@@ -54,24 +55,24 @@ probability_table_materials = {'1':0.4, '2':0.3, '3':0.3}
 
 # Defines local stability requirements (0 = nothing, 1 = edges or middle, 2 = edges only, 3 = edges and middle)
 # 0 and 1 may not result in a stable level, 2 guarantees a stable level, 3 gives VERY robust structures
-robustness = 2              
+robustness = 0
 
 # Maximum number of peaks a structure can have
 # Number of peaks for a structure is selected uniformly at random between one and this value
 # The value for this cannot go higher than 5
-max_peaks = 5               
+max_peaks = 0
 
 # Minimum and Maximum number of ground structures
 # Number of ground structures in a level is selected uniformly at random between these two values
-# Value will be reduced automatically if there is not enough space in the level
+# Value will be reduced automatically if there is .not enough space in the level
 minimum_number_ground_structures = 1
-maximum_number_ground_structures = 3
+maximum_number_ground_structures = 2
 
 # Minimum and Maximum number of platform structures
 # Number of platform structures in a level is selected uniformly at random between these two values
 # Value will be reduced automatically if there is not enough space in the level
 minimum_number_platform_structures = 0
-maximum_number_platform_structures = 2         
+maximum_number_platform_structures = 1
 
 # If additional non-rectangular blocks (i.e. circular and triangular blocks) should be placed on top of structures after they are generated
 additional_nonrectangular_blocks = True
@@ -80,7 +81,7 @@ additional_nonrectangular_blocks = True
 # Number of TNTs in a level is selected uniformly at random between these two values
 # Value will be reduced automatically if not enough valid locations are found
 minimum_number_TNT = 0
-maximum_number_TNT = 3
+maximum_number_TNT = 0
 
 # If slopes can be added to the generated level
 # Not all levels will necessarily contain slopes

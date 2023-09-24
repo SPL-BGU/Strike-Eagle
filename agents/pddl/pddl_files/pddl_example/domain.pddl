@@ -6,7 +6,6 @@
                 (bird_type ?b - bird) ;; BIRD TYPES: RED=0, YELLOW=1, BLACK=2, WHITE=3, BLUE=4 ;;
                 (bird_radius ?b - bird)
                 (bird_block_damage ?b - bird ?bl - block)
-
                 (gravity) (angle_rate) (angle) (active_bird) (ground_damper) (max_angle) (gravity_factor)  (min_angle)
                 (base_life_wood_multiplier) (base_life_ice_multiplier) (base_life_stone_multiplier) (base_life_tnt_multiplier)
                 (base_mass_wood_multiplier) (base_mass_ice_multiplier) (base_mass_stone_multiplier) (base_mass_tnt_multiplier)
@@ -70,7 +69,7 @@
             (< (angle) 81.5)
         )
         :effect (and
-            (assign (vy_bird ?b) (* (v_bird ?b) (/ (* (* 4 (angle)) (- 180 (angle))) (- 40500 (* (angle) (- 180 (angle)))) )  ) ) ;check calculations
+            (assign (vy_bird ?b) (* (v_bird ?b) (/ (* (* 4 (angle)) (- 180 (angle))) (- 40500 (* (angle) (- 180 (angle)))) )  ) )
             (assign (vx_bird ?b) (* (v_bird ?b) (- 1 (/ (* (* (angle) 0.0174533) (* (angle) 0.0174533) ) 2) ) ) )
             (bird_released ?b)
             (angle_adjusted)

@@ -55,7 +55,7 @@ class QuatzelAgent(BaselineAgent):
         # states
         self.n_states = len(vision.find_birds().keys())
         # actions
-        self.n_actions = get_n_degrees_possibilities(self.min_deg, self.max_deg, self.deg_step)
+        self.n_actions = get_n_degrees_possibilities((self.min_deg, self.max_deg), self.deg_step)
         # Set up the Q-table with all zeros
         self.Q = np.zeros([self.n_states, self.n_actions])
         current_state = 0  # start from the first bird
