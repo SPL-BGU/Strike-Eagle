@@ -74,15 +74,15 @@ class PDDLAgent(BaselineAgent):
         for bird_type, birds in birds_types.items():
             for bird in birds:
                 problem_data[f"bird_{bird_id}"] = {
-                    "x_bird": bird.X + min(bird.width, bird.height) / 2, #move to center
-                    "y_bird": bird.Y + min(bird.width, bird.height) / 2,
+                    "x_bird": bird.X + (min(bird.width, bird.height) / 2), #move to center
+                    "y_bird": 640 - bird.Y + min(bird.width, bird.height) / 2,
                     "bird_id": bird_id,
                     "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                     "m_bird": bird.width * bird.height,  # check this because it is not mandatory
                     "bird_radius": min(bird.width, bird.height) / 2,  # check this
 
                     # "bird_radius": 8,  # check this
-                    "v_bird": 80
+                    "v_bird": 175.9259
                 }
             bird_id += 1
 
@@ -92,8 +92,8 @@ class PDDLAgent(BaselineAgent):
         pigs = vision.find_pigs_mbr()
         for pig in pigs:
             problem_data[f"pig_{pig_id}"] = {
-                "x_pig": pig.X,
-                "y_pig": pig.Y,
+                "x_pig": pig.X + (min(pig.width, pig.height) / 2),
+                "y_pig": 640 - pig.Y + min(pig.width, pig.height) / 2,
                 "m_pig": pig.width * pig.height,  # check this because it is not mandatory
                 "pig_radius": min(pig.width, pig.height) / 2,  # check this
                 "pig_life": 1  # check
@@ -105,4 +105,4 @@ class PDDLAgent(BaselineAgent):
         predicates = list()
 
 
-        write_problem_file('agents/pddl/pddl_files/problem.pddl',problem_data,5,0.2)
+        write_problem_file('agents/pddl/pddl_files/problem.pddl',problem_data,0,0.2)

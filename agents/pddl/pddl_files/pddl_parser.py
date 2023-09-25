@@ -21,9 +21,10 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
     goals = list()
     initial_state= [
         f"(= (angle) {init_angle})",
+        f"(= (angle_rad) {0})",
         f"(= (angle_rate) {angel_rate})",
         f"(= (bounce_count) 0)",
-        f"(= (gravity) 10)",
+        f"(= (gravity) 87.2)",
         f"(= (active_bird) 0)"
     ]
     for object,object_data in problem_data.items():
