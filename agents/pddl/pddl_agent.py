@@ -3,6 +3,7 @@ import numpy as np
 import random
 from agents import BaselineAgent
 from agents.utility import GroundTruthType
+import subprocess
 import pddl
 from agents.utility.exceptions import *
 import pickle
@@ -14,7 +15,7 @@ from src.client.agent_client import AgentClient, GameState, RequestCodes
 from src.trajectory_planner.trajectory_planner import SimpleTrajectoryPlanner
 from src.computer_vision.GroundTruthReader import GroundTruthReader, NotVaildStateError
 from src.computer_vision.game_object import GameObjectType
-from agents.pddl.pddl_files.pddl_parser import generate_pddl,write_problem_file
+from agents.pddl.pddl_files.pddl_parser import generate_pddl,write_problem_file,parse_solution_to_actions
 
 
 class PDDLAgent(BaselineAgent):
@@ -51,11 +52,15 @@ class PDDLAgent(BaselineAgent):
         """
         ground_truth_type = GroundTruthType.ground_truth_screenshot
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
-
+        sling = vision.find_slingshot_mbr()[0]
+        ref = SimpleTrajectoryPlanner().get_reference_point(sling)
         # DEFINE PROBLEM
-        self.define_problem(vision)
+        actions = self.define_problem(vision,ref)
 
-    def define_problem(self, vision: GroundTruthReader):
+        for action,value in actions:
+            self.shoot_bird_by_angle(value, sling)
+
+    def define_problem(self, vision: GroundTruthReader,ref):
         """
         Formulate_image
         """
@@ -80,8 +85,6 @@ class PDDLAgent(BaselineAgent):
                     "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                     "m_bird": bird.width * bird.height,  # check this because it is not mandatory
                     "bird_radius": min(bird.width, bird.height) / 2,  # check this
-
-                    # "bird_radius": 8,  # check this
                     "v_bird": 175.9259
                 }
             bird_id += 1
@@ -101,8 +104,10 @@ class PDDLAgent(BaselineAgent):
             }
             pig_id += 1
 
-        data_objects = list()
-        predicates = list()
-
-
+        solution_path = 'agents/pddl/pddl_files/solution.pddl'
         write_problem_file('agents/pddl/pddl_files/problem.pddl',problem_data,0,0.2)
+        os.chdir('agents/pddl/pddl_files/')
+        subprocess.call(['java','-jar', 'enhsp-20.jar','-o','domain.pddl','-f','problem.pddl','-sp','solution.pddl'])
+        os.chdir('../../..')
+        actions = parse_solution_to_actions(solution_path,0,0.2)
+        return actions

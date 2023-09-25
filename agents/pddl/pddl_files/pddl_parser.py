@@ -44,3 +44,18 @@ def write_problem_file(path:str, problem_data:dict,init_angle,angel_rate):
     problem = problem_template.substitute({"objects":objects, "initial":initial_state, "goal": goals })
     with open(path,'w') as file:
         file.write(problem)
+
+
+def action_filter(line):
+    return 'pa-twang' in line
+
+def parse_action(line,init_angle,angel_rate):
+    n = float(line.split(':')[0])
+    return 'shoot', n*angel_rate+init_angle
+
+def parse_solution_to_actions(solution_path:str,init_angle,angel_rate):
+    with open(solution_path) as solution_file:
+        lines = solution_file.readlines()
+        actions = list(filter(action_filter,lines))
+        actions = list(map(lambda l: parse_action(l,init_angle,angel_rate),actions))
+        return actions
