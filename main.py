@@ -30,11 +30,11 @@ class AgentThread(threading.Thread):
         -------
 
         """
-        agent = na.ClientNaiveAgent(self.agent_ind,self.agent_configs)
+        #agent = na.ClientNaiveAgent(self.agent_ind,self.agent_configs)
         #agent = QuatzelAgent(self.agent_ind, self.agent_configs)
         # agent = OwlerAgent(self.agent_ind, self.agent_configs)
 
-        #agent = PDDLAgent(self.agent_ind, self.agent_configs)
+        agent = PDDLAgent(self.agent_ind, self.agent_configs)
         agent.run()
 
 
