@@ -1,0 +1,51 @@
+(define (problem sample_problem)
+    (:domain angry_birds_scaled)
+    (:objects
+        bird_0 - bird
+pig_0 - pig
+block_0 - block
+platform_0 - platform
+    )
+    (:init
+        (= (angle) 0)
+(= (angle_rad) 0)
+(= (angle_rate) 0.2)
+(= (cosine) 1 )
+(= (sinus) 0 )
+(= (bounce_count) 0)
+(= (gravity) 87.2)
+(= (active_bird) 0)
+(= (ground_y_damper) 0.1)(= (ground_x_damper) 0.5)
+(= (x_bird bird_0) 97)
+(= (y_bird bird_0) 34)
+(= (bird_id bird_0) 0)
+(= (bird_type bird_0) 0)
+(= (m_bird bird_0) 56)
+(= (bird_radius bird_0) 3.5)
+(= (v_bird bird_0) 175.9259)
+(= (bounce_count bird_0) 0)
+(= (bird_block_damage bird_0 block_0) 0.01)
+(= (x_pig pig_0) 235.5)
+(= (y_pig pig_0) 93)
+(= (m_pig pig_0) 56)
+(= (pig_radius pig_0) 3.5)
+(= (pig_life pig_0) 1)
+(= (x_block block_0) 329.0)
+(= (y_block block_0) 5.0)
+(= (block_width block_0) 8)
+(= (block_height block_0) 8)
+(= (block_life block_0) 0.75)
+(= (block_mass block_0) 24.0)
+(= (block_stability block_0) 1)
+(= (x_platform platform_0) 235.5)
+(= (y_platform platform_0) 83.0)
+(= (platform_width platform_0) 61)
+(= (platform_height platform_0) 6)
+    )
+    (:goal
+        ; Define your goal conditions here
+        (and
+            (pig_dead pig_0)
+        )
+    )
+)

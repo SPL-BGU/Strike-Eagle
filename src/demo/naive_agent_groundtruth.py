@@ -94,7 +94,7 @@ class ClientNaiveAgent(Thread):
         self.first_shot = True
         self.prev_target = None
         self.novelty_existence = -1;
-        self.sim_speed = 20
+        self.sim_speed = 5
         self.prev_gt = None
         self.repeated_gt_counter = 0
         self.gt_patient = 10
@@ -481,6 +481,7 @@ class ClientNaiveAgent(Thread):
                     self.logger.info("the target is not reachable directly with the birds")
                     self.logger.info("just shoot...")
                     release_point = Point2D(-100,450)
+                    release_point = Point2D(-100,450)
 
 
                 elif len(pts) == 1:
@@ -490,9 +491,9 @@ class ClientNaiveAgent(Thread):
                     # randomly choose between the trajectories, with a 1 in
                     # 6 chance of choosing the high one
                     if random.randint(0,5) == 0:
-                        release_point = pts[1]
+                        release_point = pts[0]
                     else:
-                        release_point = pts[1]
+                        release_point = pts[0]
 
                 ref_point = self.tp.get_reference_point(sling)
 

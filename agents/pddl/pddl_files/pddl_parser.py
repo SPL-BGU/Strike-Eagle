@@ -21,11 +21,15 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
     goals = list()
     initial_state= [
         f"(= (angle) {init_angle})",
-        f"(= (angle_rad) {0})",
+        f"(= (angle_rad) {init_angle})",
         f"(= (angle_rate) {angel_rate})",
+        "(= (cosine) 1 )",
+        "(= (sinus) 0 )",
         f"(= (bounce_count) 0)",
         f"(= (gravity) 87.2)",
-        f"(= (active_bird) 0)"
+        f"(= (active_bird) 0)",
+        f"(= (ground_y_damper) 0.1)"
+        f"(= (ground_x_damper) 0.5)"
     ]
     for object,object_data in problem_data.items():
         objects.append(f"{object} - {object.split('_')[0]}")
@@ -33,6 +37,11 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
             goals.append(f"(pig_dead {object})")
         for pred, val in object_data.items():
             initial_state.append(f"(= ({pred} {object}) {val})")
+        # relations
+        for other_object in problem_data:
+            if 'bird' in object and 'block' in other_object:
+                initial_state.append(f'(= (bird_block_damage {object} {other_object}) 0.01)')
+
     objects_str = "\n".join(objects)
     goals_str = "\n".join(goals)
     initial_state_str = "\n".join(initial_state)
