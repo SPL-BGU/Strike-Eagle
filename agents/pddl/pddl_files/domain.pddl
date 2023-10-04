@@ -331,10 +331,10 @@
             (> (v_bird ?b) 0)
 
 
-            (<= (- (x_bird ?b) (* (bird_radius ?b) 1.2)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (x_bird ?b) (* (bird_radius ?b) 1.2)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (y_bird ?b) (* (bird_radius ?b) 1.2)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            (<= (- (y_bird ?b) (* (bird_radius ?b) 1.2)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (<= (- (x_bird ?b)  (* (bird_radius ?b) 0.6)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
+            (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.2)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
+            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 1.2)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (<= (- (y_bird ?b)  (* (bird_radius ?b) 0.6)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
         )
         :effect (and
             (assign (v_bird ?b) 0)
