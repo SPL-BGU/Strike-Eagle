@@ -492,7 +492,7 @@ class ClientNaiveAgent(Thread):
                     if random.randint(0,5) == 0:
                         release_point = pts[1]
                     else:
-                        release_point = pts[0]
+                        release_point = pts[1]
 
                 ref_point = self.tp.get_reference_point(sling)
 
@@ -563,7 +563,6 @@ class ClientNaiveAgent(Thread):
                             print(hint)    
                             hint = self.ar.get_novelty_hint(3)
                             print(hint)
-
                             #self.ar.get_initial_state_screenshot()
                             batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, tap_time, 1, 0)
                             #save batch gt for debugging

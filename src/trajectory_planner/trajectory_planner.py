@@ -65,6 +65,7 @@ class SimpleTrajectoryPlanner:
     def estimate_launch_point(self, slingshot, targetPoint):
         # calculate relative position of the target (normalised)
         scale = self.get_scene_scale(slingshot)
+        print(scale)
         #print ('scale ', scale)
         #System.out.println("scale " + scale)
         ref = self.get_reference_point(slingshot)
@@ -73,9 +74,11 @@ class SimpleTrajectoryPlanner:
 
         #gravity
         g = 0.48*9.81 / self.scale_factor * scale
-
+        print(f"g -{g}")
         #launch speed
         v = self._velocity * scale
+        print(f"g -{v}")
+
 #        print ('launch speed ', v)
         pts = []
 

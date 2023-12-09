@@ -4,6 +4,7 @@ import src.demo.naive_agent_groundtruth as na
 from agents import BirdsInBoots
 from agents.quatzel.quatzel_agent import QuatzelAgent
 from agents.owler.owler_agent import OwlerAgent
+from agents.pddl.pddl_agent import PDDLAgent
 
 import argparse
 import json
@@ -31,7 +32,9 @@ class AgentThread(threading.Thread):
         """
         #agent = na.ClientNaiveAgent(self.agent_ind,self.agent_configs)
         #agent = QuatzelAgent(self.agent_ind, self.agent_configs)
-        agent = OwlerAgent(self.agent_ind, self.agent_configs)
+        # agent = OwlerAgent(self.agent_ind, self.agent_configs)
+
+        agent = PDDLAgent(self.agent_ind, self.agent_configs)
         agent.run()
 
 
