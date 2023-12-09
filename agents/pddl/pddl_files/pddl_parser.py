@@ -1,4 +1,7 @@
 from string import Template
+
+import numpy as np
+
 problem_template= Template("""(define (problem sample_problem)
     (:domain angry_birds_scaled)
     (:objects
@@ -20,11 +23,11 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
     objects = list()
     goals = list()
     initial_state= [
-        f"(= (angle) {init_angle})",
-        f"(= (angle_rad) {init_angle})",
+        f"(= (angle) 90)",
+        f"(= (angle_rad) {np.pi/2})",
         f"(= (angle_rate) {angel_rate})",
-        "(= (cosine) 1 )",
-        "(= (sinus) 0 )",
+        "(= (cosine) 0 )",
+        "(= (sinus) 1 )",
         f"(= (bounce_count) 0)",
         f"(= (gravity) 87.2)",
         f"(= (active_bird) 0)",
@@ -60,7 +63,7 @@ def action_filter(line):
 
 def parse_action(line,init_angle,angel_rate):
     n = float(line.split(':')[0])
-    return 'shoot', n*angel_rate+init_angle
+    return 'shoot', 90-n*angel_rate
 
 def parse_solution_to_actions(solution_path:str,init_angle,angel_rate):
     with open(solution_path) as solution_file:

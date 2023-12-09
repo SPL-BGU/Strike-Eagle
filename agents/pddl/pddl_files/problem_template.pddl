@@ -8,7 +8,7 @@
     )
     (:goal
         ; Define your goal conditions here
-        (and
+        (or
             $goal
         )
     )

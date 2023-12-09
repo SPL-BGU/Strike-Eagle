@@ -37,7 +37,7 @@ def get_pigs(vision, sling, tp):
         # TODO change computer_vision.cv_utils.Rectangle
         # to be more intuitive
         problem_data[f"pig_{pig_id}"] = {
-            "x_pig": pig.X + pig.width / 2,
+            "x_pig": pig.X + pig.width,
             "y_pig": 640 - pig.Y - 354,
             # "y_pig": 640 - pig.Y - 354 - pig.height / 2,
             "m_pig": pig.width * pig.height,  # check this because it is not mandatory
@@ -64,6 +64,12 @@ def get_blocks(vision, sling, tp):
             'mass_coef': 0.375,
             'multi': 0.5
         },
+        'TNT': {
+            'life': 0.75,
+            'mass_coef': 0.375,
+            'multi': 0.5
+        },
+
         'stone': {
             'life': 1.2,
             'mass_coef': 0.375,
@@ -73,6 +79,8 @@ def get_blocks(vision, sling, tp):
     problem_data = dict()
 
     block_id = 0
+    if not block_types:
+        return {}
     for block_type, blocks in block_types.items():
         for block in blocks:
             problem_data[f"block_{block_id}"] = {
@@ -95,6 +103,8 @@ def get_platforms(vision: GroundTruthReader, sling, tp):
     platform_id = 0
     problem_data = dict()
     platforms = vision.find_hill_mbr() #this how do they call platforms apperently
+    if not platforms:
+        return {}
     for platform in platforms:
         # to be more intuitive
         platform.width,platform.height = platform.height, platform.width

@@ -95,7 +95,7 @@ class PDDLAgent(BaselineAgent):
         write_problem_file('agents/pddl/pddl_files/problem.pddl', problem_data,0, 0.2)
         os.chdir('agents/pddl/pddl_files/')
         subprocess.call(
-            ['java', '-jar', 'enhsp-20.jar', '-o', 'domain.pddl', '-f', 'problem.pddl', '-sp', 'solution.pddl'])
+            ['java', '-jar', 'enhsp-20.jar', '-o', 'domain.pddl', '-f', 'problem.pddl', '-sp', 'solution.pddl','-planner','sat'])
         os.chdir('../../..')
         actions = parse_solution_to_actions(solution_path, 0, 0.2)
         return actions

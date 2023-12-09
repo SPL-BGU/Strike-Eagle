@@ -39,13 +39,51 @@
             (= (active_bird) (bird_id ?b))
             (not (bird_released ?b))
             (not (angle_adjusted))
-            (< (angle) 85)
+            (<= (angle) 90)
             (>= (angle) 0)
         )
         :effect (and
-            (increase (angle) (* #t (angle_rate)))
-            (assign (angle_rad) (* (angle)  0.017453292))
-            (assign (cosine) (+ (- 1 (/ (* (angle_rad) (angle_rad)) 2)) (/ (* (* (* (angle_rad) (angle_rad)) (angle_rad)) (angle_rad)) 24)))
+            (decrease (angle) (* #t (angle_rate)))
+            (assign (angle_rad) (* (angle)  0.01745329252))
+            ;(assign (cosine) (- (+ (- 1 (/ (* (angle_rad) (angle_rad)) 2)) (/ (* (* (* (angle_rad) (angle_rad)) (angle_rad)) (angle_rad)) 24))))
+            (
+	assign
+	(cosine)
+    (
+		-
+		(
+			+
+			(
+				-
+				1
+				(/ (* (angle_rad) (angle_rad)) 2)
+			)
+			(/ (* (* (* (angle_rad) (angle_rad)) (angle_rad)) (angle_rad)) 24)
+		)
+		(
+			/
+			(
+				*
+				(
+					*
+					(
+						*
+						(
+							*
+							(angle_rad)
+							(angle_rad)
+						)
+						(angle_rad)
+					)
+					(angle_rad)
+				)
+				(angle_rad)
+			)
+			1944
+		)
+	)
+)
+
             (assign (sinus) (+ (- (angle_rad) (/ (* (* (angle_rad) (angle_rad) ) (angle_rad) ) 6 ) ) (/ (* (* (* (* (angle_rad) (angle_rad) ) (angle_rad) ) (angle_rad) ) (angle_rad) ) 120 ) ) )
 
         )
@@ -79,8 +117,8 @@
         :effect (and
             (assign (vx_bird ?b) (* (v_bird ?b) (cosine) ) ); this is a cos(angle) estimation
             (assign (vy_bird ?b) (* (v_bird ?b) (sinus) ) )
-            (decrease (x_bird ?b) (* 15.6 (cosine)))
-            (decrease (y_bird ?b) (* 15.6 (sinus)))
+            ;(decrease (x_bird ?b) (* 15.6 (cosine)))
+            ;(decrease (y_bird ?b) (* 10 (sinus)))
 
             (bird_released ?b)
             (angle_adjusted)

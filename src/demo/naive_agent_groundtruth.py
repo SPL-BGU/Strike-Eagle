@@ -94,7 +94,7 @@ class ClientNaiveAgent(Thread):
         self.first_shot = True
         self.prev_target = None
         self.novelty_existence = -1;
-        self.sim_speed = 5
+        self.sim_speed = 10
         self.prev_gt = None
         self.repeated_gt_counter = 0
         self.gt_patient = 10
@@ -493,7 +493,7 @@ class ClientNaiveAgent(Thread):
                     if random.randint(0,5) == 0:
                         release_point = pts[0]
                     else:
-                        release_point = pts[0]
+                        release_point = pts[1]
 
                 ref_point = self.tp.get_reference_point(sling)
 
