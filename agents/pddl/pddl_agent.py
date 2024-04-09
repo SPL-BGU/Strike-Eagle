@@ -4,6 +4,7 @@ import time
 import numpy as np
 import random
 from agents import BaselineAgent
+from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
 from agents.utility import GroundTruthType
 import subprocess
 import pddl
@@ -58,13 +59,14 @@ class PDDLAgent(BaselineAgent):
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
         # DEFINE PROBLEM
-        actions = self.define_problem(vision)
+        actions = self.define_problem()
         for action, value in actions:
             release_point = self.tp.find_release_point(sling, value * np.pi / 180)
             batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
-            time.sleep(2)
+            time.sleep(5)
+            x=0
 
-    def define_problem(self, vision: GroundTruthReader):
+    def define_problem(self, ):
         """
         Formulate_image
         """
@@ -72,56 +74,28 @@ class PDDLAgent(BaselineAgent):
         initial_angle = self.min_deg
         angle_rate = self.deg_step
         ground_truth_type = GroundTruthType.ground_truth_screenshot
+        time.sleep(1)
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
         sling = vision.find_slingshot_mbr()[0]
+        sling.width, sling.height = sling.height,sling.width
 
-        # Define birds
-        BIRD_TYPES = [GameObjectType.REDBIRD, GameObjectType.YELLOWBIRD, GameObjectType.BLACKBIRD,
-                      GameObjectType.WHITEBIRD, GameObjectType.BLUEBIRD]
-        bird_id = 0
-        problem_data = dict()
-        birds_types = vision.find_birds()
+        bird_objects = get_birds(vision,sling,self.tp)
 
-        # Get ref
+        pigs_objects = get_pigs(vision,sling,self.tp)
 
-        for bird_type, birds in birds_types.items():
-            for bird in birds:
-                problem_data[f"bird_{bird_id}"] = {
-                    "x_bird": bird.X + (min(bird.width, bird.height) / 2),  # move to center
-                    "y_bird": 640 - bird.Y + min(bird.width, bird.height) / 2,
-                    "bird_id": bird_id,
-                    "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
-                    "m_bird": bird.width * bird.height,  # check this because it is not mandatory
-                    "bird_radius": min(bird.width, bird.height) / 2,  # check this
-                    "v_bird": 175.9259
-                    # "v_bird": 190.5
-                }
-            bird_id += 1
+        block_objects = get_blocks(vision,sling,self.tp)
 
-        # add pigs
+        platform_objects = get_platforms(vision,sling,self.tp)
 
-        pig_id = 0
-        pigs = vision.find_pigs_mbr()
-        for pig in pigs:
-            temp_pt = pig.get_centre_point()
 
-            # TODO change computer_vision.cv_utils.Rectangle
-            # to be more intuitive
-            problem_data[f"pig_{pig_id}"] = {
-                "x_pig": pig.X + min(pig.width, pig.height) / 2,
-                "y_pig": 640 - pig.Y + min(pig.width, pig.height) / 2,
-                "m_pig": pig.width * pig.height,  # check this because it is not mandatory
-                "pig_radius": min(pig.width, pig.height) / 2,  # check this
-                "pig_life": 1  # check
+        problem_data = bird_objects | pigs_objects | block_objects | platform_objects
 
-            }
-            pig_id += 1
 
         solution_path = 'agents/pddl/pddl_files/solution.pddl'
-        write_problem_file('agents/pddl/pddl_files/problem.pddl', problem_data, 0, 0.2)
+        write_problem_file('agents/pddl/pddl_files/problem.pddl', problem_data,0, 0.2)
         os.chdir('agents/pddl/pddl_files/')
         subprocess.call(
-            ['java', '-jar', 'enhsp-20.jar', '-o', 'domain.pddl', '-f', 'problem.pddl', '-sp', 'solution.pddl'])
+            ['java', '-jar', 'enhsp-20.jar', '-o', 'domain.pddl', '-f', 'problem.pddl', '-sp', 'solution.pddl','-planner','sat'])
         os.chdir('../../..')
         actions = parse_solution_to_actions(solution_path, 0, 0.2)
         return actions

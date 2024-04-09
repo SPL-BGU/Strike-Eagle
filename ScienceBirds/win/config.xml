@@ -5,8 +5,8 @@
     <trial id="0" number_of_executions="1" checkpoint_time_limit="200" checkpoint_interaction_limit="200" notify_novelty="True">
       <game_level_set mode="training" time_limit="2760" total_interaction_limit="60000" attempt_limit_per_level="20" allow_level_selection="True">
         
-		<game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00001_1_0_1_38exp.xml"/>
-        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00001_1_0_1_38.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00002_1_0_1_38exp.xml"/>
+        <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type24/Levels/00001_1_4_2_38.xml"/>
         <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00001_1_0_1_38.xml"/>
         <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00001_1_0_1_38.xml"/>
         <game_levels level_path="./9001_Data/StreamingAssets/Levels/novelty_level_38/type10/Levels/00001_1_0_1_38.xml"/>

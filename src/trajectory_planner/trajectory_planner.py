@@ -100,7 +100,6 @@ class SimpleTrajectoryPlanner:
         theta_2 = acos(cos_theta_2) + distance_between * 0.00005 #compensate the rounding error
         pts.append(self.find_release_point(slingshot, theta_1))
         pts.append(self.find_release_point(slingshot, theta_2))
-
         return pts
 
     def get_release_angle(self, sling, release_point ):
