@@ -29,7 +29,8 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
         "(= (cosine) 0 )",
         "(= (sinus) 1 )",
         f"(= (bounce_count) 0)",
-        f"(= (gravity) 87.2)",
+        # should be 87.2
+        f"(= (gravity) 60)",
         f"(= (active_bird) 0)",
         f"(= (ground_y_damper) 0.1)"
         f"(= (ground_x_damper) 0.5)"
