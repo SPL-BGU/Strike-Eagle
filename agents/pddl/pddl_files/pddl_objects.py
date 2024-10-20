@@ -13,7 +13,7 @@ def get_birds(vision, sling, tp):
         for bird in birds:
             problem_data[f"bird_{bird_id}"] = {
                 "x_bird": ref.X,
-                "y_bird": 640 - 354 - ref.Y,
+                "y_bird": 640 - ref.Y,
                 "bird_id": bird_id,
                 "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                 "m_bird": bird.width * bird.height,  # check this because it is not mandatory
@@ -39,7 +39,7 @@ def get_pigs(vision, sling, tp):
         problem_data[f"pig_{pig_id}"] = {
             "x_pig": pig.X + pig.width,
             # "y_pig": 640 - pig.Y - 354,
-            "y_pig": 640 - pig.Y - 354 - pig.height / 2,
+            "y_pig": 640 - pig.Y - pig.height / 2,
             "m_pig": pig.width * pig.height,  # check this because it is not mandatory
             "pig_radius": min(pig.width, pig.height) / 2,  # check this
             "pig_life": 1  # check
@@ -85,7 +85,7 @@ def get_blocks(vision, sling, tp):
         for block in blocks:
             problem_data[f"block_{block_id}"] = {
                 "x_block": block.X + block.width / 2,
-                "y_block": 640 - block.Y - 354  - block.height / 2,
+                "y_block": 640 - block.Y - block.height / 2,
                 "block_width": block.width,
                 "block_height": block.height,
                 "block_life": blocks_data[block_type]['life'] * blocks_data[block_type]['multi'],
@@ -110,7 +110,7 @@ def get_platforms(vision: GroundTruthReader, sling, tp):
         platform.width,platform.height = platform.height, platform.width
         problem_data[f"platform_{platform_id}"] = {
             "x_platform": platform.X + platform.width/2,
-            "y_platform": 640 - platform.Y - 354 - platform.height / 2,
+            "y_platform": 640 - platform.Y - platform.height / 2,
             "platform_width": platform.width, # objects get mixed
             "platform_height": platform.height
 

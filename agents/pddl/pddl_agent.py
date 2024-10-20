@@ -2,6 +2,7 @@ import os.path
 import time
 
 import numpy as np
+import math
 from numpy.polynomial.polynomial import Polynomial
 from scipy.optimize import minimize
 from sklearn.model_selection import GridSearchCV

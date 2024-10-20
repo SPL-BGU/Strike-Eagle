@@ -51,6 +51,8 @@ def construct_trajectory(
     angle_rad = angle / 180 * math.pi
     vx = agent_world_model.v_bird * math.cos(angle_rad)  # consider use the cos usage
     vy = agent_world_model.v_bird * math.sin(angle_rad)
+    vx = agent_world_model.v_bird * agent_world_model.taylor_cos(angle_rad,3)  # consider use the cos usage
+    vy = agent_world_model.v_bird * agent_world_model.taylor_sin(angle_rad,3)
     trajectory = np.reshape(starting_point, [1, 2])
     for i in range(1, frames):
         trajectory = np.vstack([
