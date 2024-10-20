@@ -2,6 +2,8 @@ from string import Template
 
 import numpy as np
 
+from agents.pddl.pddl_files.world_model import WorldModel
+
 problem_template= Template("""(define (problem sample_problem)
     (:domain angry_birds_scaled)
     (:objects
@@ -19,7 +21,7 @@ problem_template= Template("""(define (problem sample_problem)
 )
 """)
 
-def generate_pddl(problem_data: dict,init_angle,angel_rate):
+def generate_pddl(problem_data: dict,init_angle,angel_rate,world_model:WorldModel):
     objects = list()
     goals = list()
     initial_state= [
@@ -29,8 +31,7 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
         "(= (cosine) 0 )",
         "(= (sinus) 1 )",
         f"(= (bounce_count) 0)",
-        # should be 87.2
-        f"(= (gravity) 60)",
+        f"(= (gravity) {world_model.gravity})",
         f"(= (active_bird) 0)",
         f"(= (ground_y_damper) 0.1)"
         f"(= (ground_x_damper) 0.5)"
@@ -52,8 +53,8 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate):
     return objects_str, initial_state_str, goals_str
 
 
-def write_problem_file(path:str, problem_data:dict,init_angle,angel_rate):
-    objects, initial_state, goals = generate_pddl(problem_data,init_angle,angel_rate)
+def write_problem_file(path:str, problem_data:dict,init_angle:float,angel_rate:float, world_model:WorldModel):
+    objects, initial_state, goals = generate_pddl(problem_data,init_angle,angel_rate,world_model)
     problem = problem_template.substitute({"objects":objects, "initial":initial_state, "goal": goals })
     with open(path,'w') as file:
         file.write(problem)

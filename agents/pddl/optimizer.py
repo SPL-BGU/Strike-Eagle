@@ -1,46 +1,28 @@
 import numpy as np
-from scipy.optimize import minimize
-from scipy.optimize import curve_fit
+
+from agents.pddl.pddl_files.world_model import WorldModel
 
 
-def solve_difference(theta,observed_traj, estimated_traj):
-    # Sample time points and unknown trajectory
-    t_values = np.arange(300)
+def gridsearch(initial_value,delta,params,world_model : WorldModel):
+    # Given true data for testing
+    true_distance = 100  # in meters
+    initial_velocity = 0  # assuming object starts from rest
+    time_of_fall = 4.5  # seconds
+    g_vlaues = np.linspace(world_model.gravity)
+    # Define the range of gravity values to search over
+    g_values = np.linspace(world_model.gravity - delta , world_model.gravity + delta, 100)
 
-    # Initial guess for the parameters of the known equation
-    x0 = estimated_traj[0][0]
-    y0 = estimated_traj[0][1]
-    v = 175.9259
-    g_init = 60
+    best_g = None
+    min_error = float('inf')
 
-    params = [x0, y0, v, theta,estimated_traj]
-    # Optimize using SciPy's minimize function
-    result = minimize(
-        objective_function,
-        g_init,
-        args=(params, t_values, observed_traj), method='BFGS'
-    )
-    # The optimized parameters
-    optimized_params = result.x
-    print("Optimized parameters:", optimized_params)
+    # Grid search loop
+    for g in g_values:
+        predicted_distance = simulate_motion(g, initial_velocity, time_of_fall)
+        error = calculate_error(true_distance, predicted_distance)
 
+        if error < min_error:
+            min_error = error
+            best_g = g
 
-def model_equation(g, params, t):
-    x0, y0, v, theta,_ = params
-    x = x0 + v * np.cos(theta) * t/100
-    y = y0 + v * np.sin(theta) * t/100 - g * .5 * (t/100) ** 2  # estimated gravity
-    return polynomial(x,*curve_fit(polynomial,x,y)[0])
-
-
-def y_equation(g,params,t):
-    x0, y0, v, theta, _ = params
-    y = y0 + v * np.sin(theta) * t / 100 - g * .5 * (t / 100) ** 2  # estimated gravity
-    return y
-
-def polynomial(x, a, b, c):
-    return a * x**2 + b * x + c
-
-def objective_function(gravity, params, t, observed_traj):
-    funced_model_traj = model_equation(gravity, params, t)
-    funced_observed_traj = polynomial(observed_traj[:,0],*curve_fit(polynomial,observed_traj[:,0],observed_traj[:,1])[0])
-    return np.sum((funced_model_traj - funced_observed_traj)**2)  # Sum of squared errors
+    print(f"Best estimate for gravity: {best_g}")
+    print(f"Minimum error: {min_error}")
