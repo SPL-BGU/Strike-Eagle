@@ -13,7 +13,9 @@ def get_birds(vision, sling, tp):
         for bird in birds:
             problem_data[f"bird_{bird_id}"] = {
                 "x_bird": ref.X,
+                # "x_bird": 89,
                 "y_bird": 640 - ref.Y,
+                # "y_bird": 377,
                 "bird_id": bird_id,
                 "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                 "m_bird": bird.width * bird.height,  # check this because it is not mandatory

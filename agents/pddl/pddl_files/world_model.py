@@ -5,14 +5,19 @@ class WorldModel:
 
 
     # should be 87.2
-    gravity =None
+    gravity = 87.2
     v_bird = 175.9259
 
     def __init__(self,
                  # should be 87.2
-                 gravity=87.2
+                 gravity=100,
+                v_bird = 175.9259
                  ):
         self.gravity = gravity
+        self.v_bird = v_bird
+
+
+
 
     def taylor_sin(self,x, n_terms=10):
         series_sum = 0

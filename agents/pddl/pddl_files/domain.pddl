@@ -70,7 +70,11 @@
 						*
 						(
 							*
-							(angle_rad)
+							(
+							    *
+							    (angle_rad)
+							    (angle_rad)
+							)
 							(angle_rad)
 						)
 						(angle_rad)
@@ -79,7 +83,7 @@
 				)
 				(angle_rad)
 			)
-			1944
+			720
 		)
 	)
 )

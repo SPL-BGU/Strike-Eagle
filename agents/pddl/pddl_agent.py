@@ -74,17 +74,24 @@ class PDDLAgent(BaselineAgent):
             # plt.axis('equal')  # Equal scaling for x and y axes
             # plt.show()
 
-            delta = 20 # use delta as a percentage
+            delta = .1 # use delta as a percentage
 
-            g_values = np.linspace(self.world_model.gravity - delta,
-                                   self.world_model.gravity + delta, 100)
+            g_values = np.linspace(self.world_model.gravity*(1-delta),
+                                   self.world_model.gravity*(1+delta), 20)
 
-            predicated_trajectories_over_g = [
-                construct_trajectory(observed_trajectory[0],angle,WorldModel(g))[:frames]for g in g_values
+            v_values = np.linspace(self.world_model.v_bird * (1 - delta),
+                                   self.world_model.v_bird * (1 + delta), 20)
+
+            grid_values= np.stack(np.meshgrid(g_values, v_values)).T
+            grid_values = grid_values.reshape(-1, grid_values.shape[-1])
+
+
+            predicated_trajectories_over_grid = [
+                construct_trajectory(observed_trajectory[0],angle,WorldModel(gravity=g,v_bird=v),prt=False)[:frames]for g,v in grid_values
             ]
 
-            predicated_trajectories_over_g_polynoms = [
-                Polynomial.fit(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 2) for estimated_trajectory in predicated_trajectories_over_g
+            predicated_trajectories_over_grid_polynoms = [
+                Polynomial.fit(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 2) for estimated_trajectory in predicated_trajectories_over_grid
             ]
 
             def calculate_error(observed, estimated):
@@ -97,14 +104,14 @@ class PDDLAgent(BaselineAgent):
                                        domain[1], 100)
                 return np.average(np.abs(observed(values) - estimated(values))) # average cancel not matching size domain comparision
 
-            errors = [calculate_error(observed_trajectory_polynom, predicated_trajectory_polynom) for predicated_trajectory_polynom in predicated_trajectories_over_g_polynoms]
+            errors = [calculate_error(observed_trajectory_polynom, predicated_trajectory_polynom) for predicated_trajectory_polynom in predicated_trajectories_over_grid_polynoms]
             actual_g_index = np.argmin(errors)
-            g_new_value = g_values[actual_g_index]
+            # g_new_value = g_values[actual_g_index]
 
             # visual
             plt.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], marker='o', color='blue')
             plt.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], marker='x', color='red')
-            plt.plot(predicated_trajectories_over_g[actual_g_index][:, 0], predicated_trajectories_over_g[actual_g_index][:, 1], marker='.', color='green')
+            plt.plot(predicated_trajectories_over_grid[actual_g_index][:, 0], predicated_trajectories_over_grid[actual_g_index][:, 1], marker='.', color='green')
             plt.axis('equal')  # Equal scaling for x and y axes
             plt.show()
 
@@ -113,7 +120,8 @@ class PDDLAgent(BaselineAgent):
             #     visualize_trajectory(self.model, self.target_class, batch_gt)
 
             # Update world model
-            self.world_model.gravity = g_new_value
+            # self.world_model.gravity = g_new_value
+            self.world_model = WorldModel(*grid_values[actual_g_index])
             time.sleep(5)
             x = 0
 

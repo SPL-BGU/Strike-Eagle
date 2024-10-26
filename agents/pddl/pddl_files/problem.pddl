@@ -2,7 +2,6 @@
     (:domain angry_birds_scaled)
     (:objects
         bird_0 - bird
-bird_1 - bird
 pig_0 - pig
     )
     (:init
@@ -12,7 +11,7 @@ pig_0 - pig
 (= (cosine) 0 )
 (= (sinus) 1 )
 (= (bounce_count) 0)
-(= (gravity) 87.2)
+(= (gravity) 100)
 (= (active_bird) 0)
 (= (ground_y_damper) 0.1)(= (ground_x_damper) 0.5)
 (= (x_bird bird_0) 97)
@@ -23,16 +22,8 @@ pig_0 - pig
 (= (bird_radius bird_0) 3.5)
 (= (v_bird bird_0) 175.9259)
 (= (bounce_count bird_0) 0)
-(= (x_bird bird_1) 97)
-(= (y_bird bird_1) 388)
-(= (bird_id bird_1) 1)
-(= (bird_type bird_1) 0)
-(= (m_bird bird_1) 56)
-(= (bird_radius bird_1) 3.5)
-(= (v_bird bird_1) 175.9259)
-(= (bounce_count bird_1) 0)
-(= (x_pig pig_0) 344)
-(= (y_pig pig_0) 356.5)
+(= (x_pig pig_0) 345)
+(= (y_pig pig_0) 357.5)
 (= (m_pig pig_0) 63)
 (= (pig_radius pig_0) 3.5)
 (= (pig_life pig_0) 1)
