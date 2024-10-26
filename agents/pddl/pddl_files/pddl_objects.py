@@ -1,8 +1,9 @@
+from agents.pddl.pddl_files.world_model import WorldModel
 from src.computer_vision.GroundTruthReader import GroundTruthReader
 from src.computer_vision.game_object import GameObjectType
 
 
-def get_birds(vision, sling, tp):
+def get_birds(vision, sling, tp,agent_world_model: WorldModel):
     BIRD_TYPES = [GameObjectType.REDBIRD, GameObjectType.YELLOWBIRD, GameObjectType.BLACKBIRD,
                   GameObjectType.WHITEBIRD, GameObjectType.BLUEBIRD]
     bird_id = 0
@@ -20,7 +21,7 @@ def get_birds(vision, sling, tp):
                 "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                 "m_bird": bird.width * bird.height,  # check this because it is not mandatory
                 "bird_radius": min(bird.width, bird.height) / 2,  # check this
-                "v_bird": 175.9259,
+                "v_bird": agent_world_model.v_bird,
                 "bounce_count": 0,
 
                 # "v_bird": 190.5

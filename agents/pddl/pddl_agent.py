@@ -138,7 +138,7 @@ class PDDLAgent(BaselineAgent):
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
 
-        bird_objects = get_birds(vision, sling, self.tp)
+        bird_objects = get_birds(vision, sling, self.tp,self.world_model)
 
         pigs_objects = get_pigs(vision, sling, self.tp)
 

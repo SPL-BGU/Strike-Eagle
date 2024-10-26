@@ -121,8 +121,8 @@
         :effect (and
             (assign (vx_bird ?b) (* (v_bird ?b) (cosine) ) ); this is a cos(angle) estimation
             (assign (vy_bird ?b) (* (v_bird ?b) (sinus) ) )
-            ;(decrease (x_bird ?b) (* 15.6 (cosine)))
-            ;(decrease (y_bird ?b) (* 10 (sinus)))
+            (decrease (x_bird ?b) (* 16 (cosine))) ;; define this values
+            (decrease (y_bird ?b) (* 12 (sinus))) ;; define this values
 
             (bird_released ?b)
             (angle_adjusted)
