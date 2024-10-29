@@ -16,7 +16,8 @@ class WorldModel:
         self.gravity = gravity
         self.v_bird = v_bird
 
-
+    def gravity_values(self):
+        return [self.gravity,self.v_bird]
 
 
     def taylor_sin(self,x, n_terms=10):

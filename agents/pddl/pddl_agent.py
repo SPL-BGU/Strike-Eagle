@@ -12,6 +12,7 @@ import numpy as np
 import random
 from agents import BaselineAgent
 # from agents.pddl.optimizer import solve_difference
+from agents.pddl.optimizer import grid_search
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
 from agents.pddl.pddl_files.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
@@ -57,72 +58,23 @@ class PDDLAgent(BaselineAgent):
             observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
             estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model)
 
-            # cut frames - meed to understand how to get this number
+            # cut frames - need to understand how to get this number
             frames = 200
             observed_trajectory = observed_trajectory[:frames]
             estimated_trajectory = estimated_trajectory[:frames]
 
-            # plt.figure()
+            def simulating_function(observed_trajectoryy,values):
+                return construct_trajectory(observed_trajectoryy[0], angle, WorldModel(*values), prt=False)[:frames]
 
-            # transform into funcitons
-            observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:,0],observed_trajectory[:,1],2,)
-            estimated_trajectory_polynom = Polynomial.fit(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 2)
+            new_values = grid_search(
+                observed_trajectory,
+                estimated_trajectory,
+                self.world_model.gravity_values(),
+                simulating_function,
+            )
 
-            # visual
-            # plt.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], marker='o', color='blue')
-            # plt.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], marker='x', color='red')
-            # plt.axis('equal')  # Equal scaling for x and y axes
-            # plt.show()
-
-            delta = .1 # use delta as a percentage
-
-            g_values = np.linspace(self.world_model.gravity*(1-delta),
-                                   self.world_model.gravity*(1+delta), 20)
-
-            v_values = np.linspace(self.world_model.v_bird * (1 - delta),
-                                   self.world_model.v_bird * (1 + delta), 20)
-
-            grid_values= np.stack(np.meshgrid(g_values, v_values)).T
-            grid_values = grid_values.reshape(-1, grid_values.shape[-1])
-
-
-            predicated_trajectories_over_grid = [
-                construct_trajectory(observed_trajectory[0],angle,WorldModel(gravity=g,v_bird=v),prt=False)[:frames]for g,v in grid_values
-            ]
-
-            predicated_trajectories_over_grid_polynoms = [
-                Polynomial.fit(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 2) for estimated_trajectory in predicated_trajectories_over_grid
-            ]
-
-            def calculate_error(observed, estimated):
-                domain = [
-                    max(observed.domain[0],estimated.domain[0]),
-                    min(observed.domain[1], estimated.domain[1]),
-                    #350
-                ]
-                values = np.linspace(domain[0],
-                                       domain[1], 100)
-                return np.average(np.abs(observed(values) - estimated(values))) # average cancel not matching size domain comparision
-
-            errors = [calculate_error(observed_trajectory_polynom, predicated_trajectory_polynom) for predicated_trajectory_polynom in predicated_trajectories_over_grid_polynoms]
-            actual_g_index = np.argmin(errors)
-            # g_new_value = g_values[actual_g_index]
-
-            # visual
-            plt.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], marker='o', color='blue')
-            plt.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], marker='x', color='red')
-            plt.plot(predicated_trajectories_over_grid[actual_g_index][:, 0], predicated_trajectories_over_grid[actual_g_index][:, 1], marker='.', color='green')
-            plt.axis('equal')  # Equal scaling for x and y axes
-            plt.show()
-
-            # solve_difference(value* np.pi / 180, observed_trajectory, estimated_trajectory)
-            # if self.visualize:
-            #     visualize_trajectory(self.model, self.target_class, batch_gt)
-
-            # Update world model
-            # self.world_model.gravity = g_new_value
-            self.world_model = WorldModel(*grid_values[actual_g_index])
-            time.sleep(5)
+            self.world_model = WorldModel(*new_values)
+            time.sleep(3)
             x = 0
 
     def get_action_to_perform(self,agent_world_model:WorldModel):
