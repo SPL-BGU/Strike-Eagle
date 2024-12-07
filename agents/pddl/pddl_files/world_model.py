@@ -11,10 +11,13 @@ class WorldModel:
     def __init__(self,
                  # should be 87.2
                  gravity=100,
-                v_bird = 175.9259
+                 v_bird = 176
                  ):
         self.gravity = gravity
         self.v_bird = v_bird
+
+    def __str__(self):
+        return f"gravity: {self.gravity},\tv_bird: {self.v_bird}"
 
     def gravity_values(self):
         return [self.gravity,self.v_bird]

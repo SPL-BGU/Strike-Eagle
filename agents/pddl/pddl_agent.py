@@ -2,21 +2,12 @@ import os.path
 import time
 
 import numpy as np
-import math
-from numpy.polynomial.polynomial import Polynomial
-from scipy.optimize import minimize
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import make_scorer
-import matplotlib.pyplot as plt
-import numpy as np
-import random
+
 from agents import BaselineAgent
-# from agents.pddl.optimizer import solve_difference
 from agents.pddl.optimizer import grid_search
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
 from agents.pddl.pddl_files.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import visualize_trajectory
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
@@ -42,6 +33,9 @@ class PDDLAgent(BaselineAgent):
         self.learn = True
         self.world_model = WorldModel()
 
+        self.kb = list()
+        self.kb_max_size = 3
+
     def solve(self):
         """
         * Solve a particular level by shooting birds directly to pigs
@@ -56,26 +50,34 @@ class PDDLAgent(BaselineAgent):
             release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
             batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
             observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
-            estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model)
+            estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model,prt=False)
 
             # cut frames - need to understand how to get this number
-            frames = 200
+            frames = 150
             observed_trajectory = observed_trajectory[:frames]
             estimated_trajectory = estimated_trajectory[:frames]
 
             def simulating_function(observed_trajectoryy,values):
                 return construct_trajectory(observed_trajectoryy[0], angle, WorldModel(*values), prt=False)[:frames]
 
-            new_values = grid_search(
+            grid_values, errors = grid_search(
                 observed_trajectory,
                 estimated_trajectory,
                 self.world_model.gravity_values(),
                 simulating_function,
+                self.kb
             )
 
+            # Build KB
+            self.add_to_kb(grid_values,errors)
+
+
+            new_values = grid_values[np.argmin(errors)]
+
+            print(f"Old values- {str(self.world_model)} ")
+            print(f"New values- gravity: {new_values[0]},\t v_bird:{new_values[1]} ")
             self.world_model = WorldModel(*new_values)
             time.sleep(3)
-            x = 0
 
     def get_action_to_perform(self,agent_world_model:WorldModel):
         """
@@ -112,3 +114,15 @@ class PDDLAgent(BaselineAgent):
         os.chdir('../../..')
         actions = parse_solution_to_actions(solution_path, 0, 0.2)
         return actions
+
+    def add_to_kb(self, grid_values, errors):
+
+        current_iteration = dict()
+        # Construct to KB
+        for grid_value,error in zip(grid_values,errors):
+            current_iteration[tuple(grid_value)] = error
+
+        # Add to KB
+        if len(self.kb) == self.kb_max_size:
+            self.kb.pop()
+        self.kb.insert(0,current_iteration)
