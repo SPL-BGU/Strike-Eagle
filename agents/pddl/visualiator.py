@@ -32,3 +32,17 @@ def visualize_trajectory(model,target_class,raw_trajectories):
     ax.set_xlim(0, 480)
     ax.set_ylim(300, 640)
     plt.show()
+
+def plot_errors(errors,aggragive_errors):
+    # Generate main data
+    i = list(range(1,len(errors)+1))
+
+    # Plot the main line
+    plt.plot(i, errors, marker='o', linestyle='-', color='b', label="errors")
+    plt.plot(i, aggragive_errors, marker='x', linestyle='--', label="aggragive_errors")
+
+    plt.legend()
+
+    # Show grid and plot
+    plt.grid(True)
+    plt.show()

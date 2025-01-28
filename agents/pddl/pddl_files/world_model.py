@@ -10,8 +10,8 @@ class WorldModel:
 
     def __init__(self,
                  # should be 87.2
-                 gravity=100,
-                 v_bird = 176
+                 gravity=110,
+                 v_bird = 60
                  ):
         self.gravity = gravity
         self.v_bird = v_bird

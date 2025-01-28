@@ -4,10 +4,11 @@ import time
 import numpy as np
 
 from agents import BaselineAgent
-from agents.pddl.optimizer import grid_search
+from agents.pddl.optimizer import grid_search, get_poly_rank
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
 from agents.pddl.pddl_files.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
+from agents.pddl.visualiator import plot_errors
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
@@ -28,13 +29,17 @@ class PDDLAgent(BaselineAgent):
 
         # Override sim speed from 20
         self.sim_speed = 20
-        self.visualize = True
+        self.visualize = False
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
         self.world_model = WorldModel()
 
         self.kb = list()
         self.kb_max_size = 3
+
+        # metrics
+        self.error_rate = list()
+        self.aggravate_error_rate = list()
 
     def solve(self):
         """
@@ -53,26 +58,39 @@ class PDDLAgent(BaselineAgent):
             estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model,prt=False)
 
             # cut frames - need to understand how to get this number
-            frames = 150
+            frames = 80
             observed_trajectory = observed_trajectory[:frames]
             estimated_trajectory = estimated_trajectory[:frames]
+
+            # Determine polynomial rank of observed
+            rank = get_poly_rank(observed_trajectory[:, 0], observed_trajectory[:, 1])
 
             def simulating_function(observed_trajectoryy,values):
                 return construct_trajectory(observed_trajectoryy[0], angle, WorldModel(*values), prt=False)[:frames]
 
-            grid_values, errors = grid_search(
+            grid_values, aggravate_errors, current_errors = grid_search(
                 observed_trajectory,
                 estimated_trajectory,
+                rank,
                 self.world_model.gravity_values(),
                 simulating_function,
                 self.kb
             )
 
             # Build KB
-            self.add_to_kb(grid_values,errors)
+            self.add_to_kb(grid_values,current_errors)
+
+            chosen_index = np.argmin(aggravate_errors)
+
+            new_values = grid_values[chosen_index]
+
+            self.error_rate.append(current_errors[chosen_index])
+            self.aggravate_error_rate.append(aggravate_errors[chosen_index])
+
+            plot_errors(self.error_rate,self.aggravate_error_rate)
 
 
-            new_values = grid_values[np.argmin(errors)]
+
 
             print(f"Old values- {str(self.world_model)} ")
             print(f"New values- gravity: {new_values[0]},\t v_bird:{new_values[1]} ")

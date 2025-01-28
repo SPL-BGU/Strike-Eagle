@@ -21,29 +21,65 @@ def calculate_current_error(observed: Polynomial, estimated: Polynomial):
     return np.average(
         np.abs(observed(values) - estimated(values)))  # average cancel not matching size domain comparision
 
-def calculate_aggregative_erros(grid_value:tuple,current_error:list,kb):
 
+def calculate_aggregative_erros(grid_value: tuple, current_error: list, kb):
     aggregative_error_list = list()
-    if len(kb) == 0 :
+
+    weights = 1/2 ** np.array(range(4))
+    if len(kb) == 0:
         return current_error
 
-    grid_value_list =[tuple(row) for row in grid_value]
-    for i,value in enumerate(grid_value_list):
+    grid_value_list = [tuple(row) for row in grid_value]
+    for i, value in enumerate(grid_value_list):
+
         error_list = [d[value] for d in kb if value in d]
         error_list.append(current_error[i])
-        aggregative_error_list.append(np.average(error_list))
+        aggregative_error_list.append(np.average(error_list,weights=weights[:len(error_list)]))
     return aggregative_error_list
+
+
+def get_resid(x, y, degree):
+    coeffs, stats = Polynomial.fit(x, y, degree, full=True)
+
+    # Diagnostics
+    resid, rank, sv, rcond = stats
+
+    # Check rank sufficiency
+    if rank < degree + 1:
+        print("Rank is insufficient. Consider reducing the polynomial degree.")
+
+    # Analyze singular values
+    threshold = rcond * max(sv)
+    unstable_singular_values = [v for v in sv if v < threshold]
+
+    if unstable_singular_values:
+        print("Warning: Singular values indicate numerical instability.")
+
+    return resid[0]
+
+
+def get_poly_rank(x, y, max_rank=5, threshold=0.1):
+    resids = [get_resid(x, y, degree) for degree in range(0, max_rank)]
+
+    resids_diff = - np.diff(resids)
+
+    condition = resids_diff < threshold
+
+    rank = np.argmax(condition) if np.any(condition) else 3
+
+    return rank
 
 
 def grid_search(observed_trajectory: numpy.ndarray,
                 estimated_trajectory: numpy.ndarray,
+                rank: int,
                 assumed_values: list,
                 simulating_function,
-                kb:list,
-                delta: float = .05,
-                precision: float = .1,
-                visualize=True) :
-    observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], 2, )
+                kb: list,
+                delta: float = .1,
+                precision: float = .5,
+                visualize=True):
+    observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], rank)
 
     values_options = [
         np.arange(math.floor(value * (1 - delta)),
@@ -65,7 +101,7 @@ def grid_search(observed_trajectory: numpy.ndarray,
     errors = [calculate_current_error(observed_trajectory_polynom, predicated_trajectory_polynom) for
               predicated_trajectory_polynom in predicated_trajectories_over_grid_polynoms]
 
-    aggregative_errors = calculate_aggregative_erros(grid_values, errors,kb)
+    aggregative_errors = calculate_aggregative_erros(grid_values, errors, kb)
 
     selected_values_index = np.argmin(aggregative_errors)
 
@@ -77,4 +113,4 @@ def grid_search(observed_trajectory: numpy.ndarray,
         plt.axis('equal')  # Equal scaling for x and y axes
         plt.show()
 
-    return grid_values, errors
+    return grid_values, aggregative_errors, errors,
