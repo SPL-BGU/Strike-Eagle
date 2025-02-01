@@ -62,11 +62,18 @@ class PDDLAgent(BaselineAgent):
             observed_trajectory = observed_trajectory[:frames]
             estimated_trajectory = estimated_trajectory[:frames]
 
+<<<<<<< Updated upstream
             # Determine polynomial rank of observed
             rank = get_poly_rank(observed_trajectory[:, 0], observed_trajectory[:, 1])
 
             def simulating_function(observed_trajectoryy,values):
                 return construct_trajectory(observed_trajectoryy[0], angle, WorldModel(*values), prt=False)[:frames]
+=======
+            def simulating_function(observed_trajectory,values):
+                return construct_trajectory(observed_trajectory[0], angle, WorldModel(*values), prt=False)[:frames]
+
+
+>>>>>>> Stashed changes
 
             grid_values, aggravate_errors, current_errors = grid_search(
                 observed_trajectory,

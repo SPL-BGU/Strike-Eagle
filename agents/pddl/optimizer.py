@@ -3,7 +3,8 @@ import math
 import numpy
 import numpy as np
 from matplotlib import pyplot as plt
-
+from SALib.sample import saltelli
+from SALib.analyze import sobol
 from agents.pddl.pddl_files.world_model import WorldModel
 from numpy.polynomial.polynomial import Polynomial
 
@@ -75,11 +76,29 @@ def grid_search(observed_trajectory: numpy.ndarray,
                 rank: int,
                 assumed_values: list,
                 simulating_function,
+<<<<<<< Updated upstream
                 kb: list,
                 delta: float = .1,
                 precision: float = .5,
                 visualize=True):
     observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], rank)
+=======
+                kb:list,
+                delta: float = .05,
+                precision: float = .1,
+                visualize=True) :
+    problem = {
+        'num_vars': 2,
+        'names': ['gravity', "initial velocity"],
+        'bounds': [[60, 120], [100, 200]]
+    }
+
+    N = 100
+
+    param_values = saltelli.sample(problem,N,calc_second_order=True)
+
+    observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], 2, )
+>>>>>>> Stashed changes
 
     values_options = [
         np.arange(math.floor(value * (1 - delta)),
