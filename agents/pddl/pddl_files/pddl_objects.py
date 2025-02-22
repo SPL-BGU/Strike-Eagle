@@ -1,4 +1,5 @@
-from agents.pddl.pddl_files.world_model import WorldModel
+from agents.pddl.pddl_files.world_model.params import Params
+from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from src.computer_vision.GroundTruthReader import GroundTruthReader
 from src.computer_vision.game_object import GameObjectType
 
@@ -21,7 +22,7 @@ def get_birds(vision, sling, tp,agent_world_model: WorldModel):
                 "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                 "m_bird": bird.width * bird.height,  # check this because it is not mandatory
                 "bird_radius": min(bird.width, bird.height) / 2,  # check this
-                "v_bird": agent_world_model.v_bird,
+                "v_bird": agent_world_model.hyperparams_values[Params.velocity],
                 "bounce_count": 0,
 
                 # "v_bird": 190.5

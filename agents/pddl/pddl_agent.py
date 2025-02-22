@@ -1,12 +1,13 @@
 import os.path
 import time
 
-import numpy as np
-
 from agents import BaselineAgent
-from agents.pddl.optimizer import grid_search, get_poly_rank
+from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
+    get_params_sensitivity
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
-from agents.pddl.pddl_files.world_model import WorldModel
+from agents.pddl.pddl_files.world_model.params import Params
+from agents.pddl.pddl_files.world_model.process import Process
+from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
 from agents.pddl.visualiator import plot_errors
 from agents.utility import GroundTruthType
@@ -32,7 +33,10 @@ class PDDLAgent(BaselineAgent):
         self.visualize = False
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
-        self.world_model = WorldModel()
+        self.world_model = WorldModel({
+            Params.gravity: 100,
+            Params.velocity:100
+        })
 
         self.kb = list()
         self.kb_max_size = 3
@@ -57,51 +61,14 @@ class PDDLAgent(BaselineAgent):
             observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
             estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model,prt=False)
 
-            # cut frames - need to understand how to get this number
-            frames = 80
-            observed_trajectory = observed_trajectory[:frames]
-            estimated_trajectory = estimated_trajectory[:frames]
 
-<<<<<<< Updated upstream
-            # Determine polynomial rank of observed
-            rank = get_poly_rank(observed_trajectory[:, 0], observed_trajectory[:, 1])
-
-            def simulating_function(observed_trajectoryy,values):
-                return construct_trajectory(observed_trajectoryy[0], angle, WorldModel(*values), prt=False)[:frames]
-=======
-            def simulating_function(observed_trajectory,values):
-                return construct_trajectory(observed_trajectory[0], angle, WorldModel(*values), prt=False)[:frames]
-
-
->>>>>>> Stashed changes
-
-            grid_values, aggravate_errors, current_errors = grid_search(
-                observed_trajectory,
-                estimated_trajectory,
-                rank,
-                self.world_model.gravity_values(),
-                simulating_function,
-                self.kb
-            )
-
-            # Build KB
-            self.add_to_kb(grid_values,current_errors)
-
-            chosen_index = np.argmin(aggravate_errors)
-
-            new_values = grid_values[chosen_index]
-
-            self.error_rate.append(current_errors[chosen_index])
-            self.aggravate_error_rate.append(aggravate_errors[chosen_index])
+            new_values = self.improve_model(observed_trajectory,estimated_trajectory,angle)
 
             plot_errors(self.error_rate,self.aggravate_error_rate)
 
-
-
-
-            print(f"Old values- {str(self.world_model)} ")
-            print(f"New values- gravity: {new_values[0]},\t v_bird:{new_values[1]} ")
-            self.world_model = WorldModel(*new_values)
+            print(f"Old values- {self.world_model.hyperparams_values} ")
+            print(f"New values- gravity: {new_values[Params.gravity]},\t v_bird:{new_values[Params.velocity]} ")
+            self.world_model = WorldModel(new_values)
             time.sleep(3)
 
     def get_action_to_perform(self,agent_world_model:WorldModel):
@@ -139,6 +106,59 @@ class PDDLAgent(BaselineAgent):
         os.chdir('../../..')
         actions = parse_solution_to_actions(solution_path, 0, 0.2)
         return actions
+
+    def improve_model(self,observed_trajectory:np.ndarray,estimated_trajectory:np.ndarray,angle:float):
+
+        # Trim trajectory
+        frames = 100
+        observed_trajectory = observed_trajectory[:frames]
+        estimated_trajectory = estimated_trajectory[:frames]
+
+        # Determine polynomial rank of observed
+        rank = get_poly_rank(observed_trajectory[:, 0], observed_trajectory[:, 1])
+
+        affecting_parmas = self.world_model.get_all_hyper_parameters(Process.flight)
+        # Define simulating function
+        def simulating_function(observed_trajectory, values):
+            return construct_trajectory(observed_trajectory[0], angle, WorldModel(values), prt=False)[:frames]
+
+        # Get best params to improve
+        param_sensitivity,pivot = get_params_sensitivity(
+            observed_trajectory,
+            estimated_trajectory,
+            self.world_model,
+            rank,
+            simulating_function
+        )
+
+        # select values based on sensitivity
+
+        param_values = get_param_values(pivot, 0.02, 0.2)
+
+        param_values, errors = grid_search(
+            observed_trajectory,
+            estimated_trajectory,
+            param_values,
+            rank,
+            simulating_function
+        )
+
+        # Build KB
+        self.add_to_kb(param_values, errors)
+
+        # Check aggregative errors
+        aggregate_errors = calculate_aggregative_erros(param_values, errors, self.kb)
+
+        # Choose minimal error index
+        chosen_index = np.argmin(aggregate_errors)
+
+        # log
+        self.error_rate.append(errors[chosen_index])
+        self.aggravate_error_rate.append(aggregate_errors[chosen_index])
+
+        new_values = param_values[chosen_index]
+
+        return new_values
 
     def add_to_kb(self, grid_values, errors):
 

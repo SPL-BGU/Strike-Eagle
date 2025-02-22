@@ -2,7 +2,8 @@ from string import Template
 
 import numpy as np
 
-from agents.pddl.pddl_files.world_model import WorldModel
+from agents.pddl.pddl_files.world_model.params import Params
+from agents.pddl.pddl_files.world_model.world_model import WorldModel
 
 problem_template= Template("""(define (problem sample_problem)
     (:domain angry_birds_scaled)
@@ -31,7 +32,7 @@ def generate_pddl(problem_data: dict,init_angle,angel_rate,world_model:WorldMode
         "(= (cosine) 0 )",
         "(= (sinus) 1 )",
         f"(= (bounce_count) 0)",
-        f"(= (gravity) {world_model.gravity})",
+        f"(= (gravity) {world_model.hyperparams_values[Params.gravity]})",
         f"(= (active_bird) 0)",
         f"(= (ground_y_damper) 0.1)"
         f"(= (ground_x_damper) 0.5)"

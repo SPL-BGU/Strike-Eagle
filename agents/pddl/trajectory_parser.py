@@ -1,6 +1,5 @@
-import math
-
-from agents.pddl.pddl_files.world_model import WorldModel
+from agents.pddl.pddl_files.world_model.params import Params
+from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from src.computer_vision.GroundTruthReader import GroundTruthReader
 import numpy as np
 from src.computer_vision.game_object import GameObject
@@ -50,12 +49,10 @@ def construct_trajectory(
         frame_rate=.01*2,
         prt= True):
     angle_rad = angle * 0.01745329252 # use angle rad as same as used in the pddl domain
-    # vx = agent_world_model.v_bird * math.cos(angle_rad)  # consider use the cos usage
-    # vy = agent_world_model.v_bird * math.sin(angle_rad)
-
-    # cosine and sinus to 6 degree
-    vx = agent_world_model.v_bird * agent_world_model.taylor_cos(angle_rad,4)  # consider use the cos usage
-    vy = agent_world_model.v_bird * agent_world_model.taylor_sin(angle_rad,3)
+    velocity = agent_world_model.hyperparams_values[Params.velocity]
+    gravity = agent_world_model.hyperparams_values[Params.gravity]
+    vx = velocity * agent_world_model.taylor_cos(angle_rad,4)  # consider use the cos usage
+    vy = gravity * agent_world_model.taylor_sin(angle_rad,3)
 
     if prt:
         print(agent_world_model.taylor_cos(angle_rad,4))
@@ -73,8 +70,6 @@ def construct_trajectory(
             ]
         ])
 
-        vy -= frame_rate * agent_world_model.gravity
+        vy -= frame_rate * gravity
 
     return trajectory
-# if __name__ == "__main__":
-#     extract_estimated_trajectory()

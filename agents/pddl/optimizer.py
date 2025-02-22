@@ -5,10 +5,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from SALib.sample import saltelli
 from SALib.analyze import sobol
-from agents.pddl.pddl_files.world_model import WorldModel
+from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from numpy.polynomial.polynomial import Polynomial
-
-from agents.pddl.trajectory_parser import construct_trajectory
 
 
 def calculate_current_error(observed: Polynomial, estimated: Polynomial):
@@ -19,23 +17,22 @@ def calculate_current_error(observed: Polynomial, estimated: Polynomial):
     ]
     values = np.linspace(domain[0],
                          domain[1], 100)
-    return np.average(
+    return np.mean(
         np.abs(observed(values) - estimated(values)))  # average cancel not matching size domain comparision
 
 
 def calculate_aggregative_erros(grid_value: tuple, current_error: list, kb):
     aggregative_error_list = list()
 
-    weights = 1/2 ** np.array(range(4))
+    weights = 1 / 2 ** np.array(range(4))
     if len(kb) == 0:
         return current_error
 
     grid_value_list = [tuple(row) for row in grid_value]
     for i, value in enumerate(grid_value_list):
-
         error_list = [d[value] for d in kb if value in d]
         error_list.append(current_error[i])
-        aggregative_error_list.append(np.average(error_list,weights=weights[:len(error_list)]))
+        aggregative_error_list.append(np.average(error_list, weights=weights[:len(error_list)]))
     return aggregative_error_list
 
 
@@ -71,65 +68,89 @@ def get_poly_rank(x, y, max_rank=5, threshold=0.1):
     return rank
 
 
-def grid_search(observed_trajectory: numpy.ndarray,
-                estimated_trajectory: numpy.ndarray,
-                rank: int,
-                assumed_values: list,
-                simulating_function,
-<<<<<<< Updated upstream
-                kb: list,
-                delta: float = .1,
-                precision: float = .5,
-                visualize=True):
-    observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], rank)
-=======
-                kb:list,
-                delta: float = .05,
-                precision: float = .1,
-                visualize=True) :
-    problem = {
-        'num_vars': 2,
-        'names': ['gravity', "initial velocity"],
-        'bounds': [[60, 120], [100, 200]]
+def get_problem(world_model: WorldModel, delta: float = 0.3):
+    params = world_model.hyperparams_values
+    param_values = [[np.floor(param * (1 - delta)), np.floor(param * (1 + delta))] for param in params.values()]
+    return {
+        'num_vars': len(params),
+        'names': list(params.keys()),
+        'bounds': param_values
     }
 
-    N = 100
 
-    param_values = saltelli.sample(problem,N,calc_second_order=True)
+def get_params_sensitivity(observed_trajectory: numpy.ndarray,
+                           estimated_trajectory: numpy.ndarray,
+                           world_model: WorldModel,
+                           rank,
+                           simulating_function,
+                           delta: float = 0.3):
+    problem = get_problem(world_model, delta)
 
-    observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], 2, )
->>>>>>> Stashed changes
+    param_values = saltelli.sample(problem, N=16)
 
+    param_values = [dict(zip(problem["names"],i)) for i in param_values]
+    param_values, errors = grid_search(
+        observed_trajectory,
+        estimated_trajectory,
+        param_values,
+        rank,
+        simulating_function,
+        visualize= False
+    )
+
+    pivot_params = param_values[np.argmin(errors)]
+
+    return sobol.analyze(problem,np.array(errors),print_to_console=True)['ST'],pivot_params
+
+
+def get_param_values(
+        params: dict,
+        delta: float,
+        precision: float):
     values_options = [
         np.arange(math.floor(value * (1 - delta)),
                   math.floor(value * (1 + delta)), precision)
-        for value in assumed_values
+        for value in params.values()
     ]
+    # Generate posebilites
     grid_values = np.stack(np.meshgrid(*values_options)).T
     grid_values = grid_values.reshape(-1, grid_values.shape[-1])
 
+    return [dict(zip(params.keys(), i)) for i in grid_values]
+
+def grid_search(observed_trajectory: numpy.ndarray,
+                estimated_trajectory: numpy.ndarray,
+                param_values: list,
+                rank,
+                simulating_function,
+                visualize=True):
+
+    observed_trajectory_polynom = Polynomial.fit(observed_trajectory[:, 0], observed_trajectory[:, 1], rank )
+
     predicated_trajectories_over_grid = [
         simulating_function(observed_trajectory, values) for
-        values in grid_values
+        values in param_values
     ]
+
+    # Generate polynomials
     predicated_trajectories_over_grid_polynoms = [
         Polynomial.fit(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 2) for estimated_trajectory in
         predicated_trajectories_over_grid
     ]
 
+    # Calculate errors
     errors = [calculate_current_error(observed_trajectory_polynom, predicated_trajectory_polynom) for
               predicated_trajectory_polynom in predicated_trajectories_over_grid_polynoms]
 
-    aggregative_errors = calculate_aggregative_erros(grid_values, errors, kb)
-
-    selected_values_index = np.argmin(aggregative_errors)
+    selected_values_index = np.argmin(errors)
 
     if visualize:
-        plt.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], marker='o', color='blue')
+        plt.plot(observed_trajectory[:,
+                 0], observed_trajectory[:, 1], marker='o', color='blue')
         plt.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], marker='x', color='red')
         plt.plot(predicated_trajectories_over_grid[selected_values_index][:, 0],
                  predicated_trajectories_over_grid[selected_values_index][:, 1], marker='.', color='green')
         plt.axis('equal')  # Equal scaling for x and y axes
         plt.show()
 
-    return grid_values, aggregative_errors, errors,
+    return param_values, errors,
