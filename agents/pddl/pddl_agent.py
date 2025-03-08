@@ -34,8 +34,8 @@ class PDDLAgent(BaselineAgent):
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
         self.world_model = WorldModel({
-            Params.gravity: 100,
-            Params.velocity:100
+            Params.gravity: 87.2,
+            Params.velocity:175
         })
 
         self.kb = list()
@@ -110,7 +110,7 @@ class PDDLAgent(BaselineAgent):
     def improve_model(self,observed_trajectory:np.ndarray,estimated_trajectory:np.ndarray,angle:float):
 
         # Trim trajectory
-        frames = 100
+        frames = 150
         observed_trajectory = observed_trajectory[:frames]
         estimated_trajectory = estimated_trajectory[:frames]
 
@@ -123,17 +123,17 @@ class PDDLAgent(BaselineAgent):
             return construct_trajectory(observed_trajectory[0], angle, WorldModel(values), prt=False)[:frames]
 
         # Get best params to improve
-        param_sensitivity,pivot = get_params_sensitivity(
-            observed_trajectory,
-            estimated_trajectory,
-            self.world_model,
-            rank,
-            simulating_function
-        )
+        # param_sensitivity,pivot = get_params_sensitivity(
+        #     observed_trajectory,
+        #     estimated_trajectory,
+        #     self.world_model,
+        #     rank,
+        #     simulating_function
+        # )
 
         # select values based on sensitivity
 
-        param_values = get_param_values(pivot, 0.02, 0.2)
+        param_values = get_param_values(self.world_model.hyperparams_values, 0.05, 0.5)
 
         param_values, errors = grid_search(
             observed_trajectory,
