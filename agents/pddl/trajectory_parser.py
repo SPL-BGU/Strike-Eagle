@@ -52,7 +52,7 @@ def construct_trajectory(
     velocity = agent_world_model.hyperparams_values[Params.velocity]
     gravity = agent_world_model.hyperparams_values[Params.gravity]
     vx = velocity * agent_world_model.taylor_cos(angle_rad,4)  # consider use the cos usage
-    vy = gravity * agent_world_model.taylor_sin(angle_rad,3)
+    vy = velocity * agent_world_model.taylor_sin(angle_rad,3)
 
     if prt:
         print(agent_world_model.taylor_cos(angle_rad,4))
