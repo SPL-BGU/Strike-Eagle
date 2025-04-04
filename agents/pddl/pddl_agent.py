@@ -9,11 +9,12 @@ from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import plot_errors
+from agents.pddl.visualiator import plot_errors, plot_score
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
 from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions
+from src.client.agent_client import GameState
 
 
 class PDDLAgent(BaselineAgent):
@@ -34,8 +35,8 @@ class PDDLAgent(BaselineAgent):
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
         self.world_model = WorldModel({
-            Params.gravity: 87.2,
-            Params.velocity:175
+            Params.gravity: 100,
+            Params.velocity:10
         })
 
         self.kb = list()
@@ -44,6 +45,7 @@ class PDDLAgent(BaselineAgent):
         # metrics
         self.error_rate = list()
         self.aggravate_error_rate = list()
+        self.aggravate_score = list()
 
     def solve(self):
         """
@@ -54,22 +56,32 @@ class PDDLAgent(BaselineAgent):
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
-        actions = self.get_action_to_perform(self.world_model)
-        for action, angle in actions:
-            release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
-            batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
-            observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
-            estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model,prt=False)
+        actions = self.get_action_to_perform(self.world_model)[0]
+        task,angle = actions
+
+        release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
+        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        time.sleep(2)
+        observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
+        estimated_trajectory = construct_trajectory(observed_trajectory[0],angle,self.world_model,prt=False)
+
+        new_values = self.improve_model(observed_trajectory, estimated_trajectory, angle)
+
+        if self.ar.get_game_state() == GameState.LOST:
 
 
-            new_values = self.improve_model(observed_trajectory,estimated_trajectory,angle)
-
-            plot_errors(self.error_rate,self.aggravate_error_rate)
 
             print(f"Old values- {self.world_model.hyperparams_values} ")
             print(f"New values- gravity: {new_values[Params.gravity]},\t v_bird:{new_values[Params.velocity]} ")
             self.world_model = WorldModel(new_values)
-            time.sleep(3)
+        if len(self.aggravate_score) == 0:
+            self.aggravate_score.append(self.check_current_level_score())
+        else:
+            self.aggravate_score.append(self.aggravate_score[-1] + self.check_current_level_score())
+
+        plot_errors(self.error_rate, self.aggravate_error_rate)
+        plot_score(self.aggravate_score)
+        time.sleep(3)
 
     def get_action_to_perform(self,agent_world_model:WorldModel):
         """
@@ -133,7 +145,7 @@ class PDDLAgent(BaselineAgent):
 
         # select values based on sensitivity
 
-        param_values = get_param_values(self.world_model.hyperparams_values, 0.05, 0.5)
+        param_values = get_param_values(self.world_model.hyperparams_values, 0.05, 0.2)
 
         param_values, errors = grid_search(
             observed_trajectory,
@@ -148,6 +160,10 @@ class PDDLAgent(BaselineAgent):
 
         # Check aggregative errors
         aggregate_errors = calculate_aggregative_erros(param_values, errors, self.kb)
+        # if len(self.aggravate_score) == 0:
+        #     self.aggravate_score.append(self.check_current_level_score())
+        # else:
+        #     self.aggravate_score.append(self.aggravate_score[-1]+self.check_current_level_score())
 
         # Choose minimal error index
         chosen_index = np.argmin(aggregate_errors)
@@ -165,7 +181,7 @@ class PDDLAgent(BaselineAgent):
         current_iteration = dict()
         # Construct to KB
         for grid_value,error in zip(grid_values,errors):
-            current_iteration[tuple(grid_value)] = error
+            current_iteration[grid_value.values()] = error
 
         # Add to KB
         if len(self.kb) == self.kb_max_size:

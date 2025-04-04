@@ -25,7 +25,7 @@ def calculate_aggregative_erros(grid_value: tuple, current_error: list, kb):
     aggregative_error_list = list()
 
     weights = 1 / 2 ** np.array(range(4))
-    if len(kb) == 0:
+    if len(kb) == 1:
         return current_error
 
     grid_value_list = [tuple(row) for row in grid_value]

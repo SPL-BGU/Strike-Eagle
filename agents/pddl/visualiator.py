@@ -46,3 +46,16 @@ def plot_errors(errors,aggragive_errors):
     # Show grid and plot
     plt.grid(True)
     plt.show()
+
+def plot_score(score):
+    # Generate main data
+    i = list(range(1,len(score)+1))
+
+    # Plot the main line
+    plt.plot(i, score, marker='o', linestyle='-', color='b', label="errors")
+
+    plt.legend()
+
+    # Show grid and plot
+    plt.grid(True)
+    plt.show()
