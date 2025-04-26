@@ -37,10 +37,8 @@ def calculate_aggregative_erros(grid_value: tuple, current_error: list, kb):
 
 
 def get_resid(x, y, degree):
-    coeffs, stats = Polynomial.fit(x, y, degree, full=True)
-
     # Diagnostics
-    resid, rank, sv, rcond = stats
+    coeffs, resid, rank, sv, rcond = np.polyfit(x,y,degree,full=True)
 
     # Check rank sufficiency
     if rank < degree + 1:
@@ -53,11 +51,13 @@ def get_resid(x, y, degree):
     if unstable_singular_values:
         print("Warning: Singular values indicate numerical instability.")
 
-    return resid[0]
+    return resid[0], Polynomial(coeffs[::-1])
 
 
-def get_poly_rank(x, y, max_rank=5, threshold=0.1):
-    resids = [get_resid(x, y, degree) for degree in range(0, max_rank)]
+def get_poly_rank(x, y, max_rank=5, threshold=1):
+    resids_coeff = np.array([get_resid(x, y, degree) for degree in range(0, max_rank)])
+
+    resids,polys = resids_coeff.T
 
     resids_diff = - np.diff(resids)
 
@@ -65,7 +65,7 @@ def get_poly_rank(x, y, max_rank=5, threshold=0.1):
 
     rank = np.argmax(condition) if np.any(condition) else 3
 
-    return rank
+    return rank, polys[rank]
 
 
 def get_problem(world_model: WorldModel, delta: float = 0.3):

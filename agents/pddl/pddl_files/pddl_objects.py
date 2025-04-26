@@ -41,9 +41,9 @@ def get_pigs(vision, sling, tp):
         # TODO change computer_vision.cv_utils.Rectangle
         # to be more intuitive
         problem_data[f"pig_{pig_id}"] = {
-            "x_pig": pig.X + pig.width,
+            "x_pig": pig.X + pig.width / 2,
             # "y_pig": 640 - pig.Y - 354,
-            "y_pig": 640 - pig.Y - pig.height / 2,
+            "y_pig": 640 - pig.Y - pig.height,
             "m_pig": pig.width * pig.height,  # check this because it is not mandatory
             "pig_radius": min(pig.width, pig.height) / 2,  # check this
             "pig_life": 1  # check

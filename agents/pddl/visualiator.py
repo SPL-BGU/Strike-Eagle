@@ -1,5 +1,6 @@
 from matplotlib import patches, pyplot as plt
 from matplotlib.path import Path
+import numpy as np
 
 from agents.pddl.trajectory_parser import groundtruth_trajectory_parser
 
@@ -22,7 +23,8 @@ def get_object_visuallization(object_trajectory):
     return patch
 
 
-def visualize_trajectory(model,target_class,raw_trajectories):
+#
+def visualize_trajectory(model, target_class, raw_trajectories):
     trajectories = groundtruth_trajectory_parser(raw_trajectories, model, target_class)
     patches = list(map(get_object_visuallization, trajectories.items()))
     # invert y axis
@@ -33,9 +35,19 @@ def visualize_trajectory(model,target_class,raw_trajectories):
     ax.set_ylim(300, 640)
     plt.show()
 
-def plot_errors(errors,aggragive_errors):
+
+def visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty=None):
+    plt.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], marker='o', color='blue')
+    plt.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], marker='x', color='red')
+    if np.all(changed_trajectoty!=None):
+        plt.plot(changed_trajectoty[:, 0], changed_trajectoty[:, 1], marker='x', color='green')
+    plt.axis('equal')  # Equal scaling for x and y axes
+    plt.show()
+
+
+def plot_errors(errors, aggragive_errors):
     # Generate main data
-    i = list(range(1,len(errors)+1))
+    i = list(range(1, len(errors) + 1))
 
     # Plot the main line
     plt.plot(i, errors, marker='o', linestyle='-', color='b', label="errors")
@@ -47,9 +59,10 @@ def plot_errors(errors,aggragive_errors):
     plt.grid(True)
     plt.show()
 
+
 def plot_score(score):
     # Generate main data
-    i = list(range(1,len(score)+1))
+    i = list(range(1, len(score) + 1))
 
     # Plot the main line
     plt.plot(i, score, marker='o', linestyle='-', color='b', label="errors")

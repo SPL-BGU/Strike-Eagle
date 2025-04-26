@@ -46,7 +46,7 @@ def construct_trajectory(
         angle: float,
         agent_world_model: WorldModel,
         frames=400,
-        frame_rate=.01*2,
+        frame_rate=.02,
         prt= True):
     angle_rad = angle * 0.01745329252 # use angle rad as same as used in the pddl domain
     velocity = agent_world_model.hyperparams_values[Params.velocity]
