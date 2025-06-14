@@ -6,6 +6,7 @@ from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
     get_params_sensitivity
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
+from agents.pddl.pddl_files.segments import getSegments, getSegmentsML
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
@@ -66,12 +67,13 @@ class PDDLAgent(BaselineAgent):
         time.sleep(2)
         observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
         estimated_trajectory = construct_trajectory(observed_trajectory[0], angle, self.world_model, prt=False)[:200]
+        getSegments(observed_trajectory,30)
 
         new_world_model = self.improve_model(observed_trajectory, estimated_trajectory, angle)
 
         changed_trajectoty = construct_trajectory(observed_trajectory[0], angle, new_world_model, prt=False)[:200]
 
-        visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty)
+        # visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty)
 
         if self.ar.get_game_state() == GameState.LOST:
             print(f"Old values- {self.world_model.hyperparams_values} ")
@@ -81,6 +83,8 @@ class PDDLAgent(BaselineAgent):
             self.aggravate_score.append(self.check_current_level_score())
         else:
             self.aggravate_score.append(self.aggravate_score[-1] + self.check_current_level_score())
+
+        plot_score(self.aggravate_score)
 
         time.sleep(3)
 
@@ -133,7 +137,7 @@ class PDDLAgent(BaselineAgent):
         rank_x,poly_x = get_poly_rank(function_range, observed_trajectory[:, 0])
         rank_y,poly_y = get_poly_rank(function_range, observed_trajectory[:, 1])
 
-        visualize_compare(observed_trajectory, estimated_trajectory)
+        # visualize_compare(observed_trajectory, estimated_trajectory)
 
         v0_x = poly_x.deriv().coef[0]
         v0_y = poly_y.coef[1]
