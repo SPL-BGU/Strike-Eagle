@@ -45,9 +45,10 @@ def construct_trajectory(
         starting_point: [float, float],
         angle: float,
         agent_world_model: WorldModel,
-        frames=400,
+        limit: int,
         frame_rate=.02,
         prt= True):
+    MAX_FRAMES = 500
     angle_rad = angle * 0.01745329252 # use angle rad as same as used in the pddl domain
     velocity = agent_world_model.hyperparams_values[Params.velocity]
     gravity = agent_world_model.hyperparams_values[Params.gravity]
@@ -58,10 +59,13 @@ def construct_trajectory(
         print(agent_world_model.taylor_cos(angle_rad,4))
         print(agent_world_model.taylor_sin(angle_rad, 3))
     trajectory = np.reshape(starting_point, [1, 2])
-    for i in range(1, frames):
+
+    for i in range(1,MAX_FRAMES):
         if prt:
             print(f"vx:{vx}\t vy:{vy}")
             print(f"location:{trajectory[i - 1, :]}")
+
+
         trajectory = np.vstack([
             trajectory,
             trajectory[i - 1, :] + [
@@ -71,5 +75,8 @@ def construct_trajectory(
         ])
 
         vy -= frame_rate * gravity
+
+        if trajectory[-1,0]>limit:
+            break
 
     return trajectory

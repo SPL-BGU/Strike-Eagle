@@ -6,7 +6,7 @@ from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
     get_params_sensitivity
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
-from agents.pddl.pddl_files.segments import getSegments, getSegmentsML
+from agents.pddl.pddl_files.segments import getSegmentsPelt, getSegmentsPreconditions
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
@@ -65,15 +65,23 @@ class PDDLAgent(BaselineAgent):
         release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
         time.sleep(2)
+
+        # Analyze observed trajectory
         observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
-        estimated_trajectory = construct_trajectory(observed_trajectory[0], angle, self.world_model, prt=False)[:200]
-        getSegments(observed_trajectory,30)
 
-        new_world_model = self.improve_model(observed_trajectory, estimated_trajectory, angle)
+        getSegmentsPelt(observed_trajectory, 30)
+        parts = getSegmentsPreconditions(observed_trajectory)
 
-        changed_trajectoty = construct_trajectory(observed_trajectory[0], angle, new_world_model, prt=False)[:200]
+        observed_trajectory = parts[0] # override everything else, only learn on part 1
 
-        # visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty)
+        new_world_model = self.improve_model(observed_trajectory)
+
+        limit = np.max(observed_trajectory[:,0])
+
+        estimated_trajectory = construct_trajectory(observed_trajectory[0], angle, self.world_model,limit, prt=False)
+        changed_trajectoty = construct_trajectory(observed_trajectory[0], angle, new_world_model,limit, prt=False)[:200]
+
+        visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty)
 
         if self.ar.get_game_state() == GameState.LOST:
             print(f"Old values- {self.world_model.hyperparams_values} ")
@@ -124,14 +132,12 @@ class PDDLAgent(BaselineAgent):
         actions = parse_solution_to_actions(solution_path, 0, 0.2)
         return actions
 
-    def improve_model(self, observed_trajectory: np.ndarray, estimated_trajectory: np.ndarray, angle: float):
+    def improve_model(self, observed_trajectory: np.ndarray):
 
         # Trim trajectory
-        frames = 180
-        observed_trajectory = observed_trajectory[:frames]
-        estimated_trajectory = estimated_trajectory[:frames]
+        observed_trajectory = observed_trajectory
 
-        function_range = np.array(range(frames)) / 50
+        function_range = np.array(range(len(observed_trajectory))) / 50
 
         # Determine polynomial rank of observed
         rank_x,poly_x = get_poly_rank(function_range, observed_trajectory[:, 0])

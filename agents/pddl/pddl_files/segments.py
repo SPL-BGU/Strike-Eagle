@@ -2,7 +2,10 @@ import numpy as np
 import ruptures as rpt
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN,KMeans
-def getSegments(signal,penalty):
+
+
+
+def getSegmentsPelt(signal,penalty):
 
 
     # Sample data (replace with your own x, y data)
@@ -29,12 +32,13 @@ def getSegments(signal,penalty):
     plt.title("Changepoint Detection using PELT")
     plt.show()
 
-def getSegmentsML(signal):
 
 
+def getSegmentsPreconditions(trajectory):
+    GROUND_LEVEL = 360
     # Sample data (replace with your own x, y data)
-    x = signal[:,0]  # x positions
-    y = signal[:,1]
+    x = trajectory[:,0]  # x positions
+    y = trajectory[:,1]-GROUND_LEVEL
 
     # Calculate velocity and acceleration as features for clustering
     dt = 50  # Assuming 1 unit time step (adjust accordingly)
@@ -43,38 +47,41 @@ def getSegmentsML(signal):
     a_x = np.diff(v_x) / dt
     a_y = np.diff(v_y) / dt
 
-    # Combine features (velocity and acceleration)
-    features = np.column_stack((v_x[:290], v_y[:290], a_x[:290], a_y[:290]))
+    features = np.column_stack((x[:290],y[:290],v_x[:290], v_y[:290], a_x[:290], a_y[:290]))
 
-    # Apply DBSCAN clustering
-    model = DBSCAN(eps=0.5,min_samples=2).fit(features)
-    labels = model.labels_
+    keys = ['x', 'y', 'v_x', 'v_y', 'a_x', 'a_y']
+    features_dict_list = [dict(zip(keys, row)) for row in features]
 
-    # Find the transition between clusters (which may indicate a change in motion)
-    # The last cluster (after the transition) corresponds to the sudden change
-    impact_idx = np.where(labels != labels[0])[0][-1]  # Find where the cluster changes
 
-    # Output the impact point
-    print(f"Sudden change in motion detected at x = {x[impact_idx]}, y = {y[impact_idx]}")
+    collsions = getGroundCollisions(features_dict_list)
 
-    # Plot the trajectory with color coding based on cluster labels
-    plt.figure(figsize=(8, 6))
+    parts = np.split(trajectory, collsions)
 
-    # Assign colors based on cluster labels
-    scatter = plt.scatter(x[:290], y[:290], c=labels, cmap='viridis', label="Trajectory")
+    return parts
 
-    # Highlight the impact point with a distinct color
-    plt.scatter(x[impact_idx], y[impact_idx], color='red', label=f"Impact Point: ({x[impact_idx]}, {y[impact_idx]})",
-                zorder=5)
 
-    # Add colorbar to visualize clusters
-    plt.colorbar(scatter, label='Cluster ID')
+def getGroundCollisions(features_dict_list):
 
-    # Plot labels and title
-    plt.xlabel('x')
-    plt.ylabel('y')
-    plt.title('Projectile Trajectory with Clustering (Impact Highlighted)')
-    plt.legend()
+    epsilon = 3
+    ground_collision_frames = list()
+    flying_frames = list()
+    for i, f in enumerate(features_dict_list):
+        # Check if current y is at or below ground and previous y was above ground (falling)
+        if is_ground_collision(features_dict_list,i):
+            print(f"Ground collision likely at frame {i}")
+            ground_collision_frames.append(i)
+        if is_flying(features_dict_list,i):
+            print(f"Flying likely at frame {i}")
+            flying_frames.append(i)
 
-    plt.show()
+    return ground_collision_frames
+
+
+def is_ground_collision(features_dict_list,i):
+    epsilon=3
+    return i > 0 and features_dict_list[i]['y'] <= epsilon and features_dict_list[i - 1]['y'] > epsilon
+
+def is_flying(features_dict_list,i):
+    epsilon=2
+    return i > 0 and features_dict_list[i]['y'] > epsilon and features_dict_list[i - 1]['y'] > epsilon
 
