@@ -1,6 +1,7 @@
 import math
 import os.path
 import time
+import pickle
 import numpy as np
 from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
@@ -74,6 +75,7 @@ class PDDLAgent(BaselineAgent):
         self.aggravate_score = list()
         self.rmse = list()
         self.wins = []
+        self.c=0
 
     def solve(self):
         """
@@ -82,6 +84,10 @@ class PDDLAgent(BaselineAgent):
         """
         ground_truth_type = GroundTruthType.ground_truth_screenshot
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+        
+        with open(f"game-{self.c}.pkl", "wb") as f:
+            pickle.dump(vision, f)
+            self.c +=1
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
         actions = self.get_action_to_perform(self.world_model)[0]
