@@ -24,6 +24,8 @@ class WorldModel:
         Process.flight: [Params.x, Params.y]
     }
 
+    kb = None
+
     hyperparams_values = {
         Params.gravity: 87.2,
         Params.velocity: 175.9259

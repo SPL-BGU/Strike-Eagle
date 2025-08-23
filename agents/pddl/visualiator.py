@@ -1,6 +1,8 @@
 from matplotlib import patches, pyplot as plt
 from matplotlib.path import Path
 import numpy as np
+from scipy.interpolate import interp1d
+from sklearn.metrics import mean_squared_error
 
 from agents.pddl.trajectory_parser import groundtruth_trajectory_parser
 
@@ -25,7 +27,7 @@ def get_object_visuallization(object_trajectory):
 
 #
 def visualize_trajectory(model, target_class, raw_trajectories):
-    trajectories = groundtruth_trajectory_parser(raw_trajectories, model, target_class)
+    trajectories,_ = groundtruth_trajectory_parser(raw_trajectories, model, target_class)
     patches = list(map(get_object_visuallization, trajectories.items()))
     # invert y axis
     fig, ax = plt.subplots()
@@ -42,6 +44,40 @@ def visualize_compare(observed_trajectory, estimated_trajectory, changed_traject
     if np.all(changed_trajectoty!=None):
         plt.plot(changed_trajectoty[:, 0], changed_trajectoty[:, 1], marker='x', color='green')
     plt.axis('equal')  # Equal scaling for x and y axes
+    plt.show()
+
+
+def visualize_rmse(rmse_values):
+
+    time_steps = list(range(len(rmse_values)))
+
+    # Plotting
+    plt.figure(figsize=(8, 4))
+    plt.plot(time_steps, rmse_values, marker='o')
+    plt.title('RMSE Over Time')
+    plt.xlabel('Time Step')
+    plt.ylabel('RMSE')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+def visuallize_wins_percentage(wins):
+    # Compute cumulative win percentage
+    cumulative_wins = np.cumsum(wins)
+    games_played = np.arange(1, len(wins) + 1)
+    win_percentage = (cumulative_wins / games_played) * 100
+
+    # Plotting
+    plt.figure(figsize=(10, 5))
+    plt.plot(games_played, win_percentage, marker='o', linestyle='-')
+    plt.ylim(-5, 105)
+    plt.xlabel('Game Number')
+    plt.ylabel('Win Percentage (%)')
+    plt.title('Win Percentage Over Time')
+    plt.grid(True)
+    plt.xticks(games_played)
+
     plt.show()
 
 
@@ -72,3 +108,5 @@ def plot_score(score):
     # Show grid and plot
     plt.grid(True)
     plt.show()
+
+

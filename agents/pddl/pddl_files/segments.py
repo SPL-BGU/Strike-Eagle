@@ -1,16 +1,15 @@
 import numpy as np
 import ruptures as rpt
 import matplotlib.pyplot as plt
-from sklearn.cluster import DBSCAN,KMeans
+from sklearn.cluster import DBSCAN, KMeans
+
+from agents.pddl.pddl_files.events.event_conditions import is_ground_collision, is_hit
 
 
-
-def getSegmentsPelt(signal,penalty):
-
-
+def getSegmentsPelt(signal, penalty):
     # Sample data (replace with your own x, y data)
-    x = signal[:,0]  # x positions
-    y = signal[:,1]
+    x = signal[:, 0]  # x positions
+    y = signal[:, 1]
 
     # Calculate velocity and acceleration as features for clustering
     dt = 50  # Assuming 1 unit time step (adjust accordingly)
@@ -33,55 +32,64 @@ def getSegmentsPelt(signal,penalty):
     plt.show()
 
 
-
-def getSegmentsPreconditions(trajectory):
+def calculate_features(trajectory):
     GROUND_LEVEL = 360
     # Sample data (replace with your own x, y data)
-    x = trajectory[:,0]  # x positions
-    y = trajectory[:,1]-GROUND_LEVEL
+    x = trajectory[:, 0]  # x positions
+    y = trajectory[:, 1] - GROUND_LEVEL
 
     # Calculate velocity and acceleration as features for clustering
-    dt = 50  # Assuming 1 unit time step (adjust accordingly)
+    dt = 20  # Assuming 1 unit time step (adjust accordingly)
     v_x = np.diff(x) / dt
     v_y = np.diff(y) / dt
     a_x = np.diff(v_x) / dt
     a_y = np.diff(v_y) / dt
 
-    features = np.column_stack((x[:290],y[:290],v_x[:290], v_y[:290], a_x[:290], a_y[:290]))
+    min_length = min(len(arr) for arr in [x, y, v_y, v_x, a_x, a_y])
+    features = np.column_stack(
+        (x[:min_length], y[:min_length], v_x[:min_length], v_y[:min_length], a_x[:min_length], a_y[:min_length]))
 
     keys = ['x', 'y', 'v_x', 'v_y', 'a_x', 'a_y']
     features_dict_list = [dict(zip(keys, row)) for row in features]
 
-
-    collsions = getGroundCollisions(features_dict_list)
-
-    parts = np.split(trajectory, collsions)
-
-    return parts
+    return features_dict_list
 
 
-def getGroundCollisions(features_dict_list):
+def getSegmentsEvents(groundtruth_trajectories:dict):
+    objects_features = dict()
+    for object,traj in groundtruth_trajectories.items():
+        objects_features[object] = calculate_features(np.stack(traj))
+    event_indexes = check_events(objects_features
+                                 , [
+                                     {
+                                         "name": "collision",
+                                         "func": is_ground_collision
+                                     },
+                                     {
+                                         "name": "hit",
+                                         "func": is_hit
+                                     }
+                                 ]
+                                 )
 
-    epsilon = 3
-    ground_collision_frames = list()
-    flying_frames = list()
-    for i, f in enumerate(features_dict_list):
-        # Check if current y is at or below ground and previous y was above ground (falling)
-        if is_ground_collision(features_dict_list,i):
-            print(f"Ground collision likely at frame {i}")
-            ground_collision_frames.append(i)
-        if is_flying(features_dict_list,i):
-            print(f"Flying likely at frame {i}")
-            flying_frames.append(i)
-
-    return ground_collision_frames
+    return event_indexes, objects_features
 
 
-def is_ground_collision(features_dict_list,i):
-    epsilon=3
-    return i > 0 and features_dict_list[i]['y'] <= epsilon and features_dict_list[i - 1]['y'] > epsilon
+def check_events(objects_features, events: list):
+    result = {event["name"]: [] for event in events}
 
-def is_flying(features_dict_list,i):
-    epsilon=2
+    frames = []
+    for frame_values in zip(*objects_features.values()):
+        frame_dict = dict(zip(objects_features.keys(), frame_values))
+        frames.append(frame_dict)
+
+    for i in range(len(frames)):
+        for event in events:
+            if event["func"](frames,i):
+                result[event["name"]].append(i)
+    return result
+
+
+def is_flying(features_dict_list, i):
+    epsilon = 2
     return i > 0 and features_dict_list[i]['y'] > epsilon and features_dict_list[i - 1]['y'] > epsilon
-

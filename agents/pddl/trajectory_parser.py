@@ -6,10 +6,13 @@ from src.computer_vision.game_object import GameObject
 
 
 def filter_from_entity(entity: GameObject):
-    return np.array([
+    return {
+        "location": np.array([
         entity.X,
         640 - entity.Y  # invert y axis
-    ])
+    ]),
+    "dimension": [entity.width,entity.height]
+    }
 
 
 def groundtruth_trajectory_parser(
@@ -18,6 +21,7 @@ def groundtruth_trajectory_parser(
         target_class
 ):
     entity_trajectories = dict()
+    entity_dimensions = dict()
     combined_trajectory = [GroundTruthReader(shoot, model, target_class).allObj for shoot in raw_trajectory]
     for temporal_state in combined_trajectory:
         for object_type, object_list in temporal_state.items():
@@ -26,9 +30,10 @@ def groundtruth_trajectory_parser(
                 filtered_entity = filter_from_entity(entity)
                 if entity_name not in entity_trajectories.keys():
                     entity_trajectories[entity_name] = []
-                entity_trajectories[entity_name].append(filtered_entity)
-    # todo: select what objects to take
-    return entity_trajectories
+                entity_trajectories[entity_name].append(filtered_entity["location"])
+                entity_dimensions[entity_name] = filtered_entity["dimension"]
+
+    return entity_trajectories, entity_dimensions
 
 
 def extract_real_trajectory(
@@ -36,9 +41,8 @@ def extract_real_trajectory(
         alpha: int,
         model,
         target_class):
-    groundtruth_trajectories = groundtruth_trajectory_parser(raw_trajectory, model, target_class)
-    red_bird_traj = np.array(groundtruth_trajectories["redBird_0"])
-    return red_bird_traj
+    groundtruth_trajectories, groundtruth_dimensions = groundtruth_trajectory_parser(raw_trajectory, model, target_class)
+    return groundtruth_trajectories, groundtruth_dimensions
 
 
 def construct_trajectory(

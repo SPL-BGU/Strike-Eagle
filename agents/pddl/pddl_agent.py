@@ -5,20 +5,24 @@ import numpy as np
 from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
     get_params_sensitivity
+from agents.pddl.pddl_files.events.learn_events import update_model_effects
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
-from agents.pddl.pddl_files.segments import getSegmentsPelt, getSegmentsPreconditions
+from agents.pddl.pddl_files.segments import getSegmentsPelt, getSegmentsEvents
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import plot_errors, plot_score, visualize_compare
+from agents.pddl.visualiator import plot_errors, plot_score, visualize_compare, visuallize_wins_percentage, \
+    visualize_rmse
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
-from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions
+from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions, inject_domain_file
 from src.client.agent_client import GameState
+from agents.pddl.metrics import calculate_rmse
 from scipy.interpolate import BSpline, make_interp_spline
 from numpy.polynomial import Polynomial
+
 
 class PDDLAgent(BaselineAgent):
     """Birds in boots (server/client version)"""
@@ -42,13 +46,34 @@ class PDDLAgent(BaselineAgent):
             Params.velocity: 200
         })
 
-        self.kb = list()
+        self.kb = {
+            "collision": {
+                "states": [],
+                "variables": {
+                    "v_x": {
+                        "value": [],
+                        "model": None
+                    },
+                    "v_y": {
+                        "value": [],
+                        "model": None
+                    },
+                    "y": {
+                        "value": [],
+                        "model": None
+                    },
+                }
+            }
+        }
+        self.x =0
         self.kb_max_size = 3
 
         # metrics
         self.error_rate = list()
         self.aggravate_error_rate = list()
         self.aggravate_score = list()
+        self.rmse = list()
+        self.wins = []
 
     def solve(self):
         """
@@ -67,32 +92,59 @@ class PDDLAgent(BaselineAgent):
         time.sleep(2)
 
         # Analyze observed trajectory
-        observed_trajectory = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
+        groundtruth_trajectories,_ = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
 
-        getSegmentsPelt(observed_trajectory, 30)
-        parts = getSegmentsPreconditions(observed_trajectory)
 
-        observed_trajectory = parts[0] # override everything else, only learn on part 1
+        # getSegmentsPelt(observed_trajectory, 30)
 
-        new_world_model = self.improve_model(observed_trajectory)
+        event_indexes, objects_features = getSegmentsEvents(groundtruth_trajectories)
 
-        limit = np.max(observed_trajectory[:,0])
+        bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
+        bird_observed_features = objects_features["redBird_0"]
+        collisions = event_indexes["collision"]
+        parts = np.split(bird_observed_trajectory, collisions)
 
-        estimated_trajectory = construct_trajectory(observed_trajectory[0], angle, self.world_model,limit, prt=False)
-        changed_trajectoty = construct_trajectory(observed_trajectory[0], angle, new_world_model,limit, prt=False)[:200]
+        # LEARN EVENT
 
-        visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty)
+        for collision_index in collisions:
+            update_model_effects("collision", self.kb, bird_observed_features[collision_index],
+                                 bird_observed_features[collision_index + 1])
+
+        # LEARN PROCESS
+        bird_observed_trajectory = parts[0]  # override everything else, only learn on part 1
+
+        new_world_model = self.learn_process( bird_observed_trajectory)
+
+        # VISUALIZE
+        limit = np.max( bird_observed_trajectory,axis=0)[0]
+
+        estimated_trajectory = construct_trajectory( bird_observed_trajectory[0], angle, self.world_model, limit, prt=False)
+        changed_trajectoty = construct_trajectory( bird_observed_trajectory[0], angle, new_world_model, limit, prt=False)
+
+        self.rmse.append(calculate_rmse( bird_observed_trajectory,estimated_trajectory))
+
+        visualize_compare( bird_observed_trajectory, estimated_trajectory, changed_trajectoty)
+        visualize_rmse(self.rmse)
+
+        self.wins.append(self.ar.get_game_state() == GameState.WON)
+        visuallize_wins_percentage(self.wins)
+
+
 
         if self.ar.get_game_state() == GameState.LOST:
             print(f"Old values- {self.world_model.hyperparams_values} ")
             print(f"New values- gravity: {new_world_model.hyperparams_values} ")
+
+            # Update world model
             self.world_model = new_world_model
+            self.world_model.kb = self.kb
+
         if len(self.aggravate_score) == 0:
             self.aggravate_score.append(self.check_current_level_score())
         else:
             self.aggravate_score.append(self.aggravate_score[-1] + self.check_current_level_score())
 
-        plot_score(self.aggravate_score)
+        # plot_score(self.aggravate_score)
 
         time.sleep(3)
 
@@ -121,9 +173,15 @@ class PDDLAgent(BaselineAgent):
 
         solution_path = 'agents/pddl/pddl_files/solution.pddl'
         write_problem_file('agents/pddl/pddl_files/problem.pddl', problem_data, 0, 0.2, agent_world_model)
+
+        if agent_world_model.kb != None:
+            inject_domain_file('agents/pddl/pddl_files/base_domain.pddl',agent_world_model)
+
+
+        domain_path = 'base_domain_modified.pddl' if agent_world_model.kb != None else 'domain.pddl'
         os.chdir('agents/pddl/pddl_files/')
         subprocess.call(
-            ['java', '-jar', 'enhsp-20.jar', '-o', 'domain.pddl', '-f', 'problem.pddl', '-sp', 'solution.pddl',
+            ['java', '-jar', 'enhsp-20.jar', '-o', domain_path, '-f', 'problem.pddl', '-sp', 'solution.pddl',
              '-planner', 'sat'
                          '-pt'
              # ,'-sjr','solution_path.json'
@@ -132,7 +190,7 @@ class PDDLAgent(BaselineAgent):
         actions = parse_solution_to_actions(solution_path, 0, 0.2)
         return actions
 
-    def improve_model(self, observed_trajectory: np.ndarray):
+    def learn_process(self, observed_trajectory: np.ndarray):
 
         # Trim trajectory
         observed_trajectory = observed_trajectory
@@ -140,8 +198,8 @@ class PDDLAgent(BaselineAgent):
         function_range = np.array(range(len(observed_trajectory))) / 50
 
         # Determine polynomial rank of observed
-        rank_x,poly_x = get_poly_rank(function_range, observed_trajectory[:, 0])
-        rank_y,poly_y = get_poly_rank(function_range, observed_trajectory[:, 1])
+        rank_x, poly_x = get_poly_rank(function_range, observed_trajectory[:, 0])
+        rank_y, poly_y = get_poly_rank(function_range, observed_trajectory[:, 1])
 
         # visualize_compare(observed_trajectory, estimated_trajectory)
 
@@ -151,20 +209,9 @@ class PDDLAgent(BaselineAgent):
         new_values = WorldModel(
             {
                 Params.gravity: abs(poly_y.deriv(2)(0)),
-                Params.velocity: math.sqrt(v0_x**2+v0_y**2)
+                Params.velocity: math.sqrt(v0_x ** 2 + v0_y ** 2)
             }
         )
 
         return new_values
 
-    def add_to_kb(self, grid_values, errors):
-
-        current_iteration = dict()
-        # Construct to KB
-        for grid_value, error in zip(grid_values, errors):
-            current_iteration[grid_value.values()] = error
-
-        # Add to KB
-        if len(self.kb) == self.kb_max_size:
-            self.kb.pop()
-        self.kb.insert(0, current_iteration)
