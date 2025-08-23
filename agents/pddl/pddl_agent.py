@@ -84,10 +84,10 @@ class PDDLAgent(BaselineAgent):
         """
         ground_truth_type = GroundTruthType.ground_truth_screenshot
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
-        
+
         with open(f"game-{self.c}.pkl", "wb") as f:
             pickle.dump(vision, f)
-            self.c +=1
+
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
         actions = self.get_action_to_perform(self.world_model)[0]
@@ -95,6 +95,9 @@ class PDDLAgent(BaselineAgent):
 
         release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        with open(f"batch-{self.c}.pkl", "wb") as f:
+            pickle.dump(vision, f)
+        self.c += 1
         time.sleep(2)
 
         # Analyze observed trajectory
