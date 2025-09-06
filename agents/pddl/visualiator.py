@@ -39,6 +39,7 @@ def visualize_trajectory(model, target_class, raw_trajectories):
 
 
 def visualize_compare(observed_trajectory, estimated_trajectory, changed_trajectoty=None):
+    plt.figure()
     plt.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], marker='o', color='blue')
     plt.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], marker='x', color='red')
     if np.all(changed_trajectoty!=None):

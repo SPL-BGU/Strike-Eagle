@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.interpolate import interp1d
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error,root_mean_squared_error
 
 
 def resample_trajectory(traj, num_points):
@@ -26,6 +26,6 @@ def calculate_rmse(observed_trajectory, estimated_trajectory):
     observed_trajectory_resampled = resample_trajectory(observed_trajectory, N)
     estimated_trajectory_resampled = resample_trajectory(estimated_trajectory[:last_index], N)
 
-    rmse = mean_squared_error(observed_trajectory_resampled, estimated_trajectory_resampled, squared=False)
+    rmse = root_mean_squared_error(observed_trajectory_resampled, estimated_trajectory_resampled)
 
     return rmse

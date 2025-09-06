@@ -4,7 +4,7 @@ import numpy as np
 
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.params import Params, HyperParams
-
+import math
 
 class WorldModel:
     # should be 87.2
@@ -56,7 +56,7 @@ class WorldModel:
         series_sum = 0
         for n in range(n_terms):
             # Calculate each term: (-1)^n * x^(2n+1) / (2n+1)!
-            term = ((-1) ** n) * (x ** (2 * n + 1)) / np.math.factorial(2 * n + 1)
+            term = ((-1) ** n) * (x ** (2 * n + 1)) /math.factorial(2 * n + 1)
             series_sum += term
         return series_sum
 
@@ -64,6 +64,6 @@ class WorldModel:
         series_sum = 0
         for n in range(n_terms):
             # Calculate each term: (-1)^n * x^(2n) / (2n)!
-            term = ((-1) ** n) * (x ** (2 * n)) / np.math.factorial(2 * n)
+            term = ((-1) ** n) * (x ** (2 * n)) / math.factorial(2 * n)
             series_sum += term
         return series_sum

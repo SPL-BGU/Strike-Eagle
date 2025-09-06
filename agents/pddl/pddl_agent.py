@@ -83,10 +83,11 @@ class PDDLAgent(BaselineAgent):
         * @return GameState: the game state after shots.
         """
         ground_truth_type = GroundTruthType.ground_truth_screenshot
-        vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+        vision = None
+        with open(f"game-3.pkl", "rb") as f:
+            vision = pickle.load(f)
+        # vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
 
-        with open(f"game-{self.c}.pkl", "wb") as f:
-            pickle.dump(vision, f)
 
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
@@ -94,24 +95,31 @@ class PDDLAgent(BaselineAgent):
         task, angle = actions
 
         release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
-        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
-        with open(f"batch-{self.c}.pkl", "wb") as f:
-            pickle.dump(batch_gt, f)
-        self.c += 1
+
+        # batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        with open(f"batch-3.pkl", "rb") as f:
+            batch_gt = pickle.load(f)
+
         time.sleep(2)
 
         # Analyze observed trajectory
-        groundtruth_trajectories,_ = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
+        groundtruth_trajectories,groundtruth_objects = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
 
 
         # getSegmentsPelt(observed_trajectory, 30)
 
-        event_indexes, objects_features = getSegmentsEvents(groundtruth_trajectories)
+        event_indexes_by_event, objects_features = getSegmentsEvents(groundtruth_trajectories,groundtruth_objects)
 
         bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
+
         bird_observed_features = objects_features["redBird_0"]
-        collisions = event_indexes["collision"]
-        parts = np.split(bird_observed_trajectory, collisions)
+        collisions = event_indexes_by_event["ground_collision"]
+
+        event_indexes = [val for values in event_indexes_by_event.values() for val in values]
+
+        parts = np.split(bird_observed_trajectory, event_indexes)
+
+
 
         # LEARN EVENT
 
@@ -166,7 +174,9 @@ class PDDLAgent(BaselineAgent):
         angle_rate = self.deg_step
         ground_truth_type = GroundTruthType.ground_truth_screenshot
         time.sleep(1)
-        vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+        vision = None
+        with open(f"game-3.pkl", "rb") as f:
+            vision = pickle.load(f)
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
 

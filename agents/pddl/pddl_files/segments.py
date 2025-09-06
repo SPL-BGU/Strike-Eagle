@@ -3,7 +3,7 @@ import ruptures as rpt
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN, KMeans
 
-from agents.pddl.pddl_files.events.event_conditions import is_ground_collision, is_hit
+from agents.pddl.pddl_files.events.event_conditions import is_ground_collision, is_hit, is_platform_collision
 
 
 def getSegmentsPelt(signal, penalty):
@@ -55,19 +55,24 @@ def calculate_features(trajectory):
     return features_dict_list
 
 
-def getSegmentsEvents(groundtruth_trajectories:dict):
+def getSegmentsEvents(groundtruth_trajectories:dict,groundtruth_objects:dict):
     objects_features = dict()
     for object,traj in groundtruth_trajectories.items():
         objects_features[object] = calculate_features(np.stack(traj))
-    event_indexes = check_events(objects_features
+    event_indexes = check_events(objects_features,groundtruth_objects
                                  , [
                                      {
-                                         "name": "collision",
+                                         "name": "ground_collision",
                                          "func": is_ground_collision
                                      },
                                      {
                                          "name": "hit",
                                          "func": is_hit
+                                     },
+                                     {
+                                         "name": "platform_collision",
+                                         "func": is_platform_collision
+
                                      }
                                  ]
                                  )
@@ -75,7 +80,7 @@ def getSegmentsEvents(groundtruth_trajectories:dict):
     return event_indexes, objects_features
 
 
-def check_events(objects_features, events: list):
+def check_events(objects_features,groundtruth_objects, events: list):
     result = {event["name"]: [] for event in events}
 
     frames = []
@@ -85,7 +90,7 @@ def check_events(objects_features, events: list):
 
     for i in range(len(frames)):
         for event in events:
-            if event["func"](frames,i):
+            if event["func"](frames,groundtruth_objects,i):
                 result[event["name"]].append(i)
     return result
 
