@@ -128,7 +128,7 @@
         )
     )
 
-    (:event collision_ground
+     (:event collision_ground
         :parameters (?b - bird)
         :precondition (and
             (= (active_bird) (bird_id ?b))
@@ -143,7 +143,6 @@
             (assign (vy_bird ?b) {SE-collision-v_y})
             (assign (vx_bird ?b) {SE-collision-v_x})
             (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
-
         )
     )
 

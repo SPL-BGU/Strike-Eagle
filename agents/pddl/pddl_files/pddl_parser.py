@@ -69,6 +69,8 @@ def inject_domain_file(path: str, world_model: WorldModel):
     new_content = content
 
     for variable_name, variable_data in world_model.kb["collision"]["variables"].items():
+        if variable_data["model"] == None:
+            continue
         coefs = variable_data["model"].coef_
         bias = variable_data["model"].intercept_
         vars = ['x_bird', 'y_bird', 'vx_bird', 'vy_bird']

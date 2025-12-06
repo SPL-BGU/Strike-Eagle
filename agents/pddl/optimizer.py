@@ -51,7 +51,9 @@ def get_resid(x, y, degree):
     if unstable_singular_values:
         print("Warning: Singular values indicate numerical instability.")
 
-    return resid[0], Polynomial(coeffs[::-1])
+    residual_sum_squares = resid[0] if len(resid) > 0 else 0.0
+
+    return residual_sum_squares, Polynomial(coeffs[::-1])
 
 
 def get_poly_rank(x, y, max_rank=5, threshold=1):

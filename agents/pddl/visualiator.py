@@ -54,7 +54,23 @@ def visualize_rmse(rmse_values):
 
     # Plotting
     plt.figure(figsize=(8, 4))
-    plt.plot(time_steps, rmse_values, marker='o')
+    plt.plot(time_steps, rmse_values, marker='o',color="blue")
+    plt.title('RMSE Over Time')
+    plt.xlabel('Time Step')
+    plt.ylabel('RMSE')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_rmse_vs_suggsted(rmse_values,suggested_rmse_values):
+
+    time_steps = list(range(len(rmse_values)))
+
+    # Plotting
+    plt.figure(figsize=(8, 4))
+    plt.plot(time_steps, rmse_values, marker='o',color="blue")
+    plt.plot(time_steps, suggested_rmse_values, marker='o', color="orange")
     plt.title('RMSE Over Time')
     plt.xlabel('Time Step')
     plt.ylabel('RMSE')

@@ -83,6 +83,13 @@ def getSegmentsEvents(groundtruth_trajectories:dict,groundtruth_objects:dict):
 def check_events(objects_features,groundtruth_objects, events: list):
     result = {event["name"]: [] for event in events}
 
+    max_time = max(len(traj) for traj in objects_features.values())
+
+    # Step 2: Stretch the trajectories to match the max length
+    for obj, traj in objects_features.items():
+        while len(traj) < max_time:
+            traj.append(traj[-1])
+
     frames = []
     for frame_values in zip(*objects_features.values()):
         frame_dict = dict(zip(objects_features.keys(), frame_values))

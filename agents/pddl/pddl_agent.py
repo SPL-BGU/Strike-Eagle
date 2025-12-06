@@ -14,7 +14,7 @@ from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
 from agents.pddl.visualiator import plot_errors, plot_score, visualize_compare, visuallize_wins_percentage, \
-    visualize_rmse
+    visualize_rmse, visualize_rmse_vs_suggsted
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
@@ -74,6 +74,7 @@ class PDDLAgent(BaselineAgent):
         self.aggravate_error_rate = list()
         self.aggravate_score = list()
         self.rmse = list()
+        self.suggested_rmse = list()
         self.wins = []
         self.c=0
 
@@ -83,10 +84,8 @@ class PDDLAgent(BaselineAgent):
         * @return GameState: the game state after shots.
         """
         ground_truth_type = GroundTruthType.ground_truth_screenshot
-        vision = None
-        with open(f"game-3.pkl", "rb") as f:
-            vision = pickle.load(f)
-        # vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+
+        vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
 
 
         sling = vision.find_slingshot_mbr()[0]
@@ -96,11 +95,11 @@ class PDDLAgent(BaselineAgent):
 
         release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
 
-        # batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
-        with open(f"batch-3.pkl", "rb") as f:
-            batch_gt = pickle.load(f)
-
-        time.sleep(2)
+        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        # with open(f"batch-3.pkl", "rb") as f:
+        #     batch_gt = pickle.load(f)
+        #
+        # time.sleep(2)
 
         # Analyze observed trajectory
         groundtruth_trajectories,groundtruth_objects = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
@@ -113,15 +112,16 @@ class PDDLAgent(BaselineAgent):
         bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
 
         bird_observed_features = objects_features["redBird_0"]
-        collisions = event_indexes_by_event["ground_collision"]
 
-        event_indexes = [val for values in event_indexes_by_event.values() for val in values]
+        event_indexes = sorted([val for values in event_indexes_by_event.values() for val in values])
 
         parts = np.split(bird_observed_trajectory, event_indexes)
 
 
 
         # LEARN EVENT
+
+        collisions = event_indexes_by_event["ground_collision"]
 
         for collision_index in collisions:
             update_model_effects("collision", self.kb, bird_observed_features[collision_index],
@@ -136,25 +136,25 @@ class PDDLAgent(BaselineAgent):
         limit = np.max( bird_observed_trajectory,axis=0)[0]
 
         estimated_trajectory = construct_trajectory( bird_observed_trajectory[0], angle, self.world_model, limit, prt=False)
-        changed_trajectoty = construct_trajectory( bird_observed_trajectory[0], angle, new_world_model, limit, prt=False)
+        suggested_trajectoty = construct_trajectory( bird_observed_trajectory[0], angle, new_world_model, limit, prt=False)
 
         self.rmse.append(calculate_rmse( bird_observed_trajectory,estimated_trajectory))
+        self.suggested_rmse.append(calculate_rmse(bird_observed_trajectory,suggested_trajectoty))
 
-        visualize_compare( bird_observed_trajectory, estimated_trajectory, changed_trajectoty)
-        visualize_rmse(self.rmse)
+        # visualize_compare( bird_observed_trajectory, estimated_trajectory, suggested_trajectoty)
+        # visualize_rmse(self.rmse)
+        # visualize_rmse_vs_suggsted(self.rmse,self.suggested_rmse)
 
         self.wins.append(self.ar.get_game_state() == GameState.WON)
-        visuallize_wins_percentage(self.wins)
+        # visuallize_wins_percentage(self.wins)
 
 
 
-        if self.ar.get_game_state() == GameState.LOST:
-            print(f"Old values- {self.world_model.hyperparams_values} ")
-            print(f"New values- gravity: {new_world_model.hyperparams_values} ")
-
+        print(f"Old values- {self.world_model.hyperparams_values} ")
+        print(f"New values- gravity: {new_world_model.hyperparams_values} ")
             # Update world model
-            self.world_model = new_world_model
-            self.world_model.kb = self.kb
+        self.world_model = new_world_model
+        self.world_model.kb = self.kb
 
         if len(self.aggravate_score) == 0:
             self.aggravate_score.append(self.check_current_level_score())
@@ -162,8 +162,9 @@ class PDDLAgent(BaselineAgent):
             self.aggravate_score.append(self.aggravate_score[-1] + self.check_current_level_score())
 
         # plot_score(self.aggravate_score)
+        print(self.rmse)
 
-        time.sleep(3)
+        time.sleep(5)
 
     def get_action_to_perform(self, agent_world_model: WorldModel):
         """
@@ -174,9 +175,8 @@ class PDDLAgent(BaselineAgent):
         angle_rate = self.deg_step
         ground_truth_type = GroundTruthType.ground_truth_screenshot
         time.sleep(1)
-        vision = None
-        with open(f"game-3.pkl", "rb") as f:
-            vision = pickle.load(f)
+        vision = self._update_reader(ground_truth_type.value,self.if_check_gt)
+
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
 
@@ -199,14 +199,19 @@ class PDDLAgent(BaselineAgent):
 
         domain_path = 'base_domain_modified.pddl' if agent_world_model.kb != None else 'domain.pddl'
         os.chdir('agents/pddl/pddl_files/')
-        subprocess.call(
-            ['java', '-jar', 'enhsp-20.jar', '-o', domain_path, '-f', 'problem.pddl', '-sp', 'solution.pddl',
-             '-planner', 'sat'
-                         '-pt'
-             # ,'-sjr','solution_path.json'
-             ])
-        os.chdir('../../..')
-        actions = parse_solution_to_actions(solution_path, 0, 0.2)
+        try:
+            subprocess.call(
+                ['java', '-jar', 'enhsp-20.jar', '-o', domain_path, '-f', 'problem.pddl', '-sp', 'solution.pddl',
+                 '-planner', 'sat'
+                             '-pt'
+                 # ,'-sjr','solution_path.json'
+                 ],timeout=200)
+            os.chdir('../../..')
+            actions = parse_solution_to_actions(solution_path, 0, 0.2)
+        except:
+            actions = [("shoot",45)]
+            os.chdir('../../..')
+
         return actions
 
     def learn_process(self, observed_trajectory: np.ndarray):

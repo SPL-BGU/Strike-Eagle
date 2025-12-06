@@ -35,8 +35,6 @@ def is_hit(frames,groundtruth_objects,i):
     r_bird = 3.5
     r_pig = 3.5
 
-    if v_bird <= 0:
-        return False
 
     dist_squared = (x_bird - x_pig) ** 2 + (y_bird - y_pig) ** 2
     radius_sum_squared = (r_bird + r_pig) ** 2

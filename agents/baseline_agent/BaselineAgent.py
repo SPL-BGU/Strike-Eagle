@@ -185,10 +185,10 @@ class BaselineAgent(Thread):
         return n_levels
 
     def run(self):
-        # self.ar.configure(self.id)
+        self.ar.configure(self.id)
         # do not use observer
         # self.observer_ar.configure(self.id)
-        # self.ar.set_game_simulation_speed(self.sim_speed)
+        self.ar.set_game_simulation_speed(self.sim_speed)
         # n_levels = self.update_no_of_levels()
 
         # self.solved = [0 for x in range(n_levels)]
@@ -209,8 +209,7 @@ class BaselineAgent(Thread):
         change_from_training = False
 
         while True:
-            # state = self.ar.get_game_state()
-            state = GameState.PLAYING
+            state = self.ar.get_game_state()
             # If the level is solved , go to the next level
             if state == GameState.WON:
                 self.repeated_gt_counter = 0
@@ -219,8 +218,8 @@ class BaselineAgent(Thread):
 
                 # /System.out.println(" loading the level " + (self.current_level + 1) )
                 # self.check_current_level_score()
-                # self.current_level = self.ar.load_next_available_level()
-                # self.novelty_existence = self.ar.get_novelty_info()
+                self.current_level = self.ar.load_next_available_level()
+                self.novelty_existence = self.ar.get_novelty_info()
 
                 # make a new trajectory planner whenever a new level is entered
                 self.tp = SimpleTrajectoryPlanner()

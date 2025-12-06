@@ -138,14 +138,13 @@ class AgentClient:
                 self.server_port
             )
         except socket.error as e:
-            pass
-            # self._logger.exception(
-            #     'Client failed to connect to server.'
-            #     + ' Requested HOST: %s'
-            #     + ' Requested PORT: %d'
-            #     + ' Error Message: %s',
-            #     self.server_host, self.server_port, e)
-            # raise e
+            self._logger.exception(
+                'Client failed to connect to server.'
+                + ' Requested HOST: %s'
+                + ' Requested PORT: %d'
+                + ' Error Message: %s',
+                self.server_host, self.server_port, e)
+            raise e
 
     def disconnect_from_server(self):
         try:
