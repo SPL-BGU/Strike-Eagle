@@ -333,14 +333,38 @@ class PDDLAgent(BaselineAgent):
             # Previous state features: [x[t-1], xdot[t-1], xddot[t-1]]
             x_prev = np.column_stack([x_values[:-1], xdot[:-1], xddot[:-1]])
             x_curr = x_values[1:]  # Current x values (target)
+            
+            # Debug: Check if data makes sense
+            if len(x_prev) > 0 and len(x_curr) > 0:
+                # x(t) should be approximately x(t-1) + xdot(t-1)*dt
+                # Check the actual relationship
+                x_diff = x_curr - x_prev[:, 0]  # x(t) - x(t-1)
+                dt = function_range[1] - function_range[0] if len(function_range) > 1 else 0.02
+                expected_diff = xdot[:-1] * dt  # xdot(t-1) * dt
+                correlation = np.corrcoef(x_prev[:, 0], x_curr)[0, 1] if len(x_prev) > 1 else 0
+                
+                print(f"\nDEBUG x(t) relationship:")
+                print(f"  Mean x(t) - x(t-1): {np.mean(x_diff):.6f}")
+                print(f"  Mean xdot(t-1)*dt: {np.mean(expected_diff):.6f}")
+                print(f"  Correlation between x(t-1) and x(t): {correlation:.6f}")
+                print(f"  Sample: x_prev[0]={x_prev[0]}, x_curr[0]={x_curr[0]}, diff={x_curr[0]-x_prev[0,0]:.6f}")
+                print(f"  If x(t) ≈ x(t-1) + xdot(t-1)*dt, then coefficient for x(t-1) should be ≈ 1.0")
+            
             # fit_state_transition returns {"model": regression_model, "polynomial": Polynomial}
             self.learned_transitions["x"] = fit_state_transition(x_curr, x_prev)
             
-            # y(t) = poly(x(t-1), xdot(t-1), xddot(t-1))
-            # Note: According to the image, y(t) also depends on x(t-1), xdot(t-1), xddot(t-1)
-            # Previous state features: [x[t-1], xdot[t-1], xddot[t-1]]
+            # y(t) = poly(y(t-1), ydot(t-1), yddot(t-1))
+            # Previous state features: [y[t-1], ydot[t-1], yddot[t-1]]
             y_curr = y_values[1:]  # Current y values (target)
             y_prev = np.column_stack([y_values[:-1], ydot[:-1], yddot[:-1]])
+            
+            # Debug: Check if data makes sense
+            if len(y_prev) > 0 and len(y_curr) > 0:
+                y_diff = y_curr - y_prev[:, 0]  # y(t) - y(t-1)
+                print(f"\nDEBUG y(t) relationship:")
+                print(f"  Mean y(t) - y(t-1): {np.mean(y_diff):.6f}")
+                print(f"  Mean ydot(t-1): {np.mean(ydot[:-1]):.6f}")
+            
             self.learned_transitions["y"] = fit_state_transition(y_curr, y_prev)
             
             # xdot(t) = poly(xdot(t-1), xddot(t-1))
@@ -408,9 +432,106 @@ class PDDLAgent(BaselineAgent):
                         initial_val = transition_dict["initial_value"]
                         transition_dict["string"] += f", {var_name}(0) = {initial_val:.2f}"
             
-            # Print all learned transition functions
+            # Print detailed coefficients for all learned transitions
             print("\n" + "="*80)
-            print("LEARNED STATE TRANSITION FUNCTIONS:")
+            print("DETAILED COEFFICIENTS FOR LEARNED TRANSITIONS:")
+            print("="*80)
+            for var_name in ["x", "y", "xdot", "ydot", "xddot", "yddot"]:
+                if self.learned_transitions[var_name] is not None:
+                    transition_dict = self.learned_transitions[var_name]
+                    model = transition_dict.get("model")
+                    features = feature_dependencies.get(var_name, [f"{var_name}(t-1)"])
+                    
+                    print(f"\n{var_name}(t):")
+                    if model is not None:
+                        if hasattr(model, 'poly_features') and hasattr(model, 'coef_'):
+                            # Multi-feature model with PolynomialFeatures
+                            poly_features = model.poly_features
+                            coefs = model.coef_
+                            intercept = model.intercept_
+                            
+                            try:
+                                feature_names_poly = poly_features.get_feature_names_out()
+                            except AttributeError:
+                                feature_names_poly = poly_features.get_feature_names()
+                            
+                            print(f"  Intercept: {intercept:.6f}")
+                            print(f"  Total polynomial features: {len(feature_names_poly)}")
+                            print(f"  Total coefficients: {len(coefs)}")
+                            print(f"  Feature names from PolynomialFeatures: {list(feature_names_poly[:min(10, len(feature_names_poly))])}")  # Show first 10
+                            bias_offset = 1 if len(feature_names_poly) > 0 and feature_names_poly[0] == "1" else 0
+                            print(f"  Bias offset: {bias_offset}")
+                            
+                            # Check specifically for the first feature (should be x(t-1) or y(t-1))
+                            print(f"  First feature name: '{features[0] if features else 'N/A'}'")
+                            print(f"  Looking for coefficient mapping to '{features[0] if features else 'N/A'}'")
+                            
+                            # IMPORTANT: When PolynomialFeatures has include_bias=True and LinearRegression has fit_intercept=True,
+                            # there's a double bias. LinearRegression's coef_ includes coefficients for ALL columns in X_poly,
+                            # including the bias column. So coef_[0] corresponds to feature_names_poly[0] which is '1'.
+                            # We need to check if LinearRegression actually used the bias column or its own intercept.
+                            
+                            # Check if first coefficient corresponds to bias column
+                            if len(coefs) == len(feature_names_poly):
+                                # coef_ includes bias column from PolynomialFeatures
+                                # coef_[0] = coefficient for '1' (bias column)
+                                # coef_[1] = coefficient for 'x0'
+                                # etc.
+                                print(f"  NOTE: coef_ includes bias column from PolynomialFeatures")
+                                for i, coef in enumerate(coefs):
+                                    if i < len(feature_names_poly):
+                                        poly_feat_name = feature_names_poly[i]
+                                        if poly_feat_name == "1":
+                                            print(f"  Coefficient[{i}] -> '{poly_feat_name}' (bias from PolynomialFeatures): {coef:.6f}")
+                                        else:
+                                            readable_term = self._parse_polynomial_feature(poly_feat_name, features)
+                                            if readable_term:
+                                                is_first_feature = (readable_term == features[0] if features else False)
+                                                marker = " <-- FIRST FEATURE" if is_first_feature else ""
+                                                print(f"  Coefficient[{i}] -> '{poly_feat_name}' -> '{readable_term}': {coef:.6f}{marker}")
+                                            else:
+                                                print(f"  Coefficient[{i}] -> '{poly_feat_name}' (unparseable): {coef:.6f}")
+                            else:
+                                # coef_ does NOT include bias column (LinearRegression handles it separately)
+                                # Use bias_offset as before
+                                for i, coef in enumerate(coefs):
+                                    poly_idx = i + bias_offset
+                                    if poly_idx < len(feature_names_poly):
+                                        poly_feat_name = feature_names_poly[poly_idx]
+                                        readable_term = self._parse_polynomial_feature(poly_feat_name, features)
+                                        if readable_term:
+                                            is_first_feature = (readable_term == features[0] if features else False)
+                                            marker = " <-- FIRST FEATURE" if is_first_feature else ""
+                                            print(f"  Coefficient[{i}] -> '{poly_feat_name}' -> '{readable_term}': {coef:.6f}{marker}")
+                                        else:
+                                            print(f"  Coefficient[{i}] -> '{poly_feat_name}' (unparseable): {coef:.6f}")
+                                    else:
+                                        print(f"  Coefficient[{i}]: {coef:.6f} (index {poly_idx} out of range)")
+                            
+                            # Also print raw coefficient array for debugging
+                            print(f"  Raw coefficients array: {coefs[:min(5, len(coefs))]}")  # First 5 coefficients
+                        elif hasattr(model, 'coef_'):
+                            # Simple linear model
+                            coefs = model.coef_
+                            intercept = model.intercept_ if hasattr(model, 'intercept_') else 0
+                            print(f"  Intercept: {intercept:.6f}")
+                            if len(coefs.shape) == 1:
+                                for i, coef in enumerate(coefs):
+                                    if i < len(features):
+                                        print(f"  Coefficient for '{features[i]}': {coef:.6f}")
+                                    else:
+                                        print(f"  Coefficient[{i}]: {coef:.6f}")
+                            else:
+                                print(f"  Coefficients shape: {coefs.shape}")
+                                print(f"  Coefficients: {coefs}")
+                    else:
+                        print("  Model is None")
+                else:
+                    print(f"\n{var_name}(t): Not learned")
+            
+            # Print all learned transition functions (formatted strings)
+            print("\n" + "="*80)
+            print("LEARNED STATE TRANSITION FUNCTIONS (FORMATTED):")
             print("="*80)
             for var_name in ["x", "y", "xdot", "ydot", "xddot", "yddot"]:
                 if self.learned_transitions[var_name] is not None and "string" in self.learned_transitions[var_name]:
@@ -471,31 +592,63 @@ class PDDLAgent(BaselineAgent):
                     # We need to map them to our feature_names
                     terms = []
                     
-                    # Add intercept (round to 2 decimal places, drop if zero)
-                    intercept_rounded = round(intercept, 2)
-                    if abs(intercept_rounded) > 1e-10:
-                        terms.append(f"{intercept_rounded:.2f}")
-                    
                     # Process each coefficient
-                    # Note: When PolynomialFeatures has include_bias=True, feature_names_poly[0] = "1"
-                    # LinearRegression stores intercept separately, so coefs[0] corresponds to feature_names_poly[1]
-                    # But we need to check: if feature_names_poly[0] == "1", then coefs align with feature_names_poly[1:]
-                    # Otherwise, they align with feature_names_poly
-                    bias_offset = 1 if len(feature_names_poly) > 0 and feature_names_poly[0] == "1" else 0
+                    # IMPORTANT: When PolynomialFeatures has include_bias=True and LinearRegression has fit_intercept=False,
+                    # coef_ includes the bias column. coef_[0] corresponds to feature_names_poly[0] ('1' bias column).
+                    # When fit_intercept=True (default), intercept_ is separate and coef_[0] corresponds to feature_names_poly[1].
                     
-                    for i, coef in enumerate(coefs):
+                    # Check if coef_ length matches feature_names_poly length
+                    # If yes, coef_ includes bias column - coef_[0] is for '1', coef_[1] is for 'x0', etc.
+                    # If no, LinearRegression handled bias separately and coef_[0] corresponds to feature_names_poly[1]
+                    if len(coefs) == len(feature_names_poly):
+                        # coef_ includes bias column - use intercept from coef_[0] instead of intercept_
+                        intercept_from_coef = coefs[0] if len(coefs) > 0 else 0
+                        intercept_rounded = round(intercept_from_coef, 2)
+                        if abs(intercept_rounded) > 1e-6:  # Only skip truly negligible intercepts
+                            terms.append(f"{intercept_rounded:.2f}")
+                        bias_offset = 0
+                        start_idx = 1  # Start from index 1 to skip bias column
+                    else:
+                        # coef_ does NOT include bias column - use intercept_ separately
+                        intercept_rounded = round(intercept, 2)
+                        if abs(intercept_rounded) > 1e-6:  # Only skip truly negligible intercepts
+                            terms.append(f"{intercept_rounded:.2f}")
+                        bias_offset = 1 if len(feature_names_poly) > 0 and feature_names_poly[0] == "1" else 0
+                        start_idx = 0  # Start from index 0
+                    
+                    for i in range(start_idx, len(coefs)):
                         # Round to 2 decimal places and drop if zero
-                        coef_rounded = round(coef, 2)
-                        if abs(coef_rounded) > 1e-10:  # Skip near-zero terms
-                            poly_idx = i + bias_offset
-                            if poly_idx < len(feature_names_poly):
-                                poly_feat_name = feature_names_poly[poly_idx]
-                                
-                                # Parse the polynomial feature name (e.g., "x0 x1" -> ["x0", "x1"])
-                                # and convert to readable format
-                                readable_term = self._parse_polynomial_feature(poly_feat_name, feature_names)
-                                if readable_term:
+                        coef_rounded = round(coefs[i], 2)
+                        if abs(coef_rounded) < 1e-6:  # Drop zero coefficients
+                            continue
+                            
+                        poly_idx = i + bias_offset
+                        if poly_idx < len(feature_names_poly):
+                            poly_feat_name = feature_names_poly[poly_idx]
+                            
+                            # Skip the bias column '1' - it's already handled above
+                            if poly_feat_name == "1":
+                                continue
+                            
+                            # Parse the polynomial feature name (e.g., "x0 x1" -> ["x0", "x1"])
+                            # and convert to readable format
+                            readable_term = self._parse_polynomial_feature(poly_feat_name, feature_names)
+                            if readable_term:
+                                # Format: if coefficient is 1.0, show without the "1.00*" prefix for readability
+                                if abs(coef_rounded - 1.0) < 1e-6:
+                                    terms.append(readable_term)
+                                elif abs(coef_rounded + 1.0) < 1e-6:
+                                    terms.append(f"-{readable_term}")
+                                else:
                                     terms.append(f"{coef_rounded:.2f}*{readable_term}")
+                            else:
+                                # If we can't parse it, still show it with the raw name
+                                if abs(coef_rounded - 1.0) < 1e-6:
+                                    terms.append(poly_feat_name)
+                                elif abs(coef_rounded + 1.0) < 1e-6:
+                                    terms.append(f"-{poly_feat_name}")
+                                else:
+                                    terms.append(f"{coef_rounded:.2f}*{poly_feat_name}")
                     
                     if not terms:
                         return f"{variable_name}(t) = f({features_str}) = 0"
@@ -510,11 +663,22 @@ class PDDLAgent(BaselineAgent):
                     for i, coef in enumerate(coefs):
                         # Round to 2 decimal places and drop if zero
                         coef_rounded = round(coef, 2)
-                        if abs(coef_rounded) > 1e-10:
-                            if i == 0:
-                                terms.append(f"{coef_rounded:.2f}")
-                            elif i == 1:
+                        if abs(coef_rounded) < 1e-6:  # Drop zero coefficients
+                            continue
+                        if i == 0:
+                            terms.append(f"{coef_rounded:.2f}")
+                        elif i == 1:
+                            if abs(coef_rounded - 1.0) < 1e-6:
+                                terms.append(feature_names[0])
+                            elif abs(coef_rounded + 1.0) < 1e-6:
+                                terms.append(f"-{feature_names[0]}")
+                            else:
                                 terms.append(f"{coef_rounded:.2f}*{feature_names[0]}")
+                        else:
+                            if abs(coef_rounded - 1.0) < 1e-6:
+                                terms.append(f"{feature_names[0]}**{i}")
+                            elif abs(coef_rounded + 1.0) < 1e-6:
+                                terms.append(f"-{feature_names[0]}**{i}")
                             else:
                                 terms.append(f"{coef_rounded:.2f}*{feature_names[0]}**{i}")
                     
@@ -530,14 +694,24 @@ class PDDLAgent(BaselineAgent):
             for i, coef in enumerate(coefs):
                 # Round to 2 decimal places and drop if zero
                 coef_rounded = round(coef, 2)
-                if abs(coef_rounded) > 1e-10:  # Skip near-zero terms
-                    if i == 0:
-                        terms.append(f"{coef_rounded:.2f}")
-                    elif i == 1:
-                        feature = feature_names[0] if feature_names else f"{variable_name}(t-1)"
-                        terms.append(f"{coef_rounded:.2f}*{feature}")
+                if abs(coef_rounded) < 1e-6:  # Drop zero coefficients
+                    continue
+                feature = feature_names[0] if feature_names else f"{variable_name}(t-1)"
+                if i == 0:
+                    terms.append(f"{coef_rounded:.2f}")
+                elif i == 1:
+                    if abs(coef_rounded - 1.0) < 1e-6:
+                        terms.append(feature)
+                    elif abs(coef_rounded + 1.0) < 1e-6:
+                        terms.append(f"-{feature}")
                     else:
-                        feature = feature_names[0] if feature_names else f"{variable_name}(t-1)"
+                        terms.append(f"{coef_rounded:.2f}*{feature}")
+                else:
+                    if abs(coef_rounded - 1.0) < 1e-6:
+                        terms.append(f"{feature}**{i}")
+                    elif abs(coef_rounded + 1.0) < 1e-6:
+                        terms.append(f"-{feature}**{i}")
+                    else:
                         terms.append(f"{coef_rounded:.2f}*{feature}**{i}")
             
             if not terms:

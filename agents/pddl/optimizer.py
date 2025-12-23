@@ -385,7 +385,9 @@ def fit_state_transition(state_current: np.ndarray, state_previous: np.ndarray, 
                         continue
                     
                     # Fit linear regression
-                    model = LinearRegression()
+                    # When PolynomialFeatures has include_bias=True, we should set fit_intercept=False
+                    # to avoid double bias (both PolynomialFeatures bias column and LinearRegression intercept)
+                    model = LinearRegression(fit_intercept=False)
                     model.fit(X_poly, state_current)
                     
                     # Calculate residual (sum of squared errors)
