@@ -2,6 +2,7 @@ from string import Template
 
 import numpy as np
 import os
+import re
 
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
@@ -69,8 +70,13 @@ def inject_domain_file(path: str, world_model: WorldModel):
     new_content = content
 
     for variable_name, variable_data in world_model.kb["collision"]["variables"].items():
+        placeholder = "{{SE-collision-{}}}".format(variable_name)
+        
         if variable_data["model"] == None:
+            # If no model available, inject 0
+            new_content = new_content.replace(placeholder, "0.0")
             continue
+        
         coefs = variable_data["model"].coef_
         bias = variable_data["model"].intercept_
         vars = ['x_bird', 'y_bird', 'vx_bird', 'vy_bird']
@@ -99,7 +105,12 @@ def inject_domain_file(path: str, world_model: WorldModel):
         else:
             equation = nested_terms
         # === Step 4: replace the tag ===
-        new_content = new_content.replace("{{SE-collision-{}}}".format(variable_name), equation)
+        new_content = new_content.replace(placeholder, equation)
+    
+    # Replace any remaining placeholders (not in KB) with 0 as fallback
+    remaining_placeholders = re.findall(r'\{\{SE-collision-[^}]+\}\}', new_content)
+    for placeholder in remaining_placeholders:
+        new_content = new_content.replace(placeholder, "0.0")
 
     # === Save modified file in same folder ===
     base_dir = os.path.dirname(path)
@@ -112,6 +123,72 @@ def inject_domain_file(path: str, world_model: WorldModel):
     print(f"Modified file saved to: {output_path}")
     # === Step 5: save to a new file (or overwrite if you prefer) ==
     print("Injection complete.")
+
+
+def inject_learned_transitions(path: str, world_model: WorldModel):
+    """
+    Inject learned state transition functions into the flying process in the domain file.
+    
+    Parameters:
+    -----------
+    path : str
+        Path to the base domain PDDL file
+    world_model : WorldModel
+        WorldModel instance containing learned_transitions attribute
+    """
+    if not hasattr(world_model, 'learned_transitions') or world_model.learned_transitions is None:
+        print("No learned transitions found in world model. Skipping injection.")
+        return
+    
+    with open(path, "r") as file:
+        content = file.read()
+    new_content = content
+    
+    learned_transitions = world_model.learned_transitions
+    
+    # Extract transition equations from learned models
+    # We need to convert the learned transition functions to PDDL format
+    # The format should match what was previously injected manually
+    
+    # For now, we'll use placeholders that can be replaced
+    # The actual implementation depends on how the transitions are structured
+    
+    # Check if we have the necessary transitions
+    if (learned_transitions.get("x") is not None and 
+        learned_transitions.get("y") is not None and
+        learned_transitions.get("xdot") is not None and
+        learned_transitions.get("ydot") is not None and
+        learned_transitions.get("yddot") is not None):
+        
+        # Get transition strings
+        x_transition = learned_transitions["x"].get("string", "")
+        y_transition = learned_transitions["y"].get("string", "")
+        xdot_transition = learned_transitions["xdot"].get("string", "")
+        ydot_transition = learned_transitions["ydot"].get("string", "")
+        yddot_transition = learned_transitions["yddot"].get("string", "")
+        
+        print(f"\nInjecting learned transitions into domain file:")
+        print(f"  x: {x_transition}")
+        print(f"  y: {y_transition}")
+        print(f"  xdot: {xdot_transition}")
+        print(f"  ydot: {ydot_transition}")
+        print(f"  yddot: {yddot_transition}")
+        
+        # For now, we'll store the transitions in the world model
+        # The actual PDDL injection can be done later when we know the exact format needed
+        # This is a placeholder that shows the transitions are available for injection
+        
+    # Save modified file in same folder
+    base_dir = os.path.dirname(path)
+    base_name = os.path.splitext(os.path.basename(path))[0]
+    output_path = os.path.join(base_dir, f"{base_name}_modified.pddl")
+    
+    # For now, just copy the content (actual injection logic to be implemented)
+    with open(output_path, "w") as file:
+        file.write(new_content)
+    
+    print(f"Learned transitions available for injection. Modified file saved to: {output_path}")
+    print("Note: Actual PDDL transition injection logic to be implemented based on format requirements.")
 
 
 def action_filter(line):

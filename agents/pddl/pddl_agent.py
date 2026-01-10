@@ -147,6 +147,13 @@ class PDDLAgent(BaselineAgent):
         # Learn state transition functions - new method
         # This learns how to predict next state from previous state
         self.learn_process_transitions(bird_observed_trajectory)
+        
+        # Create a new world model from learned transitions
+        self.learned_transition_world_model = self._create_learned_transition_world_model()
+        
+        # Print both world models
+        print(f"\nOriginal World Model: {new_world_model.hyperparams_values}")
+        print(f"Learned Transition World Model: {self.learned_transition_world_model.hyperparams_values}")
 
         # VISUALIZE
         limit = np.max( bird_observed_trajectory,axis=0)[0]
@@ -169,7 +176,7 @@ class PDDLAgent(BaselineAgent):
         print(f"Old values- {self.world_model.hyperparams_values} ")
         print(f"New values- gravity: {new_world_model.hyperparams_values} ")
             # Update world model
-        self.world_model = new_world_model
+        self.world_model = self.learned_transition_world_model
         self.world_model.kb = self.kb
 
         if len(self.aggravate_score) == 0:
@@ -380,25 +387,86 @@ class PDDLAgent(BaselineAgent):
             self.learned_transitions["ydot"] = fit_state_transition(ydot_curr, ydot_prev)
             
             # xddot(t) = poly(xddot(t-1))
-            # Previous state features: [xddot[t-1]]
-            xddot_prev = xddot[:-1].reshape(-1, 1)  # Reshape to 2D for consistency
-            xddot_curr = xddot[1:]  # Current xddot values (target)
-            self.learned_transitions["xddot"] = fit_state_transition(xddot_curr, xddot_prev)
+            # BUT: xddot should be constant (0 - no horizontal acceleration)
+            # So we force it to be constant instead of learning a transition function
+            if len(xddot) > 0:
+                # xddot should be 0 (no horizontal acceleration)
+                xddot_constant = 0.0
+                
+                # Create a constant model for xddot
+                class ConstantXddotModel:
+                    def __init__(self, constant_value):
+                        self.constant_value = constant_value
+                    def predict(self, X):
+                        if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
+                            return np.full(len(X), self.constant_value)
+                        return np.array([self.constant_value])
+                
+                constant_poly = Polynomial([xddot_constant])
+                self.learned_transitions["xddot"] = {
+                    "model": ConstantXddotModel(xddot_constant),
+                    "polynomial": constant_poly
+                }
+                
+                # Update xddot array to be constant for use in other transitions
+                xddot = np.full_like(xddot, xddot_constant)
+            else:
+                # Fallback if xddot is empty
+                self.learned_transitions["xddot"] = None
             
             # yddot(t) = poly(yddot(t-1))
-            # Previous state features: [yddot[t-1]]
-            yddot_prev = yddot[:-1].reshape(-1, 1)  # Reshape to 2D for consistency
-            yddot_curr = yddot[1:]  # Current yddot values (target)
-            self.learned_transitions["yddot"] = fit_state_transition(yddot_curr, yddot_prev)
+            # BUT: yddot should be constant (gravity doesn't change)
+            # So we force it to be constant instead of learning a transition function
+            if len(yddot) > 0:
+                # Use analytical second derivative from polynomial (should be constant)
+                # This is more accurate than numerical derivatives which can have noise
+                try:
+                    yddot_constant = poly_y.deriv(2)(0)  # Second derivative at t=0 (should be constant)
+                except:
+                    # Fallback to mean of computed yddot values
+                    yddot_constant = np.mean(yddot)
+                
+                # Create a constant model for yddot
+                class ConstantYddotModel:
+                    def __init__(self, constant_value):
+                        self.constant_value = constant_value
+                    def predict(self, X):
+                        if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
+                            return np.full(len(X), self.constant_value)
+                        return np.array([self.constant_value])
+                
+                constant_poly = Polynomial([yddot_constant])
+                self.learned_transitions["yddot"] = {
+                    "model": ConstantYddotModel(yddot_constant),
+                    "polynomial": constant_poly
+                }
+                
+                # Update yddot array to be constant for use in other transitions (ydot depends on yddot)
+                yddot = np.full_like(yddot, yddot_constant)
+            else:
+                # Fallback if yddot is empty
+                self.learned_transitions["yddot"] = None
             
             # Extract and store initial values (t=0)
+            # For constant models (xddot, yddot), use the constant value
+            xddot_initial = 0.0
+            yddot_initial = 0.0
+            if self.learned_transitions.get("xddot") is not None:
+                xddot_model = self.learned_transitions["xddot"].get("model")
+                if hasattr(xddot_model, 'constant_value'):
+                    xddot_initial = round(xddot_model.constant_value, 2)
+            if self.learned_transitions.get("yddot") is not None:
+                yddot_model = self.learned_transitions["yddot"].get("model")
+                if hasattr(yddot_model, 'constant_value'):
+                    yddot_initial = round(yddot_model.constant_value, 2)
+            
             initial_values = {
                 "x": round(x_values[0], 2) if len(x_values) > 0 else 0.0,
                 "y": round(y_values[0], 2) if len(y_values) > 0 else 0.0,
                 "xdot": round(xdot[0], 2) if len(xdot) > 0 else 0.0,
                 "ydot": round(ydot[0], 2) if len(ydot) > 0 else 0.0,
-                "xddot": round(xddot[0], 2) if len(xddot) > 0 else 0.0,
-                "yddot": round(yddot[0], 2) if len(yddot) > 0 else 0.0
+                "xddot": xddot_initial,
+                "yddot": yddot_initial
             }
             
             # Store initial values in each transition dictionary
@@ -421,16 +489,30 @@ class PDDLAgent(BaselineAgent):
                 if self.learned_transitions[var_name] is not None:
                     transition_dict = self.learned_transitions[var_name]
                     features = feature_dependencies.get(var_name, [f"{var_name}(t-1)"])
-                    transition_dict["string"] = self._get_transition_string(
-                        var_name, 
-                        transition_dict["polynomial"],
-                        transition_dict["model"],
-                        features
-                    )
+                    
+                    # Check if this is a constant model (for xddot and yddot)
+                    model = transition_dict.get("model")
+                    if hasattr(model, 'constant_value'):
+                        # Constant model - just output the constant value
+                        constant_val = round(model.constant_value, 2)
+                        transition_dict["string"] = f"{var_name}(t) = {constant_val:.2f}"
+                    else:
+                        # Regular transition function
+                        transition_dict["string"] = self._get_transition_string(
+                            var_name, 
+                            transition_dict["polynomial"],
+                            transition_dict["model"],
+                            features
+                        )
+                    
                     # Add initial value to string representation
                     if "initial_value" in transition_dict:
                         initial_val = transition_dict["initial_value"]
                         transition_dict["string"] += f", {var_name}(0) = {initial_val:.2f}"
+                    elif hasattr(model, 'constant_value'):
+                        # For constant models, initial value is the same as the constant
+                        constant_val = round(model.constant_value, 2)
+                        transition_dict["string"] += f", {var_name}(0) = {constant_val:.2f}"
             
             # Print detailed coefficients for all learned transitions
             print("\n" + "="*80)
@@ -542,6 +624,37 @@ class PDDLAgent(BaselineAgent):
         except Exception as e:
             print(f"Error in learn_process_transitions step 3: {e}")
             print("Some transition functions may not have been learned.")
+    
+    def _create_learned_transition_world_model(self):
+        """
+        Create a new WorldModel from learned transitions.
+        Only extracts yddot (gravity) and v (velocity from vx and vy).
+        
+        Returns:
+        --------
+        WorldModel
+            A new WorldModel instance with gravity and velocity from learned transitions
+        """
+        initial_values = {}
+        
+        # Get gravity from yddot (constant value)
+        if self.learned_transitions.get("yddot") is not None:
+            yddot_model = self.learned_transitions["yddot"].get("model")
+            if hasattr(yddot_model, 'constant_value'):
+                initial_values[Params.gravity] = abs(yddot_model.constant_value)
+        
+        # Calculate velocity from xdot and ydot initial values
+        vx = None
+        vy = None
+        if self.learned_transitions.get("xdot") is not None and "initial_value" in self.learned_transitions["xdot"]:
+            vx = self.learned_transitions["xdot"]["initial_value"]
+        if self.learned_transitions.get("ydot") is not None and "initial_value" in self.learned_transitions["ydot"]:
+            vy = self.learned_transitions["ydot"]["initial_value"]
+        
+        if vx is not None and vy is not None:
+            initial_values[Params.velocity] = math.sqrt(vx**2 + vy**2)
+        
+        return WorldModel(initial_values)
     
     def _get_transition_string(self, variable_name: str, poly, model, feature_names: list = None):
         """
