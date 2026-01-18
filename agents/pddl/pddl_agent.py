@@ -64,10 +64,10 @@ class PDDLAgent(BaselineAgent):
                         "model": None
                     },
                 }
-            }
+            },
+            "trajectories": []  # Store all past trajectories (first segment only, unlimited)
         }
         self.x =0
-        self.kb_max_size = 3
 
         # Storage for learned state transition functions
         # Each entry contains a regression model, polynomial representation, string representation, and initial value
@@ -141,12 +141,18 @@ class PDDLAgent(BaselineAgent):
         # LEARN PROCESS
         bird_observed_trajectory = parts[0]  # override everything else, only learn on part 1
 
+        # Store trajectory in KB (unlimited storage)
+        if "trajectories" not in self.kb:
+            self.kb["trajectories"] = []
+        self.kb["trajectories"].append(bird_observed_trajectory.copy())
+
         # Learn physics parameters (gravity, velocity) - existing method
-        new_world_model = self.learn_process( bird_observed_trajectory)
+        new_world_model = self.learn_process(bird_observed_trajectory)
         
         # Learn state transition functions - new method
         # This learns how to predict next state from previous state
-        self.learn_process_transitions(bird_observed_trajectory)
+        # Uses multiple trajectories from KB
+        self.learn_process_transitions()
         
         # Create a new world model from learned transitions
         self.learned_transition_world_model = self._create_learned_transition_world_model()
@@ -164,9 +170,9 @@ class PDDLAgent(BaselineAgent):
         self.rmse.append(calculate_rmse( bird_observed_trajectory,estimated_trajectory))
         self.suggested_rmse.append(calculate_rmse(bird_observed_trajectory,suggested_trajectoty))
 
-        # visualize_compare( bird_observed_trajectory, estimated_trajectory, suggested_trajectoty)
-        # visualize_rmse(self.rmse)
-        # visualize_rmse_vs_suggsted(self.rmse,self.suggested_rmse)
+        visualize_compare( bird_observed_trajectory, estimated_trajectory, suggested_trajectoty)
+        visualize_rmse(self.rmse)
+        visualize_rmse_vs_suggsted(self.rmse,self.suggested_rmse)
 
         self.wins.append(self.ar.get_game_state() == GameState.WON)
         # visuallize_wins_percentage(self.wins)
@@ -262,21 +268,16 @@ class PDDLAgent(BaselineAgent):
 
         return new_values
 
-    def learn_process_transitions(self, observed_trajectory: np.ndarray):
+    def learn_process_transitions(self):
         """
         Learn state transition functions using a 3-step process:
-        1. Fit curves to observed x,y positions
+        1. Fit curves to observed x,y positions from multiple trajectories in KB
         2. Sample curves and compute derivatives (xdot, xddot, ydot, yddot)
         3. Fit polynomial transition functions for each state variable
         
         This method learns how to predict the next state from the previous state,
-        rather than learning global physics parameters.
-        
-        Parameters:
-        -----------
-        observed_trajectory : np.ndarray
-            Observed trajectory points as (x, y) coordinates
-            Shape: (n_points, 2)
+        rather than learning global physics parameters. Uses multiple trajectories
+        stored in KB for better learning.
             
         Returns:
         --------
@@ -284,17 +285,45 @@ class PDDLAgent(BaselineAgent):
             Learned transition polynomials are stored in self.learned_transitions
         """
 
+        # Get all trajectories from KB
+        trajectories = self.kb.get("trajectories", [])
+        
+        if len(trajectories) == 0:
+            print("Warning: No trajectories in KB for learn_process_transitions(). Skipping.")
+            return
+        
+        # Concatenate all trajectories with time reset to 0 for each
+        # Each trajectory gets its own time axis starting from 0
+        all_times = []
+        all_x_values = []
+        all_y_values = []
+        
+        for traj in trajectories:
+            if len(traj) == 0:
+                continue
+            # Create time axis for this trajectory (starting at 0)
+            traj_time = np.array(range(len(traj))) / 50.0
+            all_times.extend(traj_time)
+            all_x_values.extend(traj[:, 0])
+            all_y_values.extend(traj[:, 1])
+        
+        if len(all_times) < 2:
+            print("Warning: Not enough trajectory samples in KB for learning transitions. Skipping.")
+            return
+        
+        # Convert to numpy arrays
+        function_range = np.array(all_times)
+        x_values_array = np.array(all_x_values)
+        y_values_array = np.array(all_y_values)
+        
+        # Create concatenated trajectory for compatibility
+        observed_trajectory = np.column_stack([x_values_array, y_values_array])
+
         start_frame = 0
         # ========================================================================
         # STEP 1: Fit curves to observed x,y positions
         # ========================================================================
-        # Convert trajectory indices to time values (each frame = 0.02 seconds)
-        # So time = index / 50
-        # Time starts from 0 for the selected segment
-        trajectory_segment = observed_trajectory[start_frame:]
-        function_range = np.array(range(len(trajectory_segment))) / 50.0  # Each frame = 0.02 seconds
-        
-        # Fit polynomials to x(t) and y(t) trajectories
+        # Fit polynomials to x(t) and y(t) trajectories on concatenated data
         # get_poly_rank() automatically selects the optimal polynomial degree
         rank_x, poly_x = get_poly_rank(function_range, observed_trajectory[start_frame:, 0])
         rank_y, poly_y = get_poly_rank(function_range, observed_trajectory[start_frame:, 1])

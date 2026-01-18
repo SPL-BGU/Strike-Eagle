@@ -101,11 +101,11 @@
             (> (y_bird ?b) 0)
         )
         :effect (and
-            (increase (y_bird ?b) (* (/ #t 100) (* 1.0 (vy_bird ?b))))
+            (increase (y_bird ?b) (* 0.02 (* 1.0 (vy_bird ?b))))
             ;(decrease (vy_bird ?b) (* #t (* 1.0 (gravity)) ))
             ;(increase (y_bird ?b) (- (* (/ #t 100) (* 1.0 (vy_bird ?b))) (* (* 0.5 (* (/ #t 100) (/ #t 100))) (* 1.0 (gravity))))) ; analytical solution. Appears to have detrimental effect on winning.
-            (decrease (vy_bird ?b) (* (/ #t 100) (* 1.0 (gravity)) ))
-            (increase (x_bird ?b) (* (/ #t 100) (* 1.0 (vx_bird ?b))))
+            (decrease (vy_bird ?b) (* 0.02 (* 1.0 (gravity)) ))
+            (increase (x_bird ?b) (* 0.02 (* 1.0 (vx_bird ?b))))
             (assign (mod) 0)
         )
     )
@@ -121,7 +121,7 @@
         :effect (and
             (assign (vx_bird ?b) (* (v_bird ?b) (cosine) ) ); this is a cos(angle) estimation
             (assign (vy_bird ?b) (* (v_bird ?b) (sinus) ) )
-            (decrease (x_bird ?b) (* 16 (cosine))) ;; define this values
+            (decrease (x_bird ?b) (* 22 (cosine))) ;; define this values
             (decrease (y_bird ?b) (* 12 (sinus))) ;; define this values
 
             (bird_released ?b)
