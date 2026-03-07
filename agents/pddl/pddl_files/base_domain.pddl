@@ -8,7 +8,7 @@
                 (bird_radius ?b - bird)
                 (bird_block_damage ?b - bird ?bl - block)
                 (mod) (cosine) (sinus)
-                (gravity) (angle_rate) (angle) (angle_rad) (active_bird) (ground_y_damper)(ground_x_damper) (max_angle) (gravity_factor)  (min_angle)
+                (gravity) (angle_rate) (angle) (angle_rad) (angle_bias) (active_bird) (ground_y_damper)(ground_x_damper) (max_angle) (gravity_factor)  (min_angle)
                 (base_life_wood_multiplier) (base_life_ice_multiplier) (base_life_stone_multiplier) (base_life_tnt_multiplier)
                 (base_mass_wood_multiplier) (base_mass_ice_multiplier) (base_mass_stone_multiplier) (base_mass_tnt_multiplier)
                 (meta_wood_multiplier) (meta_stone_multiplier) (meta_ice_multiplier) (meta_platform_size) ; TODO add: meta_block_size tnt_explosion_size bird_explosion_size
@@ -44,7 +44,7 @@
         )
         :effect (and
             (decrease (angle) (* #t (angle_rate)))
-            (assign (angle_rad) (* (angle)  0.01745329252))
+            (assign (angle_rad) (* (- (angle) (angle_bias))  0.01745329252))
             ;(assign (cosine) (- (+ (- 1 (/ (* (angle_rad) (angle_rad)) 2)) (/ (* (* (* (angle_rad) (angle_rad)) (angle_rad)) (angle_rad)) 24))))
             (
 	assign

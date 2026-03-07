@@ -3,15 +3,41 @@ from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from src.computer_vision.GroundTruthReader import GroundTruthReader
 import numpy as np
 from src.computer_vision.game_object import GameObject
+import math
 
-
-def filter_from_entity(entity: GameObject):
+def filter_from_entity(entity: GameObject, entity_type: str = None):
+    """
+    Extract location and dimensions from a game entity.
+    
+    For platforms (hills), uses vertices to calculate actual rotated bounding box
+    and center position. For other entities (birds, pigs, blocks), uses X, Y as center.
+    """
+    # Check if this is a platform/hill that might be rotated
+    is_platform = entity_type and "hill" in entity_type.lower()
+    
+    if is_platform and hasattr(entity, 'vertices') and entity.vertices and len(entity.vertices) >= 2:
+        # For platforms: calculate actual bounding box from vertices (handles rotation)
+        vertices = np.array(entity.vertices)
+        x_coords = vertices[:, 0]
+        y_coords = vertices[:, 1]
+        
+        # Actual bounding box dimensions
+        actual_width = np.max(x_coords) - np.min(x_coords)
+        actual_height = np.max(y_coords) - np.min(y_coords)
+        dimension = [actual_width, actual_height]
+        
+        # Calculate center from bounding box (X, Y is top-left for platforms)
+        center_x = (np.max(x_coords) + np.min(x_coords)) / 2
+        center_y = (np.max(y_coords) + np.min(y_coords)) / 2
+        location = np.array([center_x, 640 - center_y])  # invert y axis
+    else:
+        # For birds, pigs, blocks: X, Y is already the center
+        dimension = [entity.width, entity.height]
+        location = np.array([entity.X, 640 - entity.Y])  # invert y axis
+    
     return {
-        "location": np.array([
-        entity.X,
-        640 - entity.Y  # invert y axis
-    ]),
-    "dimension": [entity.width,entity.height]
+        "location": location,
+        "dimension": dimension
     }
 
 
@@ -27,7 +53,7 @@ def groundtruth_trajectory_parser(
         for object_type, object_list in temporal_state.items():
             for i, entity in enumerate(object_list):
                 entity_name = f"{object_type}_{i}"
-                filtered_entity = filter_from_entity(entity)
+                filtered_entity = filter_from_entity(entity, entity_type=object_type)
                 if entity_name not in entity_trajectories.keys():
                     entity_trajectories[entity_name] = []
                 entity_trajectories[entity_name].append(filtered_entity["location"])
@@ -45,42 +71,123 @@ def extract_real_trajectory(
     return groundtruth_trajectories, groundtruth_dimensions
 
 
+def euler_step(state, dt, gravity):
+    """Simple Euler integration: O(Δt²) error per step"""
+    x, y, vx, vy = state
+    return np.array([
+        x + dt * vx,
+        y + dt * vy,
+        vx,  # vx is constant
+        vy - dt * gravity
+    ])
+
+
+def midpoint_step(state, dt, gravity):
+    """Midpoint method: O(Δt³) error per step"""
+    x, y, vx, vy = state
+    
+    # Calculate midpoint velocity
+    vy_mid = vy - (dt / 2) * gravity
+    
+    # Use midpoint velocity for position update
+    return np.array([
+        x + dt * vx,
+        y + dt * vy_mid,
+        vx,  # vx is constant
+        vy - dt * gravity
+    ])
+
+
+def rk4_step(state, dt, gravity):
+    """Runge-Kutta 4th order: O(Δt⁵) error per step"""
+    x, y, vx, vy = state
+    
+    # Define derivative function: d[state]/dt = f(state, t)
+    def f(s):
+        sx, sy, svx, svy = s
+        return np.array([svx, svy, 0, -gravity])
+    
+    # RK4 algorithm
+    k1 = f(state)
+    k2 = f(state + dt/2 * k1)
+    k3 = f(state + dt/2 * k2)
+    k4 = f(state + dt * k3)
+    
+    # Weighted average
+    state_new = state + (dt / 6) * (k1 + 2*k2 + 2*k3 + k4)
+    
+    return state_new
+
+
 def construct_trajectory(
         starting_point: [float, float],
         angle: float,
         agent_world_model: WorldModel,
         limit: int,
         frame_rate=.02,
-        prt= True):
+        prt=True,
+        integration_method='rk4'):
+    """
+    Construct trajectory with improved numerical integration.
+    
+    Parameters:
+    -----------
+    starting_point : [float, float]
+        Starting position (x, y)
+    angle : float
+        Launch angle in degrees
+    agent_world_model : WorldModel
+        World model containing velocity and gravity parameters
+    limit : int
+        Maximum x-coordinate to simulate to
+    frame_rate : float
+        Time step in seconds (default 0.02 for 50 fps)
+    prt : bool
+        Whether to print debug information
+    integration_method : str
+        'euler' - Simple Euler (O(Δt²) error, fastest)
+        'midpoint' - Midpoint method (O(Δt³) error, good balance)
+        'rk4' - Runge-Kutta 4th order (O(Δt⁵) error, most accurate)
+    
+    Returns:
+    --------
+    trajectory : np.ndarray
+        Array of shape (N, 2) containing (x, y) positions
+    """
     MAX_FRAMES = 500
-    angle_rad = angle * 0.01745329252 # use angle rad as same as used in the pddl domain
     velocity = agent_world_model.hyperparams_values[Params.velocity]
     gravity = agent_world_model.hyperparams_values[Params.gravity]
-    vx = velocity * agent_world_model.taylor_cos(angle_rad,4)  # consider use the cos usage
-    vy = velocity * agent_world_model.taylor_sin(angle_rad,3)
-
-    if prt:
-        print(agent_world_model.taylor_cos(angle_rad,4))
-        print(agent_world_model.taylor_sin(angle_rad, 3))
+    
+    vx = velocity * math.cos(angle*math.pi/180)
+    vy = velocity * math.sin(angle*math.pi/180)
+    
     trajectory = np.reshape(starting_point, [1, 2])
-
-    for i in range(1,MAX_FRAMES):
+    
+    # State: [x, y, vx, vy]
+    state = np.array([starting_point[0], starting_point[1], vx, vy])
+    
+    for i in range(1, MAX_FRAMES):
         if prt:
-            print(f"vx:{vx}\t vy:{vy}")
-            print(f"location:{trajectory[i - 1, :]}")
-
-
-        trajectory = np.vstack([
-            trajectory,
-            trajectory[i - 1, :] + [
-                frame_rate * vx,
-                frame_rate * vy
-            ]
-        ])
-
-        vy -= frame_rate * gravity
-
-        if trajectory[-1,0]>limit:
+            print(f"vx:{state[2]}\t vy:{state[3]}")
+            print(f"location:{state[0:2]}")
+        
+        # Integrate one step based on method
+        if integration_method == 'euler':
+            # Simple Euler (original method)
+            state = euler_step(state, frame_rate, gravity)
+        elif integration_method == 'midpoint':
+            # Midpoint method (2nd order, better accuracy)
+            state = midpoint_step(state, frame_rate, gravity)
+        elif integration_method == 'rk4':
+            # Runge-Kutta 4th order (4th order, best accuracy)
+            state = rk4_step(state, frame_rate, gravity)
+        else:
+            raise ValueError(f"Unknown integration method: {integration_method}")
+        
+        # Append position to trajectory
+        trajectory = np.vstack([trajectory, state[0:2]])
+        
+        if state[0] > limit:
             break
-
+    
     return trajectory

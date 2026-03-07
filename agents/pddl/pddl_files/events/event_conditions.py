@@ -32,8 +32,10 @@ def is_hit(frames,groundtruth_objects,i):
     x_bird, y_bird = bird["x"], bird["y"]
     x_pig, y_pig = pig["x"], pig["y"]
 
-    r_bird = 3.5
-    r_pig = 3.5
+    dim_bird = groundtruth_objects["redBird_0"]
+    dim_pig = groundtruth_objects["pig_0"]
+    r_bird = max(dim_bird)/2
+    r_pig = max(dim_pig)/2
 
 
     dist_squared = (x_bird - x_pig) ** 2 + (y_bird - y_pig) ** 2

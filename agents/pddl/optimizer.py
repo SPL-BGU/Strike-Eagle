@@ -9,6 +9,7 @@ from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from numpy.polynomial.polynomial import Polynomial
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 
 
 def calculate_current_error(observed: Polynomial, estimated: Polynomial):
@@ -84,6 +85,17 @@ def get_poly_rank(x, y, max_rank=5, threshold=1):
     condition = resids_diff < threshold
 
     rank = np.argmax(condition) if np.any(condition) else 3
+
+    # Calculate and print goodness metrics
+    poly = polys[rank]
+    y_pred = poly(x)
+    r2 = r2_score(y, y_pred)
+    
+    print(f"  get_poly_rank - Selected degree: {rank}, RSS: {resids[rank]:.4f}, R²: {r2:.6f}")
+    if rank > 0:
+        print(f"  get_poly_rank - Improvement from degree {rank-1} to {rank}: {resids_diff[rank-1]:.4f}")
+    if rank < max_rank - 1:
+        print(f"  get_poly_rank - Next improvement (degree {rank} to {rank+1}): {resids_diff[rank]:.4f}")
 
     return rank, polys[rank]
 

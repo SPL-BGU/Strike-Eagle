@@ -14,13 +14,14 @@ from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
 from agents.pddl.visualiator import plot_errors, plot_score, visualize_compare, visuallize_wins_percentage, \
-    visualize_rmse, visualize_rmse_vs_suggsted
+    visualize_rmse, visualize_rmse_vs_suggsted, visualize_starting_point_offset, full_trajectory_comparison, \
+    debug_is_hit_last_frames, debug_all_events_full_trajectory
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
 from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions, inject_domain_file
 from src.client.agent_client import GameState
-from agents.pddl.metrics import calculate_rmse
+from agents.pddl.metrics import calculate_rmse, compare_truncation_methods, get_robust_launch_angle
 
 from numpy.polynomial import Polynomial
 
@@ -29,7 +30,7 @@ class PDDLAgent(BaselineAgent):
     """Birds in boots (server/client version)"""
 
     def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 1,
-                 learn: bool = False):
+                 learn: bool = False, start_counting_from_game: int = 0):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
@@ -46,7 +47,7 @@ class PDDLAgent(BaselineAgent):
             Params.gravity: 90,
             Params.velocity: 200
         })
-
+        self.start_counting_from_game=8
         self.kb = {
             "collision": {
                 "states": [],
@@ -88,6 +89,11 @@ class PDDLAgent(BaselineAgent):
         self.suggested_rmse = list()
         self.wins = []
         self.c=0
+        
+        # Win/loss tracking per level
+        self.start_counting_from_game = start_counting_from_game  # Skip first X games before counting
+        self.games_played = 0  # Total games played counter
+        self.game_results = []  # Array of (level, "win"/"loss")
 
     def solve(self):
         """
@@ -104,6 +110,8 @@ class PDDLAgent(BaselineAgent):
         actions = self.get_action_to_perform(self.world_model)[0]
         task, angle = actions
 
+        print(f"Shooting Angle - {angle}")
+
         release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
 
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
@@ -119,6 +127,12 @@ class PDDLAgent(BaselineAgent):
         # getSegmentsPelt(observed_trajectory, 30)
 
         event_indexes_by_event, objects_features = getSegmentsEvents(groundtruth_trajectories,groundtruth_objects)
+
+        # Debug is_hit detection - shows last 20 frames with bird/pig positions and collision info
+        debug_is_hit_last_frames(objects_features, groundtruth_objects, n_frames=100)
+        
+        # Debug ALL events (ground collision, hit, platform collision) for entire trajectory
+        # debug_all_events_full_trajectory(objects_features, groundtruth_objects)
 
         bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
 
@@ -139,48 +153,128 @@ class PDDLAgent(BaselineAgent):
                                  bird_observed_features[collision_index + 1])
 
         # LEARN PROCESS
-        bird_observed_trajectory = parts[0]  # override everything else, only learn on part 1
+        bird_observed_trajectory = parts[0] # override everything else, only learn on part 1
 
         # Store trajectory in KB (unlimited storage)
         if "trajectories" not in self.kb:
             self.kb["trajectories"] = []
         self.kb["trajectories"].append(bird_observed_trajectory.copy())
 
-        # Learn physics parameters (gravity, velocity) - existing method
-        new_world_model = self.learn_process(bird_observed_trajectory)
-        
-        # Learn state transition functions - new method
-        # This learns how to predict next state from previous state
-        # Uses multiple trajectories from KB
-        self.learn_process_transitions()
-        
-        # Create a new world model from learned transitions
-        self.learned_transition_world_model = self._create_learned_transition_world_model()
-        
-        # Print both world models
-        print(f"\nOriginal World Model: {new_world_model.hyperparams_values}")
-        print(f"Learned Transition World Model: {self.learned_transition_world_model.hyperparams_values}")
+        # Only learn if we haven't reached the freeze threshold (8 games)
+        if self.games_played < 8:
+            # Learn physics parameters (gravity, velocity) - existing method
+            # new_world_model = self.learn_process(bird_observed_trajectory)
+            
+            # Learn state transition functions - new method
+            # This learns how to predict next state from previous state
+            # Uses multiple trajectories from KB
+            self.learn_process_transitions()
+            
+            # Create a new world model from learned transitions
+            self.learned_transition_world_model = self._create_learned_transition_world_model()
+            
+            # Print both world models
+            print(f"\nOriginal World Model: {self.learned_transition_world_model.hyperparams_values}")
+            print(f"Learned Transition World Model: {self.learned_transition_world_model.hyperparams_values}")
+        else:
+            print(f"\nModel learning FROZEN (game {self.games_played} >= 8)")
 
         # VISUALIZE
         limit = np.max( bird_observed_trajectory,axis=0)[0]
 
-        estimated_trajectory = construct_trajectory( bird_observed_trajectory[0], angle, self.world_model, limit, prt=False)
-        suggested_trajectoty = construct_trajectory( bird_observed_trajectory[0], angle, new_world_model, limit, prt=False)
+        # Use RK4 integration for better accuracy (can also try 'midpoint' or 'euler')
+        estimated_trajectory = construct_trajectory(
+            bird_observed_trajectory[0], 
+            angle, 
+            self.world_model, 
+            limit, 
+            prt=False,
+            integration_method='rk4'  # Options: 'euler', 'midpoint', 'rk4'
+        )
+        suggested_trajectoty = construct_trajectory(
+            bird_observed_trajectory[0], 
+            angle, 
+            self.learned_transition_world_model, 
+            limit, 
+            prt=False,
+            integration_method='rk4'  # Options: 'euler', 'midpoint', 'rk4'
+        )
 
-        self.rmse.append(calculate_rmse( bird_observed_trajectory,estimated_trajectory))
+        self.rmse.append(calculate_rmse(bird_observed_trajectory, estimated_trajectory,trim_start_percent=0,trim_end_percent=0,apply_bias_correction=False))
         self.suggested_rmse.append(calculate_rmse(bird_observed_trajectory,suggested_trajectoty))
 
-        visualize_compare( bird_observed_trajectory, estimated_trajectory, suggested_trajectoty)
-        visualize_rmse(self.rmse)
-        visualize_rmse_vs_suggsted(self.rmse,self.suggested_rmse)
+        # Visualize starting point offset to diagnose alignment issues
+        # Get PDDL bird position (reference point from slingshot)
+        ref_point = self.tp.get_reference_point(sling)
+        pddl_ref_pos = (ref_point.X, 640 - ref_point.Y)  # PDDL uses inverted Y coordinate
+        
+        # Calculate PDDL bird position AFTER pa-twang action
+        # pa-twang decreases x_bird by (* 22 (cosine)) and y_bird by (* 12 (sinus))
+        # Check which domain file is used (domain.pddl uses 22, base_domain.pddl uses 16)
+        import math
+        angle_rad = angle * math.pi / 180
+        cosine = math.cos(angle_rad)
+        sinus = math.sin(angle_rad)
+        
+        # Use 22 for domain.pddl, 16 for base_domain.pddl (check which is active)
+        # Default to 22 (domain.pddl) but can be adjusted
+        patwang_x_offset = 22  # domain.pddl uses 22, base_domain.pddl uses 16
+        patwang_y_offset = 12  # Both use 12
+        
+        pddl_bird_pos_after_patwang = (
+            ref_point.X - patwang_x_offset * cosine,
+            640 - ref_point.Y - patwang_y_offset * sinus
+        )
+        
+        # visualize_starting_point_offset(
+        #     bird_observed_trajectory,
+        #     estimated_trajectory,
+        #     show_first_n_points=15,  # Show first 15 points in detail
+        #     pddl_bird_pos=pddl_bird_pos_after_patwang,  # PDDL bird position AFTER pa-twang
+        #     pddl_ref_pos=pddl_ref_pos,  # PDDL reference point (before pa-twang)
+        #     angle=angle  # Angle for display
+        # )
+        
+        # visualize_compare( bird_observed_trajectory, estimated_trajectory, suggested_trajectoty)
+        # visualize_rmse(self.rmse)
+        # visualize_rmse_vs_suggsted(self.rmse,self.suggested_rmse)
 
-        self.wins.append(self.ar.get_game_state() == GameState.WON)
+        from agents.pddl.metrics import analyze_launch_angle
+
+        from agents.pddl.metrics import compare_rmse_with_and_without_bias
+
+        # Show visualizations starting from the 9th game
+        if self.games_played >= 9:
+            full_trajectory_comparison(bird_observed_trajectory, estimated_trajectory, frame_rate=0.02, n_frames=20)
+
+        # get_robust_launch_angle(bird_observed_trajectory, num_points=20, commanded_angle_deg=-angle)
+
+        game_result = self.ar.get_game_state() == GameState.WON
+        self.wins.append(game_result)
+        
+        # Track wins/losses per level
+        self.games_played += 1
+        if self.games_played > self.start_counting_from_game:
+            self.game_results.append((self.current_level, "win" if game_result else "loss"))
+        
         # visuallize_wins_percentage(self.wins)
 
+        from agents.pddl.metrics import compare_interpolation_methods
 
+        # result = compare_interpolation_methods(bird_observed_trajectory, estimated_trajectory)
+        # Compare truncation: Option 1 (observed range) vs Option 3 (minimum overlap)
+        # result1 = compare_truncation_methods(bird_observed_trajectory, estimated_trajectory)
+
+        from agents.pddl.metrics import analyze_error_by_position
+
+        # Default: 10 segments
+        # result = analyze_error_by_position(bird_observed_trajectory, estimated_trajectory)
+
+        # Or specify more/fewer segments
+        # result = analyze_error_by_position(bird_observed_trajectory, estimated_trajectory, num_segments=20)
 
         print(f"Old values- {self.world_model.hyperparams_values} ")
-        print(f"New values- gravity: {new_world_model.hyperparams_values} ")
+        print(f"New values- gravity: {self.learned_transition_world_model.hyperparams_values} ")
             # Update world model
         self.world_model = self.learned_transition_world_model
         self.world_model.kb = self.kb
@@ -192,6 +286,7 @@ class PDDLAgent(BaselineAgent):
 
         # plot_score(self.aggravate_score)
         print(self.rmse)
+        print(self.game_results)
 
         time.sleep(5)
 
@@ -270,14 +365,15 @@ class PDDLAgent(BaselineAgent):
 
     def learn_process_transitions(self):
         """
-        Learn state transition functions using a 3-step process:
-        1. Fit curves to observed x,y positions from multiple trajectories in KB
-        2. Sample curves and compute derivatives (xdot, xddot, ydot, yddot)
-        3. Fit polynomial transition functions for each state variable
+        Learn state transition functions using a per-trajectory aggregation approach:
+        1. Process each trajectory independently - fit polynomials and compute derivatives
+        2. Extract state transition pairs (prev_state -> curr_state) from each trajectory
+        3. Aggregate all transition pairs from all trajectories
+        4. Fit polynomial transition functions on the aggregated data
         
         This method learns how to predict the next state from the previous state,
-        rather than learning global physics parameters. Uses multiple trajectories
-        stored in KB for better learning.
+        rather than learning global physics parameters. Each trajectory is processed
+        independently to avoid time-axis discontinuities, then transitions are aggregated.
             
         Returns:
         --------
@@ -292,211 +388,183 @@ class PDDLAgent(BaselineAgent):
             print("Warning: No trajectories in KB for learn_process_transitions(). Skipping.")
             return
         
-        # Concatenate all trajectories with time reset to 0 for each
-        # Each trajectory gets its own time axis starting from 0
-        all_times = []
-        all_x_values = []
-        all_y_values = []
+        # Collect state transition pairs from all trajectories
+        all_x_prev = []
+        all_x_curr = []
+        all_y_prev = []
+        all_y_curr = []
+        all_xdot_prev = []
+        all_xdot_curr = []
+        all_ydot_prev = []
+        all_ydot_curr = []
+        all_xddot_values = []
+        all_yddot_values = []
+        all_yddot_constants = []  # Store gravity values from each trajectory
         
-        for traj in trajectories:
-            if len(traj) == 0:
+        # Process each trajectory independently
+        for traj_idx, traj in enumerate(trajectories):
+            if len(traj) < 2:
                 continue
+            
             # Create time axis for this trajectory (starting at 0)
-            traj_time = np.array(range(len(traj))) / 50.0
-            all_times.extend(traj_time)
-            all_x_values.extend(traj[:, 0])
-            all_y_values.extend(traj[:, 1])
+            function_range = np.array(range(len(traj))) / 50.0
+            
+            # ========================================================================
+            # STEP 1: Fit curves to this trajectory's x,y positions
+            # ========================================================================
+            rank_x, poly_x = get_poly_rank(function_range, traj[:, 0])
+            rank_y, poly_y = get_poly_rank(function_range, traj[:, 1])
+            
+            # ========================================================================
+            # STEP 2: Sample curves and compute derivatives for this trajectory
+            # ========================================================================
+            x_values = np.array([poly_x(t) for t in function_range])
+            y_values = np.array([poly_y(t) for t in function_range])
+            
+            # Compute derivatives for this trajectory
+            xdot, xddot, ydot, yddot = compute_derivatives(poly_x, poly_y, function_range,
+                                                          x_values=x_values, y_values=y_values)
+            
+            # Extract gravity (yddot constant) from this trajectory
+            try:
+                yddot_constant = poly_y.deriv(2)(0)  # Second derivative at t=0
+            except:
+                yddot_constant = np.mean(yddot) if len(yddot) > 0 else 0.0
+            all_yddot_constants.append(yddot_constant)
+            
+            # ========================================================================
+            # STEP 3: Extract state transition pairs from this trajectory
+            # ========================================================================
+            # For each time step t from 1 to n-1, create (prev_state, curr_state) pairs
+            if len(x_values) >= 2:
+                # x transitions: [x(t-1), xdot(t-1), xddot(t-1)] -> x(t)
+                all_x_prev.append(np.column_stack([x_values[:-1], xdot[:-1], xddot[:-1]]))
+                all_x_curr.append(x_values[1:])
+                
+                # y transitions: [y(t-1), ydot(t-1), yddot(t-1)] -> y(t)
+                all_y_prev.append(np.column_stack([y_values[:-1], ydot[:-1], yddot[:-1]]))
+                all_y_curr.append(y_values[1:])
+                
+                # xdot transitions: [xdot(t-1), xddot(t-1)] -> xdot(t)
+                all_xdot_prev.append(np.column_stack([xdot[:-1], xddot[:-1]]))
+                all_xdot_curr.append(xdot[1:])
+                
+                # ydot transitions: [ydot(t-1), yddot(t-1)] -> ydot(t)
+                all_ydot_prev.append(np.column_stack([ydot[:-1], yddot[:-1]]))
+                all_ydot_curr.append(ydot[1:])
+                
+                # xddot values (should be constant 0)
+                all_xddot_values.extend(xddot)
         
-        if len(all_times) < 2:
+        # Check if we have enough data
+        if len(all_x_prev) == 0:
             print("Warning: Not enough trajectory samples in KB for learning transitions. Skipping.")
             return
         
-        # Convert to numpy arrays
-        function_range = np.array(all_times)
-        x_values_array = np.array(all_x_values)
-        y_values_array = np.array(all_y_values)
+        # Aggregate all transition pairs from all trajectories
+        x_prev_combined = np.vstack(all_x_prev) if all_x_prev else None
+        x_curr_combined = np.concatenate(all_x_curr) if all_x_curr else None
+        y_prev_combined = np.vstack(all_y_prev) if all_y_prev else None
+        y_curr_combined = np.concatenate(all_y_curr) if all_y_curr else None
+        xdot_prev_combined = np.vstack(all_xdot_prev) if all_xdot_prev else None
+        xdot_curr_combined = np.concatenate(all_xdot_curr) if all_xdot_curr else None
+        ydot_prev_combined = np.vstack(all_ydot_prev) if all_ydot_prev else None
+        ydot_curr_combined = np.concatenate(all_ydot_curr) if all_ydot_curr else None
         
-        # Create concatenated trajectory for compatibility
-        observed_trajectory = np.column_stack([x_values_array, y_values_array])
-
-        start_frame = 0
-        # ========================================================================
-        # STEP 1: Fit curves to observed x,y positions
-        # ========================================================================
-        # Fit polynomials to x(t) and y(t) trajectories on concatenated data
-        # get_poly_rank() automatically selects the optimal polynomial degree
-        rank_x, poly_x = get_poly_rank(function_range, observed_trajectory[start_frame:, 0])
-        rank_y, poly_y = get_poly_rank(function_range, observed_trajectory[start_frame:, 1])
+        print(f"\nProcessed {len(trajectories)} trajectories from KB")
+        print(f"Total state transition pairs: {len(x_curr_combined) if x_curr_combined is not None else 0}")
         
         # ========================================================================
-        # STEP 2: Sample curves and compute derivatives
+        # STEP 4: Fit polynomial transition functions on aggregated data
         # ========================================================================
-        # Get the actual x and y values at each time sample from the fitted polynomials
-        x_values = np.array([poly_x(t) for t in function_range])
-        y_values = np.array([poly_y(t) for t in function_range])
-        
-        # # Validate computed values
-        # x_values = np.nan_to_num(x_values, nan=0.0, posinf=0.0, neginf=0.0)
-        # y_values = np.nan_to_num(y_values, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        # Compute derivatives for all time samples using numerical differentiation
-        # This is more accurate than analytical derivatives of fitted polynomials
-        # - xdot(t) = first derivative of x(t) = dx/dt
-        # - xddot(t) = second derivative of x(t) = d²x/dt²
-        # - ydot(t) = first derivative of y(t) = dy/dt
-        # - yddot(t) = second derivative of y(t) = d²y/dt²
-        xdot, xddot, ydot, yddot = compute_derivatives(poly_x, poly_y, function_range, 
-                                                       x_values=x_values, y_values=y_values)
-        
-        # ========================================================================
-        # STEP 3: Fit polynomial transition functions
-        # ========================================================================
-        # For each state variable, fit a polynomial that predicts the current value
-        # from the previous state values
-        
-        # Prepare training data: for each time step t from 1 to n-1:
-        # - Previous state: state at time t-1
-        # - Current state: state at time t (target for prediction)
-        n_samples = len(observed_trajectory)
-        
-        # Need at least 2 samples to create training pairs
-        if n_samples < 2:
-            print("Warning: Not enough trajectory samples for learning transitions. Skipping.")
-            return
         
         try:
             # x(t) = poly(x(t-1), xdot(t-1), xddot(t-1))
             # Previous state features: [x[t-1], xdot[t-1], xddot[t-1]]
-            x_prev = np.column_stack([x_values[:-1], xdot[:-1], xddot[:-1]])
-            x_curr = x_values[1:]  # Current x values (target)
-            
-            # Debug: Check if data makes sense
-            if len(x_prev) > 0 and len(x_curr) > 0:
-                # x(t) should be approximately x(t-1) + xdot(t-1)*dt
-                # Check the actual relationship
-                x_diff = x_curr - x_prev[:, 0]  # x(t) - x(t-1)
-                dt = function_range[1] - function_range[0] if len(function_range) > 1 else 0.02
-                expected_diff = xdot[:-1] * dt  # xdot(t-1) * dt
-                correlation = np.corrcoef(x_prev[:, 0], x_curr)[0, 1] if len(x_prev) > 1 else 0
-                
-                print(f"\nDEBUG x(t) relationship:")
-                print(f"  Mean x(t) - x(t-1): {np.mean(x_diff):.6f}")
-                print(f"  Mean xdot(t-1)*dt: {np.mean(expected_diff):.6f}")
-                print(f"  Correlation between x(t-1) and x(t): {correlation:.6f}")
-                print(f"  Sample: x_prev[0]={x_prev[0]}, x_curr[0]={x_curr[0]}, diff={x_curr[0]-x_prev[0,0]:.6f}")
-                print(f"  If x(t) ≈ x(t-1) + xdot(t-1)*dt, then coefficient for x(t-1) should be ≈ 1.0")
-            
-            # fit_state_transition returns {"model": regression_model, "polynomial": Polynomial}
-            self.learned_transitions["x"] = fit_state_transition(x_curr, x_prev)
+            if x_prev_combined is not None and x_curr_combined is not None:
+                self.learned_transitions["x"] = fit_state_transition(x_curr_combined, x_prev_combined)
             
             # y(t) = poly(y(t-1), ydot(t-1), yddot(t-1))
             # Previous state features: [y[t-1], ydot[t-1], yddot[t-1]]
-            y_curr = y_values[1:]  # Current y values (target)
-            y_prev = np.column_stack([y_values[:-1], ydot[:-1], yddot[:-1]])
-            
-            # Debug: Check if data makes sense
-            if len(y_prev) > 0 and len(y_curr) > 0:
-                y_diff = y_curr - y_prev[:, 0]  # y(t) - y(t-1)
-                print(f"\nDEBUG y(t) relationship:")
-                print(f"  Mean y(t) - y(t-1): {np.mean(y_diff):.6f}")
-                print(f"  Mean ydot(t-1): {np.mean(ydot[:-1]):.6f}")
-            
-            self.learned_transitions["y"] = fit_state_transition(y_curr, y_prev)
+            if y_prev_combined is not None and y_curr_combined is not None:
+                self.learned_transitions["y"] = fit_state_transition(y_curr_combined, y_prev_combined)
             
             # xdot(t) = poly(xdot(t-1), xddot(t-1))
             # Previous state features: [xdot[t-1], xddot[t-1]]
-            xdot_prev = np.column_stack([xdot[:-1], xddot[:-1]])
-            xdot_curr = xdot[1:]  # Current xdot values (target)
-            self.learned_transitions["xdot"] = fit_state_transition(xdot_curr, xdot_prev)
+            if xdot_prev_combined is not None and xdot_curr_combined is not None:
+                self.learned_transitions["xdot"] = fit_state_transition(xdot_curr_combined, xdot_prev_combined)
             
             # ydot(t) = poly(ydot(t-1), yddot(t-1))
             # Previous state features: [ydot[t-1], yddot[t-1]]
-            ydot_prev = np.column_stack([ydot[:-1], yddot[:-1]])
-            ydot_curr = ydot[1:]  # Current ydot values (target)
-            self.learned_transitions["ydot"] = fit_state_transition(ydot_curr, ydot_prev)
+            if ydot_prev_combined is not None and ydot_curr_combined is not None:
+                self.learned_transitions["ydot"] = fit_state_transition(ydot_curr_combined, ydot_prev_combined)
             
-            # xddot(t) = poly(xddot(t-1))
-            # BUT: xddot should be constant (0 - no horizontal acceleration)
-            # So we force it to be constant instead of learning a transition function
-            if len(xddot) > 0:
-                # xddot should be 0 (no horizontal acceleration)
-                xddot_constant = 0.0
-                
-                # Create a constant model for xddot
-                class ConstantXddotModel:
-                    def __init__(self, constant_value):
-                        self.constant_value = constant_value
-                    def predict(self, X):
-                        if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
-                            return np.full(len(X), self.constant_value)
-                        return np.array([self.constant_value])
-                
-                constant_poly = Polynomial([xddot_constant])
-                self.learned_transitions["xddot"] = {
-                    "model": ConstantXddotModel(xddot_constant),
-                    "polynomial": constant_poly
-                }
-                
-                # Update xddot array to be constant for use in other transitions
-                xddot = np.full_like(xddot, xddot_constant)
-            else:
-                # Fallback if xddot is empty
-                self.learned_transitions["xddot"] = None
+            # xddot(t) = constant (0 - no horizontal acceleration)
+            # xddot should be 0 (no horizontal acceleration)
+            xddot_constant = 0.0
             
-            # yddot(t) = poly(yddot(t-1))
-            # BUT: yddot should be constant (gravity doesn't change)
-            # So we force it to be constant instead of learning a transition function
-            if len(yddot) > 0:
-                # Use analytical second derivative from polynomial (should be constant)
-                # This is more accurate than numerical derivatives which can have noise
-                try:
-                    yddot_constant = poly_y.deriv(2)(0)  # Second derivative at t=0 (should be constant)
-                except:
-                    # Fallback to mean of computed yddot values
-                    yddot_constant = np.mean(yddot)
-                
-                # Create a constant model for yddot
-                class ConstantYddotModel:
-                    def __init__(self, constant_value):
-                        self.constant_value = constant_value
-                    def predict(self, X):
-                        if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
-                            return np.full(len(X), self.constant_value)
-                        return np.array([self.constant_value])
-                
-                constant_poly = Polynomial([yddot_constant])
-                self.learned_transitions["yddot"] = {
-                    "model": ConstantYddotModel(yddot_constant),
-                    "polynomial": constant_poly
-                }
-                
-                # Update yddot array to be constant for use in other transitions (ydot depends on yddot)
-                yddot = np.full_like(yddot, yddot_constant)
-            else:
-                # Fallback if yddot is empty
-                self.learned_transitions["yddot"] = None
+            # Create a constant model for xddot
+            class ConstantXddotModel:
+                def __init__(self, constant_value):
+                    self.constant_value = constant_value
+                def predict(self, X):
+                    if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
+                        return np.full(len(X), self.constant_value)
+                    return np.array([self.constant_value])
             
-            # Extract and store initial values (t=0)
-            # For constant models (xddot, yddot), use the constant value
-            xddot_initial = 0.0
-            yddot_initial = 0.0
-            if self.learned_transitions.get("xddot") is not None:
-                xddot_model = self.learned_transitions["xddot"].get("model")
-                if hasattr(xddot_model, 'constant_value'):
-                    xddot_initial = round(xddot_model.constant_value, 2)
-            if self.learned_transitions.get("yddot") is not None:
-                yddot_model = self.learned_transitions["yddot"].get("model")
-                if hasattr(yddot_model, 'constant_value'):
-                    yddot_initial = round(yddot_model.constant_value, 2)
-            
-            initial_values = {
-                "x": round(x_values[0], 2) if len(x_values) > 0 else 0.0,
-                "y": round(y_values[0], 2) if len(y_values) > 0 else 0.0,
-                "xdot": round(xdot[0], 2) if len(xdot) > 0 else 0.0,
-                "ydot": round(ydot[0], 2) if len(ydot) > 0 else 0.0,
-                "xddot": xddot_initial,
-                "yddot": yddot_initial
+            constant_poly = Polynomial([xddot_constant])
+            self.learned_transitions["xddot"] = {
+                "model": ConstantXddotModel(xddot_constant),
+                "polynomial": constant_poly
             }
+            
+            # yddot(t) = constant (gravity doesn't change)
+            # Average gravity (yddot) from all trajectories
+            if len(all_yddot_constants) > 0:
+                yddot_constant = np.mean(all_yddot_constants)
+                print(f"  Averaged gravity from {len(all_yddot_constants)} trajectories: {yddot_constant:.4f}")
+            else:
+                yddot_constant = 0.0
+            
+            # Create a constant model for yddot
+            class ConstantYddotModel:
+                def __init__(self, constant_value):
+                    self.constant_value = constant_value
+                def predict(self, X):
+                    if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
+                        return np.full(len(X), self.constant_value)
+                    return np.array([self.constant_value])
+            
+            constant_poly = Polynomial([yddot_constant])
+            self.learned_transitions["yddot"] = {
+                "model": ConstantYddotModel(yddot_constant),
+                "polynomial": constant_poly
+            }
+            
+            # Extract initial values from the most recent trajectory
+            last_traj = trajectories[-1] if len(trajectories) > 0 and len(trajectories[-1]) > 0 else None
+            if last_traj is not None:
+                last_function_range = np.array(range(len(last_traj))) / 50.0
+                last_rank_x, last_poly_x = get_poly_rank(last_function_range, last_traj[:, 0])
+                last_rank_y, last_poly_y = get_poly_rank(last_function_range, last_traj[:, 1])
+                last_x_values = np.array([last_poly_x(t) for t in last_function_range])
+                last_y_values = np.array([last_poly_y(t) for t in last_function_range])
+                last_xdot, _, last_ydot, _ = compute_derivatives(last_poly_x, last_poly_y, last_function_range,
+                                                                 x_values=last_x_values, y_values=last_y_values)
+                
+                initial_values = {
+                    "x": round(last_x_values[0], 2) if len(last_x_values) > 0 else 0.0,
+                    "y": round(last_y_values[0], 2) if len(last_y_values) > 0 else 0.0,
+                    "xdot": round(last_xdot[0], 2) if len(last_xdot) > 0 else 0.0,
+                    "ydot": round(last_ydot[0], 2) if len(last_ydot) > 0 else 0.0,
+                    "xddot": xddot_constant,
+                    "yddot": yddot_constant
+                }
+            else:
+                initial_values = {
+                    "x": 0.0, "y": 0.0, "xdot": 0.0, "ydot": 0.0,
+                    "xddot": xddot_constant, "yddot": yddot_constant
+                }
             
             # Store initial values in each transition dictionary
             for var_name in ["x", "y", "xdot", "ydot", "xddot", "yddot"]:

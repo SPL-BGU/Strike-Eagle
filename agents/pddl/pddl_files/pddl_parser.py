@@ -25,6 +25,10 @@ problem_template = Template("""(define (problem sample_problem)
 """)
 
 
+# Angle bias correction (in degrees) - compensates for slingshot mechanics
+# Positive bias means the actual shot goes less steep than commanded
+ANGLE_BIAS_DEGREES = 0  # Based on empirical measurements
+
 def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: WorldModel):
     objects = list()
     goals = list()
@@ -32,6 +36,7 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         f"(= (angle) 90)",
         f"(= (angle_rad) {np.pi / 2})",
         f"(= (angle_rate) {angel_rate})",
+        f"(= (angle_bias) {ANGLE_BIAS_DEGREES})",  # Bias correction for slingshot
         "(= (cosine) 0 )",
         "(= (sinus) 1 )",
         f"(= (bounce_count) 0)",
