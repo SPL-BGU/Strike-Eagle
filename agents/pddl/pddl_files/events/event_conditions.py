@@ -2,11 +2,33 @@ import numpy as np
 import math
 
 def is_ground_collision(frames,groundtruth_objects,i):
-    epsilon=3
-    if not "redBird_0" in frames[i]:
+    """
+    Detect ground collision: bird hits the ground with significant downward velocity.
+    
+    Conditions for a true bounce:
+    1. Previous frame: y > epsilon (bird was above ground)
+    2. Current frame: y <= epsilon (bird hits ground)
+    3. Bird had significant downward velocity (v_y < -threshold)
+    """
+    epsilon = 3
+    velocity_threshold = -0.5  # Minimum downward velocity to count as collision (not just rolling)
+    
+    if "redBird_0" not in frames[i]:
         return False
-    else:
-        return i > 0 and frames[i-1]["redBird_0"]['y'] <= epsilon and frames[i]["redBird_0"]['y'] > epsilon
+    
+    if i == 0:
+        return False
+    
+    current_y = frames[i]["redBird_0"]['y']
+    prev_y = frames[i-1]["redBird_0"]['y']
+    prev_vy = frames[i-1]["redBird_0"].get('v_y', 0)
+    
+    # Collision: bird was above ground, now at/below ground, AND was moving downward
+    is_collision = (prev_y > epsilon and 
+                    current_y <= epsilon and 
+                    prev_vy < velocity_threshold)
+    
+    return is_collision
 
 
 def is_hit(frames,groundtruth_objects,i):

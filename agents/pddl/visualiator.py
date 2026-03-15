@@ -1426,3 +1426,960 @@ def debug_all_events_full_trajectory(objects_features, groundtruth_objects):
         'objects_in_trajectory': list(objects_features.keys()),
         'platforms_found': platform_names
     }
+
+
+def visualize_ground_collision_detection(bird_trajectory, bird_features, event_indexes_by_event, 
+                                          world_model=None, angle=None):
+    """
+    Visualize ground collision detection and compare predicted vs actual post-collision trajectory.
+    
+    Parameters:
+    -----------
+    bird_trajectory : np.ndarray or list
+        Full bird trajectory [(x,y), ...]
+    bird_features : list of dict
+        Features at each frame: [{x, y, v_x, v_y, a_x, a_y}, ...]
+    event_indexes_by_event : dict
+        Event indexes by type, e.g., {"ground_collision": [45, 102], ...}
+    world_model : WorldModel, optional
+        World model with learned KB for prediction
+    angle : float, optional
+        Launch angle in degrees (for trajectory reconstruction)
+    """
+    from agents.pddl.trajectory_parser import construct_trajectory
+    
+    bird_trajectory = np.array(bird_trajectory)
+    collision_frames = event_indexes_by_event.get("ground_collision", [])
+    
+    if len(collision_frames) == 0:
+        print("No ground collisions detected!")
+        return
+    
+    GROUND_LEVEL = 360  # Ground level in game coordinates
+    n_collisions = len(collision_frames)
+    
+    # Transform Y: multiply by -1 so trajectory shows correctly
+    # Ground level will be at y=0, bird flying high = positive y values
+    traj_y_natural = abs((bird_trajectory[:, 1] - GROUND_LEVEL))
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Ground Collision Detection Analysis\n{n_collisions} collision(s) detected at frames: {collision_frames}', 
+                 fontsize=14, fontweight='bold')
+    
+    # =========================================================================
+    # Plot 1: Full trajectory with collision points marked
+    # =========================================================================
+    ax1 = axes[0, 0]
+    
+    # Plot full trajectory with transformed Y (natural coordinates)
+    ax1.plot(bird_trajectory[:, 0], traj_y_natural, 'b-', linewidth=1.5, 
+             alpha=0.7, label='Bird trajectory')
+    
+    # Mark collision points
+    for i, coll_frame in enumerate(collision_frames):
+        if coll_frame < len(bird_trajectory):
+            coll_x = bird_trajectory[coll_frame, 0]
+            coll_y_natural = traj_y_natural[coll_frame]
+            coll_y_screen = bird_trajectory[coll_frame, 1]
+            ax1.scatter(coll_x, coll_y_natural, s=200, c='red', marker='*', zorder=10,
+                       edgecolors='black', linewidths=2,
+                       label=f'Collision {i+1} (frame {coll_frame})' if i == 0 else f'Collision {i+1}')
+            
+            # Add annotation with original screen Y for reference
+            ax1.annotate(f'Frame {coll_frame}\ny={coll_y_screen:.1f}', 
+                        (coll_x, coll_y_natural), textcoords="offset points",
+                        xytext=(10, 10), fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+    
+    # Draw ground level (at y=0 in natural coords)
+    ax1.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Ground (y=0)')
+    
+    ax1.set_xlabel('X Position', fontsize=11)
+    ax1.set_ylabel('Height above ground (pixels)', fontsize=11)
+    ax1.set_title('Full Trajectory with Collision Points\n(Natural view: bird arcs UP then falls DOWN to ground)', fontsize=12)
+    ax1.legend(loc='best', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    
+    # =========================================================================
+    # Plot 2: Y position over time with collision detection
+    # =========================================================================
+    ax2 = axes[0, 1]
+    
+    # Extract y values from features
+    y_values = [f['y'] for f in bird_features]
+    frames = list(range(len(y_values)))
+    
+    ax2.plot(frames, y_values, 'b-', linewidth=2, label='Y position (from ground)')
+    ax2.axhline(y=0, color='brown', linestyle='--', linewidth=2, label='Ground level (y=0)')
+    ax2.axhline(y=3, color='orange', linestyle=':', linewidth=1, label='Detection threshold (ε=3)')
+    ax2.axhline(y=-3, color='orange', linestyle=':', linewidth=1)
+    
+    # Mark collision frames
+    for coll_frame in collision_frames:
+        if coll_frame < len(y_values):
+            ax2.axvline(x=coll_frame, color='red', linestyle='-', linewidth=2, alpha=0.7)
+            ax2.scatter(coll_frame, y_values[coll_frame], s=150, c='red', marker='o', zorder=10)
+            
+            # Show pre/post collision y values
+            if coll_frame > 0:
+                ax2.annotate(f'pre: {y_values[coll_frame-1]:.2f}\nat: {y_values[coll_frame]:.2f}\npost: {y_values[coll_frame+1]:.2f}' if coll_frame+1 < len(y_values) else f'pre: {y_values[coll_frame-1]:.2f}\nat: {y_values[coll_frame]:.2f}',
+                            (coll_frame, y_values[coll_frame]), 
+                            textcoords="offset points", xytext=(15, 0), fontsize=8,
+                            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    
+    ax2.set_xlabel('Frame', fontsize=11)
+    ax2.set_ylabel('Y Position (from ground)', fontsize=11)
+    ax2.set_title('Y Position Over Time\n(Collision: y[i-1]>ε AND y[i]≤ε AND v_y<0)', fontsize=12)
+    ax2.legend(loc='best', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    
+    # =========================================================================
+    # Plot 3: Velocity components around collision
+    # =========================================================================
+    ax3 = axes[1, 0]
+    
+    vx_values = [f['v_x'] for f in bird_features]
+    vy_values = [f['v_y'] for f in bird_features]
+    
+    ax3.plot(frames, vx_values, 'g-', linewidth=2, label='v_x (horizontal)')
+    ax3.plot(frames, vy_values, 'purple', linewidth=2, label='v_y (vertical)')
+    ax3.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+    
+    # Mark collision frames and show velocity changes
+    for coll_frame in collision_frames:
+        ax3.axvline(x=coll_frame, color='red', linestyle='-', linewidth=2, alpha=0.7)
+        
+        if coll_frame > 0 and coll_frame + 1 < len(vx_values):
+            pre_vx, pre_vy = vx_values[coll_frame], vy_values[coll_frame]
+            post_vx, post_vy = vx_values[coll_frame + 1], vy_values[coll_frame + 1]
+            
+            # Annotate velocity change
+            ax3.annotate(f'Δv_x: {post_vx - pre_vx:.1f}\nΔv_y: {post_vy - pre_vy:.1f}',
+                        (coll_frame, max(pre_vy, post_vy)), 
+                        textcoords="offset points", xytext=(15, 10), fontsize=9,
+                        bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8),
+                        arrowprops=dict(arrowstyle='->', color='red'))
+    
+    ax3.set_xlabel('Frame', fontsize=11)
+    ax3.set_ylabel('Velocity', fontsize=11)
+    ax3.set_title('Velocity Components Over Time', fontsize=12)
+    ax3.legend(loc='best', fontsize=9)
+    ax3.grid(True, alpha=0.3)
+    
+    # =========================================================================
+    # Plot 4: Pre vs Post collision state comparison + predicted trajectory
+    # =========================================================================
+    ax4 = axes[1, 1]
+    
+    if len(collision_frames) > 0:
+        first_coll = collision_frames[0]
+        
+        # Show pre and post collision states
+        if first_coll > 0 and first_coll + 1 < len(bird_features):
+            pre_state = bird_features[first_coll]
+            post_state = bird_features[first_coll + 1]
+            
+            # Create comparison table
+            table_data = [
+                ['Variable', 'Pre-Collision', 'Post-Collision', 'Change'],
+                ['x', f'{pre_state["x"]:.2f}', f'{post_state["x"]:.2f}', f'{post_state["x"]-pre_state["x"]:+.2f}'],
+                ['y', f'{pre_state["y"]:.2f}', f'{post_state["y"]:.2f}', f'{post_state["y"]-pre_state["y"]:+.2f}'],
+                ['v_x', f'{pre_state["v_x"]:.2f}', f'{post_state["v_x"]:.2f}', f'{post_state["v_x"]-pre_state["v_x"]:+.2f}'],
+                ['v_y', f'{pre_state["v_y"]:.2f}', f'{post_state["v_y"]:.2f}', f'{post_state["v_y"]-pre_state["v_y"]:+.2f}'],
+            ]
+            
+            # Add damping ratios
+            if abs(pre_state["v_x"]) > 0.1:
+                vx_ratio = post_state["v_x"] / pre_state["v_x"]
+                table_data.append(['v_x ratio', '-', '-', f'{vx_ratio:.3f}'])
+            if abs(pre_state["v_y"]) > 0.1:
+                vy_ratio = post_state["v_y"] / pre_state["v_y"]
+                table_data.append(['v_y ratio', '-', '-', f'{vy_ratio:.3f}'])
+            
+            # Display as text
+            ax4.axis('off')
+            table = ax4.table(cellText=table_data[1:], colLabels=table_data[0],
+                             loc='center', cellLoc='center',
+                             colColours=['lightblue']*4)
+            table.auto_set_font_size(False)
+            table.set_fontsize(11)
+            table.scale(1.2, 1.8)
+            
+            # Add title with physical interpretation
+            vy_sign_change = "YES ✓" if (pre_state["v_y"] * post_state["v_y"]) < 0 else "NO ✗"
+            ax4.set_title(f'Collision State Analysis (Frame {first_coll})\n'
+                         f'v_y sign reversal: {vy_sign_change}', fontsize=12)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print detailed collision info
+    print("\n" + "="*70)
+    print("GROUND COLLISION DETECTION DETAILS")
+    print("="*70)
+    for i, coll_frame in enumerate(collision_frames):
+        if coll_frame > 0 and coll_frame + 1 < len(bird_features):
+            pre = bird_features[coll_frame]
+            post = bird_features[coll_frame + 1]
+            print(f"\nCollision {i+1} at frame {coll_frame}:")
+            print(f"  PRE:  x={pre['x']:.2f}, y={pre['y']:.2f}, v_x={pre['v_x']:.2f}, v_y={pre['v_y']:.2f}")
+            print(f"  POST: x={post['x']:.2f}, y={post['y']:.2f}, v_x={post['v_x']:.2f}, v_y={post['v_y']:.2f}")
+            if abs(pre['v_y']) > 0.1:
+                print(f"  v_y damping ratio: {post['v_y']/pre['v_y']:.3f} (expected: negative, ~-0.5)")
+            if abs(pre['v_x']) > 0.1:
+                print(f"  v_x friction ratio: {post['v_x']/pre['v_x']:.3f} (expected: positive, ~0.8)")
+    print("="*70)
+    
+    return {
+        'collision_frames': collision_frames,
+        'bird_features': bird_features,
+        'bird_trajectory': bird_trajectory
+    }
+
+
+def visualize_post_collision_trajectory(bird_trajectory, bird_features, event_indexes_by_event,
+                                         world_model, kb=None):
+    """
+    Compare actual post-collision trajectory with predicted trajectory using learned model.
+    
+    Parameters:
+    -----------
+    bird_trajectory : np.ndarray or list
+        Full bird trajectory [(x,y), ...]
+    bird_features : list of dict
+        Features at each frame
+    event_indexes_by_event : dict
+        Event indexes by type
+    world_model : WorldModel
+        World model with physics parameters
+    kb : dict, optional
+        Knowledge base with learned collision models
+    """
+    from agents.pddl.trajectory_parser import construct_trajectory
+    from agents.pddl.pddl_files.world_model.params import Params
+    
+    bird_trajectory = np.array(bird_trajectory)
+    collision_frames = event_indexes_by_event.get("ground_collision", [])
+    
+    if len(collision_frames) == 0:
+        print("No ground collisions to analyze!")
+        return
+    
+    first_coll = collision_frames[0]
+    
+    if first_coll + 1 >= len(bird_features):
+        print("Not enough data after collision!")
+        return
+    
+    # Get actual post-collision trajectory
+    actual_post_traj = bird_trajectory[first_coll + 1:]
+    
+    # Get states with CORRECTED velocities (matching the learning code)
+    FRAME_RATE = 0.02
+    pre_features = bird_features[first_coll]
+    post_features = bird_features[first_coll + 1]
+    prev_features = bird_features[first_coll - 1] if first_coll > 0 else pre_features
+    
+    # PRE-COLLISION state: velocity BEFORE collision (backward difference)
+    pre_state = pre_features.copy()
+    pre_state['v_x'] = (pre_features['x'] - prev_features['x']) / FRAME_RATE
+    pre_state['v_y'] = (pre_features['y'] - prev_features['y']) / FRAME_RATE
+    
+    # POST-COLLISION state: velocity AFTER collision (forward from collision point)
+    post_state = post_features.copy()
+    post_state['v_x'] = (post_features['x'] - pre_features['x']) / FRAME_RATE
+    post_state['v_y'] = (post_features['y'] - pre_features['y']) / FRAME_RATE
+    
+    # Predict using learned model if KB available
+    predicted_post_state = None
+    if kb is not None and "collision" in kb:
+        predicted_post_state = {}
+        
+        for var_name in ["v_x", "v_y", "y"]:
+            model = kb["collision"]["variables"].get(var_name, {}).get("model")
+            if model is not None:
+                from sklearn.preprocessing import PolynomialFeatures
+                X = np.array([[pre_state["x"], pre_state["y"], pre_state["v_x"], pre_state["v_y"]]])
+                poly = PolynomialFeatures(degree=1, include_bias=False)
+                X_poly = poly.fit_transform(X)
+                predicted_post_state[var_name] = model.predict(X_poly)[0]
+            else:
+                predicted_post_state[var_name] = post_state[var_name]
+        
+        predicted_post_state["x"] = post_state["x"]  # x doesn't change much in collision
+    
+    # Construct predicted trajectory from post-collision state
+    # Calculate angle from velocity
+    import math
+    post_vx = predicted_post_state["v_x"] if predicted_post_state else post_state["v_x"]
+    post_vy = predicted_post_state["v_y"] if predicted_post_state else post_state["v_y"]
+    post_angle = math.degrees(math.atan2(post_vy, post_vx))
+    post_velocity = math.sqrt(post_vx**2 + post_vy**2)
+    
+    # Create a temporary world model with post-collision velocity
+    from agents.pddl.pddl_files.world_model.world_model import WorldModel
+    post_world_model = WorldModel({
+        Params.gravity: world_model.hyperparams_values[Params.gravity],
+        Params.velocity: post_velocity
+    })
+    
+    # Get starting point (post-collision position)
+    GROUND_LEVEL = 360
+    start_x = post_state["x"]
+    start_y = GROUND_LEVEL - post_state["y"]  # Convert back to screen coords
+    
+    # Construct predicted trajectory
+    if len(actual_post_traj) > 0:
+        limit = np.max(actual_post_traj[:, 0])
+    else:
+        limit = start_x + 200
+    
+    predicted_traj = construct_trajectory(
+        [start_x, start_y],
+        post_angle,
+        post_world_model,
+        limit,
+        prt=False,
+        integration_method='rk4'
+    )
+    
+    # Also construct with learned model predictions if available
+    learned_predicted_traj = None
+    if predicted_post_state:
+        learned_post_vy = predicted_post_state["v_y"]
+        learned_post_vx = predicted_post_state["v_x"]
+        learned_post_angle = math.degrees(math.atan2(learned_post_vy, learned_post_vx))
+        learned_post_velocity = math.sqrt(learned_post_vx**2 + learned_post_vy**2)
+        
+        learned_world_model = WorldModel({
+            Params.gravity: world_model.hyperparams_values[Params.gravity],
+            Params.velocity: learned_post_velocity
+        })
+        
+        learned_start_y = GROUND_LEVEL - predicted_post_state["y"]
+        
+        learned_predicted_traj = construct_trajectory(
+            [start_x, learned_start_y],
+            learned_post_angle,
+            learned_world_model,
+            limit,
+            prt=False,
+            integration_method='rk4'
+        )
+    
+    # Visualization
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle('Post-Collision Trajectory Analysis', fontsize=14, fontweight='bold')
+    
+    # Plot 1: Compare observed vs predicted trajectory (FOCUSED on collision area)
+    ax1 = axes[0]
+    
+    # Transform Y: use absolute value so Y is always positive (height above ground)
+    actual_post_y_natural = np.abs(actual_post_traj[:, 1] - GROUND_LEVEL)
+    
+    # Only show a small portion of pre-collision trajectory (last N frames before collision)
+    n_pre_frames = min(20, first_coll)  # Show last 20 frames before collision
+    pre_traj_focused = bird_trajectory[first_coll - n_pre_frames:first_coll + 1]
+    pre_traj_y_natural = np.abs(pre_traj_focused[:, 1] - GROUND_LEVEL)
+    
+    # Plot focused pre-collision trajectory
+    ax1.plot(pre_traj_focused[:, 0], pre_traj_y_natural, 'b-', linewidth=2, alpha=0.7, label='Pre-collision')
+    
+    # Plot post-collision OBSERVED trajectory (full)
+    ax1.plot(actual_post_traj[:, 0], actual_post_y_natural, 'g-', linewidth=2.5, 
+             label='Post-collision (OBSERVED)')
+    
+    # Plot PREDICTED trajectory from learned model (full)
+    learned_y_natural = None
+    if learned_predicted_traj is not None and len(learned_predicted_traj) > 0:
+        learned_y_natural = np.abs(learned_predicted_traj[:, 1] - GROUND_LEVEL)
+        ax1.plot(learned_predicted_traj[:, 0], learned_y_natural, 'r--', linewidth=2,
+                 label='Post-collision (PREDICTED by model)')
+    
+    # Mark collision point prominently
+    coll_point = bird_trajectory[first_coll]
+    coll_y_natural = np.abs(coll_point[1] - GROUND_LEVEL)
+    ax1.scatter(coll_point[0], coll_y_natural, s=300, c='red', marker='*', zorder=10,
+               edgecolors='black', linewidths=2, label=f'Collision (frame {first_coll})')
+    
+    # Ground level at y=0 in natural coords
+    ax1.axhline(y=0, color='brown', linestyle='--', linewidth=2, alpha=0.5, label='Ground')
+    
+    # Set axis limits: X focuses on collision area, Y shows full range (positive)
+    x_min = coll_point[0] - 50  # 50 pixels before collision
+    x_max = actual_post_traj[-1, 0] + 20
+    if learned_predicted_traj is not None and len(learned_predicted_traj) > 0:
+        x_max = max(x_max, learned_predicted_traj[-1, 0] + 20)
+    
+    # Y: from 0 (ground) to max height in trajectories
+    y_min = -2  # Slightly below ground for visual clarity
+    y_max = max(np.max(actual_post_y_natural), np.max(pre_traj_y_natural)) + 10
+    if learned_y_natural is not None:
+        y_max = max(y_max, np.max(learned_y_natural) + 10)
+    
+    ax1.set_xlim(x_min, x_max)
+    ax1.set_ylim(y_min, y_max)
+    
+    ax1.set_xlabel('X Position', fontsize=11)
+    ax1.set_ylabel('Height above ground (pixels)', fontsize=11)
+    ax1.set_title('Observed vs Predicted Trajectory\n(Green=Observed, Red=Model Prediction)', fontsize=12)
+    ax1.legend(loc='best', fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: State comparison table with collision physics
+    ax2 = axes[1]
+    ax2.axis('off')
+    
+    # Calculate collision physics ratios (pre_state already defined above)
+    vx_ratio = post_state['v_x'] / pre_state['v_x'] if abs(pre_state['v_x']) > 0.1 else 0
+    vy_ratio = post_state['v_y'] / pre_state['v_y'] if abs(pre_state['v_y']) > 0.1 else 0
+    
+    table_data = [
+        ['State', 'Pre-Coll', 'Actual Post', 'Learned Post', 'Diff', 'Ratio (post/pre)']
+    ]
+    
+    for var in ['x', 'y', 'v_x', 'v_y']:
+        pre_val = pre_state[var]
+        actual_val = post_state[var]
+        
+        # Calculate ratio for velocities
+        if var in ['v_x', 'v_y'] and abs(pre_val) > 0.1:
+            ratio = f'{actual_val/pre_val:.2f}'
+        else:
+            ratio = '-'
+        
+        if predicted_post_state and var in predicted_post_state:
+            learned_val = predicted_post_state[var]
+            diff = learned_val - actual_val
+            table_data.append([var, f'{pre_val:.2f}', f'{actual_val:.2f}', 
+                              f'{learned_val:.2f}', f'{diff:+.2f}', ratio])
+        else:
+            table_data.append([var, f'{pre_val:.2f}', f'{actual_val:.2f}', 'N/A', 'N/A', ratio])
+    
+    table = ax2.table(cellText=table_data[1:], colLabels=table_data[0],
+                     loc='upper center', cellLoc='center',
+                     colColours=['lightblue']*6)
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.1, 2.0)
+    
+    # Add physics interpretation text below table
+    physics_text = f"""
+Collision Physics Analysis:
+- v_x ratio: {vx_ratio:.2f} (horizontal velocity retention)
+- v_y ratio: {vy_ratio:.2f} (vertical velocity reversal/damping)
+
+Interpretation:
+- v_x ratio ~0.5 means 50% horizontal velocity lost (friction)
+- v_y ratio ~-0.67 means bounce with 67% energy retention
+  (negative = direction reversed)
+
+Learning Status:
+- Diff = 0: Model perfectly memorized this collision
+- With more samples, model will learn general bounce physics
+"""
+    ax2.text(0.5, 0.25, physics_text, transform=ax2.transAxes, fontsize=9,
+             verticalalignment='top', horizontalalignment='center',
+             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8),
+             family='monospace')
+    
+    ax2.set_title('State Comparison at Collision Point', fontsize=12, pad=20)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary to console
+    print("\n" + "="*60)
+    print("COLLISION LEARNING SUMMARY")
+    print("="*60)
+    print(f"Collision detected at frame: {first_coll}")
+    print(f"\nPre-collision state:")
+    print(f"  Position: ({pre_state['x']:.1f}, {pre_state['y']:.1f})")
+    print(f"  Velocity: (v_x={pre_state['v_x']:.1f}, v_y={pre_state['v_y']:.1f})")
+    print(f"\nActual post-collision state:")
+    print(f"  Position: ({post_state['x']:.1f}, {post_state['y']:.1f})")
+    print(f"  Velocity: (v_x={post_state['v_x']:.1f}, v_y={post_state['v_y']:.1f})")
+    print(f"\nCollision physics:")
+    print(f"  v_x retention: {vx_ratio:.2%}")
+    print(f"  v_y reversal:  {vy_ratio:.2%}")
+    if predicted_post_state:
+        print(f"\nLearned model prediction error:")
+        for var in ['v_x', 'v_y', 'y']:
+            if var in predicted_post_state:
+                diff = predicted_post_state[var] - post_state[var]
+                print(f"  {var}: {diff:+.4f}")
+    print("="*60)
+    
+    return {
+        'actual_post_traj': actual_post_traj,
+        'collision_frame': first_coll,
+        'pre_state': pre_state,
+        'post_state': post_state,
+        'predicted_post_state': predicted_post_state,
+        'vx_ratio': vx_ratio,
+        'vy_ratio': vy_ratio
+    }
+
+
+def visualize_post_collision_trajectory_v2(bird_trajectory, bird_features, event_indexes_by_event,
+                                           world_model, kb=None):
+    """
+    Compare actual post-collision trajectory with predicted trajectory using learned model.
+    
+    VERSION 2: Uses direct v_x, v_y values instead of angle/magnitude conversion.
+    This avoids coordinate system mismatches and precision loss.
+    
+    Parameters:
+    -----------
+    bird_trajectory : np.ndarray or list
+        Full bird trajectory [(x,y), ...]
+    bird_features : list of dict
+        Features at each frame
+    event_indexes_by_event : dict
+        Event indexes by type
+    world_model : WorldModel
+        World model with physics parameters
+    kb : dict, optional
+        Knowledge base with learned collision models
+    """
+    from agents.pddl.trajectory_parser import construct_trajectory_from_velocity
+    from agents.pddl.pddl_files.world_model.params import Params
+    import math
+    
+    bird_trajectory = np.array(bird_trajectory)
+    collision_frames = event_indexes_by_event.get("ground_collision", [])
+    
+    if len(collision_frames) == 0:
+        print("No ground collisions to analyze!")
+        return
+    
+    first_coll = collision_frames[0]
+    
+    # Multi-frame velocity calculation settings (must match pddl_agent.py!)
+    FRAME_RATE = 0.02
+    VELOCITY_FRAMES = 3  # Use 3 frames for velocity calculation
+    POST_OFFSET = 2  # Skip frames where bird is still at ground level
+    
+    if first_coll < VELOCITY_FRAMES:
+        print("Not enough data before collision!")
+        return
+    
+    if first_coll + POST_OFFSET + VELOCITY_FRAMES >= len(bird_features):
+        print(f"Not enough data after collision (need at least {POST_OFFSET + VELOCITY_FRAMES} frames)!")
+        return
+    
+    # Get actual post-collision trajectory
+    actual_post_traj = bird_trajectory[first_coll + 1:]
+    
+    # Get states with CORRECTED velocities (matching the learning code in pddl_agent.py)
+    # Uses multi-frame velocity calculation to avoid quantization
+    pre_features = bird_features[first_coll]
+    prev_features = bird_features[first_coll - VELOCITY_FRAMES]
+    
+    # POST-COLLISION: Skip first POST_OFFSET frames, then measure velocity over VELOCITY_FRAMES
+    post_start = first_coll + POST_OFFSET
+    post_end = post_start + VELOCITY_FRAMES
+    post_features_start = bird_features[post_start]
+    post_features_end = bird_features[post_end]
+    
+    # PRE-COLLISION state: velocity over VELOCITY_FRAMES frames before collision
+    pre_state = pre_features.copy()
+    pre_dt = VELOCITY_FRAMES * FRAME_RATE
+    pre_state['v_x'] = (pre_features['x'] - prev_features['x']) / pre_dt
+    pre_state['v_y'] = (pre_features['y'] - prev_features['y']) / pre_dt
+    
+    # POST-COLLISION state: velocity over VELOCITY_FRAMES frames after bounce starts
+    post_state = post_features_start.copy()
+    post_dt = VELOCITY_FRAMES * FRAME_RATE
+    post_state['v_x'] = (post_features_end['x'] - post_features_start['x']) / post_dt
+    post_state['v_y'] = (post_features_end['y'] - post_features_start['y']) / post_dt
+    
+    # Predict using learned model if KB available
+    predicted_post_state = None
+    if kb is not None and "collision" in kb:
+        from agents.pddl.pddl_files.events.learn_events import PhysicsRatioModel, AngleDependentFrictionModel
+        predicted_post_state = {}
+        
+        for var_name in ["v_x", "v_y", "y"]:
+            model = kb["collision"]["variables"].get(var_name, {}).get("model")
+            if model is not None:
+                # Create input array for prediction
+                X = np.array([[pre_state["x"], pre_state["y"], pre_state["v_x"], pre_state["v_y"]]])
+                
+                if isinstance(model, (PhysicsRatioModel, AngleDependentFrictionModel)):
+                    # Physics-based models use X directly (no polynomial transformation)
+                    predicted_post_state[var_name] = model.predict(X)[0]
+                else:
+                    # Linear regression models need polynomial features
+                    from sklearn.preprocessing import PolynomialFeatures
+                    poly = PolynomialFeatures(degree=1, include_bias=False)
+                    X_poly = poly.fit_transform(X)
+                    predicted_post_state[var_name] = model.predict(X_poly)[0]
+            else:
+                predicted_post_state[var_name] = post_state[var_name]
+        
+        predicted_post_state["x"] = post_state["x"]
+    
+    # Get gravity from world model
+    gravity = world_model.hyperparams_values[Params.gravity]
+    
+    # COORDINATE SYSTEM ANALYSIS:
+    # - bird_trajectory uses SCREEN coords: y=0 at top, y increases downward, ground at y~360
+    # - bird_features['y'] uses NATURAL coords: y=0 at ground, y increases upward
+    # - Velocity in features is computed from natural coords differences
+    # - construct_trajectory_from_velocity works in SCREEN coords
+    #
+    # In SCREEN coords:
+    # - Negative vy = moving UP (y decreasing)
+    # - Positive vy = moving DOWN (y increasing)
+    # - Gravity should INCREASE vy (pull down), so we need POSITIVE gravity effect on vy
+    # - But euler_step does: vy_new = vy - gravity*dt
+    # - So for gravity to pull DOWN in screen coords, gravity must be NEGATIVE
+    
+    GROUND_LEVEL = 360
+    start_x = post_state["x"]
+    start_y = bird_trajectory[first_coll + 1][1]  # Use actual screen y from trajectory
+    
+    # Construct predicted trajectory limit
+    if len(actual_post_traj) > 0:
+        limit = np.max(actual_post_traj[:, 0]) + 50
+    else:
+        limit = start_x + 200
+    
+    # Get velocities - use observed values (in natural coords)
+    obs_vx = post_state["v_x"]
+    obs_vy_natural = post_state["v_y"]  # positive = moving up in natural coords
+    
+    # Convert to SCREEN coordinates:
+    # In natural: positive v_y = up
+    # In screen: negative v_y = up (y decreases when moving up)
+    screen_vy = -obs_vy_natural
+    
+    # Gravity in screen coords: needs to be NEGATIVE so that vy_new = vy - (-g)*dt = vy + g*dt
+    # This makes vy more positive over time (pulling down in screen coords)
+    screen_gravity = -gravity
+    
+    print(f"\n[V2 DEBUG] Coordinate analysis:")
+    print(f"  Natural v_y (from features): {obs_vy_natural:.2f} (positive = up)")
+    print(f"  Screen v_y (for trajectory): {screen_vy:.2f} (negative = up)")
+    print(f"  World model gravity: {gravity:.2f}")
+    print(f"  Screen gravity: {screen_gravity:.2f} (negative for screen coords)")
+    print(f"  Start position (screen): ({start_x:.1f}, {start_y:.1f})")
+    
+    # Construct trajectory using OBSERVED post-collision velocity (direct v_x, v_y)
+    observed_predicted_traj = construct_trajectory_from_velocity(
+        [start_x, start_y],
+        obs_vx,
+        screen_vy,
+        screen_gravity,  # Use screen-coordinate gravity
+        limit,
+        prt=False,
+        integration_method='rk4'
+    )
+    
+    # Also construct with learned model predictions if available
+    learned_predicted_traj = None
+    if predicted_post_state:
+        learned_vx = predicted_post_state["v_x"]
+        learned_vy_natural = predicted_post_state["v_y"]
+        learned_screen_vy = -learned_vy_natural  # Convert to screen coords
+        
+        learned_start_y = GROUND_LEVEL - predicted_post_state["y"]
+        
+        print(f"  Learned v_x: {learned_vx:.2f}, v_y (natural): {learned_vy_natural:.2f}, v_y (screen): {learned_screen_vy:.2f}")
+        
+        learned_predicted_traj = construct_trajectory_from_velocity(
+            [start_x, learned_start_y],
+            learned_vx,
+            learned_screen_vy,
+            screen_gravity,  # Use screen-coordinate gravity
+            limit,
+            prt=False,
+            integration_method='rk4'
+        )
+    
+    # Visualization
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle('Post-Collision Trajectory Analysis (V2 - Direct Velocity)', fontsize=14, fontweight='bold')
+    
+    ax1 = axes[0]
+    
+    # Transform Y: height above ground (natural coordinates for display)
+    actual_post_y_natural = np.abs(actual_post_traj[:, 1] - GROUND_LEVEL)
+    
+    # Pre-collision trajectory
+    n_pre_frames = min(20, first_coll)
+    pre_traj_focused = bird_trajectory[first_coll - n_pre_frames:first_coll + 1]
+    pre_traj_y_natural = np.abs(pre_traj_focused[:, 1] - GROUND_LEVEL)
+    
+    # Plot pre-collision
+    ax1.plot(pre_traj_focused[:, 0], pre_traj_y_natural, 'b-', linewidth=2, alpha=0.7, label='Pre-collision')
+    
+    # Plot post-collision OBSERVED trajectory
+    ax1.plot(actual_post_traj[:, 0], actual_post_y_natural, 'g-', linewidth=2.5, 
+             label='Post-collision (OBSERVED)')
+    
+    # Plot PREDICTED trajectory from observed velocity (sanity check - should match green)
+    if observed_predicted_traj is not None and len(observed_predicted_traj) > 0:
+        obs_pred_y_natural = np.abs(observed_predicted_traj[:, 1] - GROUND_LEVEL)
+        ax1.plot(observed_predicted_traj[:, 0], obs_pred_y_natural, 'c:', linewidth=2, alpha=0.7,
+                 label='Predicted (from observed v_x,v_y)')
+    
+    # Plot PREDICTED trajectory from learned model
+    learned_y_natural = None
+    if learned_predicted_traj is not None and len(learned_predicted_traj) > 0:
+        learned_y_natural = np.abs(learned_predicted_traj[:, 1] - GROUND_LEVEL)
+        ax1.plot(learned_predicted_traj[:, 0], learned_y_natural, 'r--', linewidth=2,
+                 label='Predicted (from LEARNED model)')
+    
+    # Mark collision point
+    coll_point = bird_trajectory[first_coll]
+    coll_y_natural = np.abs(coll_point[1] - GROUND_LEVEL)
+    ax1.scatter(coll_point[0], coll_y_natural, s=300, c='red', marker='*', zorder=10,
+               edgecolors='black', linewidths=2, label=f'Collision (frame {first_coll})')
+    
+    # Ground level
+    ax1.axhline(y=0, color='brown', linestyle='--', linewidth=2, alpha=0.5, label='Ground')
+    
+    # Set axis limits
+    x_min = coll_point[0] - 50
+    x_max = actual_post_traj[-1, 0] + 20
+    if learned_predicted_traj is not None and len(learned_predicted_traj) > 0:
+        x_max = max(x_max, learned_predicted_traj[-1, 0] + 20)
+    
+    y_min = -2
+    y_max = max(np.max(actual_post_y_natural), np.max(pre_traj_y_natural)) + 10
+    if learned_y_natural is not None:
+        y_max = max(y_max, np.max(learned_y_natural) + 10)
+    
+    ax1.set_xlim(x_min, x_max)
+    ax1.set_ylim(y_min, y_max)
+    
+    ax1.set_xlabel('X Position', fontsize=11)
+    ax1.set_ylabel('Height above ground (pixels)', fontsize=11)
+    ax1.set_title('Observed vs Predicted Trajectory (V2)\n(Cyan=from observed velocity, Red=from learned model)', fontsize=12)
+    ax1.legend(loc='best', fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: State comparison table
+    ax2 = axes[1]
+    ax2.axis('off')
+    
+    vx_ratio = post_state['v_x'] / pre_state['v_x'] if abs(pre_state['v_x']) > 0.1 else 0
+    vy_ratio = post_state['v_y'] / pre_state['v_y'] if abs(pre_state['v_y']) > 0.1 else 0
+    
+    table_data = [
+        ['State', 'Pre-Coll', 'Actual Post', 'Learned Post', 'Diff', 'Ratio (post/pre)']
+    ]
+    
+    for var in ['x', 'y', 'v_x', 'v_y']:
+        pre_val = pre_state[var]
+        actual_val = post_state[var]
+        
+        if var in ['v_x', 'v_y'] and abs(pre_val) > 0.1:
+            ratio = f'{actual_val/pre_val:.2f}'
+        else:
+            ratio = '-'
+        
+        if predicted_post_state and var in predicted_post_state:
+            learned_val = predicted_post_state[var]
+            diff = learned_val - actual_val
+            table_data.append([var, f'{pre_val:.2f}', f'{actual_val:.2f}', 
+                              f'{learned_val:.2f}', f'{diff:+.2f}', ratio])
+        else:
+            table_data.append([var, f'{pre_val:.2f}', f'{actual_val:.2f}', 'N/A', 'N/A', ratio])
+    
+    table = ax2.table(cellText=table_data[1:], colLabels=table_data[0],
+                     loc='upper center', cellLoc='center',
+                     colColours=['lightblue']*6)
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.1, 2.0)
+    
+    physics_text = f"""
+V2 Analysis (Direct v_x, v_y):
+- v_x ratio: {vx_ratio:.2f} (horizontal velocity retention)
+- v_y ratio: {vy_ratio:.2f} (vertical velocity reversal/damping)
+
+Key difference from V1:
+- V1: Converts v_x,v_y -> angle,magnitude -> back to v_x,v_y
+- V2: Uses v_x,v_y directly (no conversion loss)
+
+If CYAN line matches GREEN: physics model is correct
+If RED matches GREEN: learned model is working
+"""
+    ax2.text(0.5, 0.25, physics_text, transform=ax2.transAxes, fontsize=9,
+             verticalalignment='top', horizontalalignment='center',
+             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8),
+             family='monospace')
+    
+    ax2.set_title('State Comparison at Collision Point', fontsize=12, pad=20)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("COLLISION LEARNING SUMMARY (V2 - Direct Velocity)")
+    print("="*60)
+    print(f"Collision detected at frame: {first_coll}")
+    print(f"\nPre-collision state (natural coords):")
+    print(f"  Position: ({pre_state['x']:.1f}, {pre_state['y']:.1f})")
+    print(f"  Velocity: (v_x={pre_state['v_x']:.1f}, v_y={pre_state['v_y']:.1f})")
+    print(f"\nActual post-collision state (natural coords):")
+    print(f"  Position: ({post_state['x']:.1f}, {post_state['y']:.1f})")
+    print(f"  Velocity: (v_x={post_state['v_x']:.1f}, v_y={post_state['v_y']:.1f})")
+    print(f"\nCollision physics:")
+    print(f"  v_x retention: {vx_ratio:.2%}")
+    print(f"  v_y reversal:  {vy_ratio:.2%}")
+    if predicted_post_state:
+        print(f"\nLearned model prediction error:")
+        for var in ['v_x', 'v_y', 'y']:
+            if var in predicted_post_state:
+                diff = predicted_post_state[var] - post_state[var]
+                print(f"  {var}: {diff:+.4f}")
+    print("="*60)
+    
+    return {
+        'actual_post_traj': actual_post_traj,
+        'collision_frame': first_coll,
+        'pre_state': pre_state,
+        'post_state': post_state,
+        'predicted_post_state': predicted_post_state,
+        'vx_ratio': vx_ratio,
+        'vy_ratio': vy_ratio
+    }
+
+
+def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
+    """
+    Plot LOO-CV (Leave-One-Out Cross-Validation) comparison between 
+    General (ElasticNet) and Domain-Specific models over time.
+    
+    LOO-CV measures how well a model generalizes to unseen data.
+    Lower values = better generalization.
+    
+    Parameters:
+        kb: Knowledge base containing event learning data
+        event_name: Name of the event to plot (default: "collision")
+        save_path: Optional path to save the figure
+    """
+    if event_name not in kb:
+        print(f"Event '{event_name}' not found in KB")
+        return
+    
+    event_data = kb[event_name]
+    variables = event_data.get("variables", {})
+    
+    # Find variables with LOO-CV history
+    vars_with_history = []
+    for var_name, var_data in variables.items():
+        if "loo_cv_history" in var_data and len(var_data["loo_cv_history"]["n_samples"]) > 1:
+            vars_with_history.append(var_name)
+    
+    if not vars_with_history:
+        print("No LOO-CV history available yet. Need at least 2 samples.")
+        return
+    
+    # Create subplots - one for each variable with history
+    n_vars = len(vars_with_history)
+    fig, axes = plt.subplots(1, n_vars, figsize=(6*n_vars, 5))
+    
+    if n_vars == 1:
+        axes = [axes]
+    
+    fig.suptitle("LOO-CV Comparison: General (ElasticNet) vs Domain-Specific Models\n"
+                 "(Lower = Better Generalization)", fontsize=12, fontweight='bold')
+    
+    for ax, var_name in zip(axes, vars_with_history):
+        history = variables[var_name]["loo_cv_history"]
+        n_samples = history["n_samples"]
+        general_loo = history["general"]
+        domain_loo = history["domain"]
+        
+        # X-axis: number of samples at each measurement point
+        x = list(range(1, len(n_samples) + 1))
+        
+        # Filter out inf values for plotting
+        general_valid = [(i, v) for i, v in zip(x, general_loo) if v != float('inf') and v < 1000]
+        domain_valid = [(i, v) for i, v in zip(x, domain_loo) if v != float('inf') and v < 1000]
+        
+        # Plot General (ElasticNet) model
+        if general_valid:
+            gx, gy = zip(*general_valid)
+            ax.plot(gx, gy, 'b-o', linewidth=2, markersize=8, label='General (ElasticNet)', alpha=0.8)
+            # Annotate final value
+            ax.annotate(f'{gy[-1]:.2f}', (gx[-1], gy[-1]), textcoords="offset points", 
+                       xytext=(5, 5), fontsize=9, color='blue')
+        
+        # Plot Domain-Specific model
+        if domain_valid:
+            dx, dy = zip(*domain_valid)
+            ax.plot(dx, dy, 'r-s', linewidth=2, markersize=8, label='Domain-Specific', alpha=0.8)
+            # Annotate final value
+            ax.annotate(f'{dy[-1]:.2f}', (dx[-1], dy[-1]), textcoords="offset points", 
+                       xytext=(5, -10), fontsize=9, color='red')
+        
+        # Get current comparison result
+        comparison = variables[var_name].get("model_comparison", {})
+        winner_name = comparison.get("winner_name", "unknown")
+        
+        ax.set_xlabel("Training Iteration", fontsize=11)
+        ax.set_ylabel("LOO-CV RMSE", fontsize=11)
+        ax.set_title(f"{var_name}_after\n(Winner: {winner_name})", fontsize=11)
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+        ax.set_xticks(x)
+        
+        # Add sample count as secondary x-axis labels
+        ax2 = ax.twiny()
+        ax2.set_xlim(ax.get_xlim())
+        ax2.set_xticks(x)
+        ax2.set_xticklabels([f"n={n}" for n in n_samples], fontsize=8)
+        ax2.set_xlabel("Sample Count", fontsize=9)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"LOO-CV comparison plot saved to: {save_path}")
+        plt.close(fig)  # Close to free memory when saving
+    else:
+        # Only show interactively if not saving
+        plt.show(block=False)
+        plt.pause(0.1)
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("LOO-CV COMPARISON SUMMARY")
+    print("="*60)
+    print("LOO-CV = Leave-One-Out Cross-Validation RMSE")
+    print("Measures how well the model predicts data it hasn't seen")
+    print("Lower value = better generalization (less overfitting)")
+    print("-"*60)
+    
+    for var_name in vars_with_history:
+        history = variables[var_name]["loo_cv_history"]
+        comparison = variables[var_name].get("model_comparison", {})
+        
+        general_final = history["general"][-1] if history["general"] else float('inf')
+        domain_final = history["domain"][-1] if history["domain"] else float('inf')
+        winner = comparison.get("winner_name", "unknown")
+        
+        print(f"\n{var_name}_after:")
+        print(f"  General (ElasticNet) LOO-CV: {general_final:.4f}")
+        if domain_final != float('inf'):
+            print(f"  Domain-Specific LOO-CV: {domain_final:.4f}")
+        else:
+            print(f"  Domain-Specific LOO-CV: N/A (no domain model)")
+        print(f"  Winner: {winner}")
+        
+        if domain_final != float('inf') and general_final != float('inf'):
+            if general_final < domain_final and domain_final > 0:
+                improvement = ((domain_final - general_final) / domain_final) * 100
+                print(f"  General is {improvement:.1f}% better")
+            elif domain_final < general_final and general_final > 0:
+                improvement = ((general_final - domain_final) / general_final) * 100
+                print(f"  Domain is {improvement:.1f}% better")
+    
+    print("="*60)

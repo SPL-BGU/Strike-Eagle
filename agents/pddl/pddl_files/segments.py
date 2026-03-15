@@ -33,17 +33,34 @@ def getSegmentsPelt(signal, penalty):
 
 
 def calculate_features(trajectory):
+    """
+    Calculate position, velocity, and acceleration features from trajectory.
+    
+    Note: Coordinate system
+    - trajectory y values are in screen coordinates (y increases downward)
+    - After subtracting GROUND_LEVEL, positive y = above ground, negative = below
+    - v_y negative = moving down (toward ground), v_y positive = moving up
+    """
     GROUND_LEVEL = 360
-    # Sample data (replace with your own x, y data)
+    FRAME_RATE = 0.02  # 50 fps = 0.02 seconds per frame
+    
     x = trajectory[:, 0]  # x positions
-    y = trajectory[:, 1] - GROUND_LEVEL
+    y = trajectory[:, 1] - GROUND_LEVEL  # y relative to ground (positive = above ground)
 
-    # Calculate velocity and acceleration as features for clustering
-    dt = 20  # Assuming 1 unit time step (adjust accordingly)
-    v_x = np.diff(x) / dt
-    v_y = np.diff(y) / dt
-    a_x = np.diff(v_x) / dt
-    a_y = np.diff(v_y) / dt
+    # Calculate velocity: change in position per second
+    v_x = np.diff(x) / FRAME_RATE
+    v_y = np.diff(y) / FRAME_RATE
+    
+    # Calculate acceleration: change in velocity per second
+    a_x = np.diff(v_x) / FRAME_RATE
+    a_y = np.diff(v_y) / FRAME_RATE
+
+    # Pad arrays to match length (velocity has len-1, acceleration has len-2)
+    # Use forward fill for the last values
+    v_x = np.append(v_x, v_x[-1] if len(v_x) > 0 else 0)
+    v_y = np.append(v_y, v_y[-1] if len(v_y) > 0 else 0)
+    a_x = np.append(a_x, [a_x[-1], a_x[-1]] if len(a_x) > 0 else [0, 0])
+    a_y = np.append(a_y, [a_y[-1], a_y[-1]] if len(a_y) > 0 else [0, 0])
 
     min_length = min(len(arr) for arr in [x, y, v_y, v_x, a_x, a_y])
     features = np.column_stack(

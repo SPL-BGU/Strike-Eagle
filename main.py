@@ -33,7 +33,9 @@ class AgentThread(threading.Thread):
         # agent = na.ClientNaiveAgent(self.agent_ind,self.agent_configs)
         # agent = QuatzelAgent(self.agent_ind, self.agent_configs)
         # agent = OwlerAgent(self.agent_ind, self.agent_configs)
-        agent = PDDLAgent(self.agent_ind, self.agent_configs)
+        agent = PDDLAgent(self.agent_ind, self.agent_configs, 
+                          override_angle=15,      # Override PDDL angle (set to None to use planner)
+                          debug_collision=True)   # Enable collision visualizations
         agent.run()
 
 

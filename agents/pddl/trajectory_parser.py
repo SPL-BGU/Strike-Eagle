@@ -119,6 +119,79 @@ def rk4_step(state, dt, gravity):
     return state_new
 
 
+def construct_trajectory_from_velocity(
+        starting_point: [float, float],
+        v_x: float,
+        v_y: float,
+        gravity: float,
+        limit: float,
+        frame_rate=0.02,
+        prt=False,
+        integration_method='rk4'):
+    """
+    Construct trajectory directly from velocity components (v_x, v_y).
+    
+    This version avoids the angle/magnitude conversion that can introduce
+    coordinate system mismatches and precision loss.
+    
+    Parameters:
+    -----------
+    starting_point : [float, float]
+        Starting position (x, y)
+    v_x : float
+        Initial horizontal velocity (pixels/second)
+    v_y : float
+        Initial vertical velocity (pixels/second, positive = up in natural coords)
+    gravity : float
+        Gravity acceleration (pixels/second^2)
+    limit : float
+        Maximum x-coordinate to simulate to
+    frame_rate : float
+        Time step in seconds (default 0.02 for 50 fps)
+    prt : bool
+        Whether to print debug information
+    integration_method : str
+        'euler', 'midpoint', or 'rk4'
+    
+    Returns:
+    --------
+    trajectory : np.ndarray
+        Array of shape (N, 2) containing (x, y) positions
+    """
+    MAX_FRAMES = 500
+    
+    trajectory = np.reshape(starting_point, [1, 2])
+    
+    # State: [x, y, vx, vy] - directly use provided velocities
+    state = np.array([float(starting_point[0]), float(starting_point[1]), float(v_x), float(v_y)])
+    
+    if prt:
+        print(f"[construct_trajectory_from_velocity] Starting at ({starting_point[0]:.1f}, {starting_point[1]:.1f})")
+        print(f"  v_x={v_x:.2f}, v_y={v_y:.2f}, gravity={gravity:.2f}")
+    
+    for i in range(1, MAX_FRAMES):
+        if prt and i <= 5:
+            print(f"  Frame {i}: pos=({state[0]:.1f}, {state[1]:.1f}), vel=({state[2]:.1f}, {state[3]:.1f})")
+        
+        # Integrate one step based on method
+        if integration_method == 'euler':
+            state = euler_step(state, frame_rate, gravity)
+        elif integration_method == 'midpoint':
+            state = midpoint_step(state, frame_rate, gravity)
+        elif integration_method == 'rk4':
+            state = rk4_step(state, frame_rate, gravity)
+        else:
+            raise ValueError(f"Unknown integration method: {integration_method}")
+        
+        # Append position to trajectory
+        trajectory = np.vstack([trajectory, state[0:2]])
+        
+        if state[0] > limit:
+            break
+    
+    return trajectory
+
+
 def construct_trajectory(
         starting_point: [float, float],
         angle: float,
