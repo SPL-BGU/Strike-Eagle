@@ -14,16 +14,13 @@ from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import plot_errors, plot_score, visualize_compare, visuallize_wins_percentage, \
-    visualize_rmse, visualize_rmse_vs_suggsted, visualize_starting_point_offset, full_trajectory_comparison, \
-    debug_is_hit_last_frames, debug_all_events_full_trajectory, visualize_ground_collision_detection, \
-    visualize_post_collision_trajectory, visualize_post_collision_trajectory_v2, plot_loo_cv_comparison
+from agents.pddl.visualiator import visualize_compare
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
 from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions, inject_domain_file
 from src.client.agent_client import GameState
-from agents.pddl.metrics import calculate_rmse, compare_truncation_methods, get_robust_launch_angle
+from agents.pddl.metrics import calculate_rmse
 
 from numpy.polynomial import Polynomial
 
@@ -33,7 +30,8 @@ class PDDLAgent(BaselineAgent):
 
     def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 1,
                  learn: bool = False, start_counting_from_game: int = 0, 
-                 override_angle: float = None, debug_collision: bool = False):
+                 override_angle: float = None, debug_collision: bool = False,
+                 determinism_test_mode: bool = False):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
@@ -48,8 +46,14 @@ class PDDLAgent(BaselineAgent):
         self.learn = True
         
         # Debug/Override options
-        self.override_angle = random.randint(40,70)  # Set to a value (e.g., 45) to override PDDL planner angle
-        self.debug_collision = True  # Set to True to visualize collision detection
+        self.override_angle = None  # Set to a value (e.g., 45) to override PDDL planner angle
+        self.debug_collision = False  # Set to True to visualize collision detection
+        
+        # Determinism test mode - cycles through fixed angles for data collection
+        self.determinism_test_mode = True  # SET TO TRUE TO ENABLE
+        self.determinism_angles = list(range(20, 80, 5))  # [20, 25, 30, ..., 75] = 12 angles
+        self.determinism_angle_index = 0
+        
         self.world_model = WorldModel({
             Params.gravity: 90,
             Params.velocity: 200
@@ -90,102 +94,37 @@ class PDDLAgent(BaselineAgent):
         }
 
         # metrics
-        self.error_rate = list()
-        self.aggravate_error_rate = list()
-        self.aggravate_score = list()
         self.rmse = list()
         self.suggested_rmse = list()
         self.wins = []
-        self.c=0
         
         # Win/loss tracking per level
         self.start_counting_from_game = start_counting_from_game  # Skip first X games before counting
         self.games_played = 0  # Total games played counter
         self.game_results = []  # Array of (level, "win"/"loss")
 
-    def solve(self):
+    def learn_collision_effects(self, collisions, bird_observed_features):
         """
-        * Solve a particular level by shooting birds directly to pigs
-        * @return GameState: the game state after shots.
+        Learn how collisions affect the bird's velocity (bounce physics).
+        
+        For each ground collision, extracts pre/post collision states and trains
+        a model to predict post-collision velocity from pre-collision state.
+        
+        Parameters:
+        -----------
+        collisions : list
+            List of frame indices where ground collisions occurred
+        bird_observed_features : list
+            List of feature dictionaries for each frame (x, y, v_x, v_y)
+        
+        Updates:
+        --------
+        self.kb["collision"] with new collision samples and retrained models
         """
-        ground_truth_type = GroundTruthType.ground_truth_screenshot
-
-        vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
-
-
-        sling = vision.find_slingshot_mbr()[0]
-        sling.width, sling.height = sling.height, sling.width
-        # actions = self.get_action_to_perform(self.world_model)[0]
-        # task, angle = actions
-        angle =0
-
-        # Override angle if specified (for debugging/testing)
-        if self.override_angle is not None:
-            self.override_angle =  random.choice([
-                    random.randint(25, 35),   # shallow
-                    random.randint(45, 55),   # medium
-                    random.randint(70, 80),   # steep
-                ])
-            print(f"[DEBUG] OVERRIDING PDDL angle {angle} with {self.override_angle}")
-            angle = self.override_angle
-
-        print(f"Shooting Angle - {angle}")
-
-        release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
-
-        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
-        # with open(f"batch-3.pkl", "rb") as f:
-        #     batch_gt = pickle.load(f)
-        #
-        # time.sleep(2)
-
-        # Analyze observed trajectory
-        groundtruth_trajectories,groundtruth_objects = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
-
-
-        # getSegmentsPelt(observed_trajectory, 30)
-
-        event_indexes_by_event, objects_features = getSegmentsEvents(groundtruth_trajectories,groundtruth_objects)
-
-        # Debug is_hit detection - shows last 20 frames with bird/pig positions and collision info
-        # debug_is_hit_last_frames(objects_features, groundtruth_objects, n_frames=100)
-        
-        # Debug ALL events (ground collision, hit, platform collision) for entire trajectory
-        # debug_all_events_full_trajectory(objects_features, groundtruth_objects)
-
-        bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
-
-        bird_observed_features = objects_features["redBird_0"]
-
-        event_indexes = sorted([val for values in event_indexes_by_event.values() for val in values])
-
-        parts = np.split(bird_observed_trajectory, event_indexes)
-
-        # DEBUG: Visualize collision detection BEFORE learning
-        if self.debug_collision:
-            print("\n[DEBUG] Visualizing ground collision detection...")
-            visualize_ground_collision_detection(
-                bird_observed_trajectory, 
-                bird_observed_features, 
-                event_indexes_by_event,
-                world_model=self.world_model,
-                angle=angle
-            )
-
-        # LEARN EVENT
-
-        collisions = event_indexes_by_event["ground_collision"]
-        
         FRAME_RATE = 0.02  # 50 fps
-        
-        # Use multiple frames for velocity calculation to avoid quantization
-        # With 1-frame difference: v = Δposition / 0.02 → only multiples of 50
-        # With N-frame difference: v = Δposition / (N * 0.02) → finer granularity
         VELOCITY_FRAMES = 3  # Use 3 frames for velocity calculation
         POST_OFFSET = 2  # Skip frames where bird is still at ground level
-
-        # Minimum velocity threshold for a "real" bounce (not rolling/settling)
-        MIN_BOUNCE_VELOCITY = 60  # pixels/second - adjusted for multi-frame calculation
+        MIN_BOUNCE_VELOCITY = 60  # Minimum velocity for a "real" bounce
         
         for collision_index in collisions:
             # Need enough frames before collision for velocity calculation
@@ -200,206 +139,156 @@ class PDDLAgent(BaselineAgent):
             pre_features = bird_observed_features[collision_index]
             prev_features = bird_observed_features[collision_index - VELOCITY_FRAMES]
             
-            # POST-COLLISION: Skip first POST_OFFSET frames (bird at ground), then measure velocity
+            # POST-COLLISION: Skip first POST_OFFSET frames, then measure velocity
             post_start = collision_index + POST_OFFSET
             post_end = post_start + VELOCITY_FRAMES
             post_features_start = bird_observed_features[post_start]
             post_features_end = bird_observed_features[post_end]
             
-            # PRE-COLLISION state: velocity over VELOCITY_FRAMES frames before collision
-            # v_pre = (position_at_collision - position_N_frames_before) / (N * dt)
+            # PRE-COLLISION state
             pre_state = pre_features.copy()
             pre_dt = VELOCITY_FRAMES * FRAME_RATE
             pre_state['v_x'] = (pre_features['x'] - prev_features['x']) / pre_dt
             pre_state['v_y'] = (pre_features['y'] - prev_features['y']) / pre_dt
             
-            # POST-COLLISION state: velocity over VELOCITY_FRAMES frames after bounce starts
+            # POST-COLLISION state
             post_state = post_features_start.copy()
             post_dt = VELOCITY_FRAMES * FRAME_RATE
             post_state['v_x'] = (post_features_end['x'] - post_features_start['x']) / post_dt
             post_state['v_y'] = (post_features_end['y'] - post_features_start['y']) / post_dt
             
-            # FILTER: Only learn from significant bounces, not rolling/settling
-            pre_speed = abs(pre_state['v_y'])
-            
-            if self.debug_collision:
-                print(f"\n[Collision at frame {collision_index}]")
-                print(f"  Pre-collision v_y: {pre_state['v_y']:.2f} (from frames {collision_index-VELOCITY_FRAMES} to {collision_index})")
-                print(f"  Post-collision v_y: {post_state['v_y']:.2f} (from frames {post_start} to {post_end})")
-                if abs(pre_state['v_y']) > 0.1:
-                    print(f"  Ratio: {post_state['v_y']/pre_state['v_y']:.3f}")
-                else:
-                    print(f"  Ratio: N/A (v_y too small)")
-            
-            if pre_speed < MIN_BOUNCE_VELOCITY:
-                if self.debug_collision:
-                    print(f"  ⏭️  SKIPPED: |v_y|={pre_speed:.1f} < {MIN_BOUNCE_VELOCITY} (secondary bounce/rolling)")
+            # Filter: only learn from significant bounces
+            if abs(pre_state['v_y']) < MIN_BOUNCE_VELOCITY:
                 continue
             
-            if self.debug_collision:
-                print(f"  ✅ LEARNED: Significant bounce (|v_y|={pre_speed:.1f} >= {MIN_BOUNCE_VELOCITY})")
-            
-            # Train models and compare general vs domain-specific (debug output handled by manager)
+            # Train collision model
             update_model_effects("collision", self.kb, pre_state, post_state, debug=False)
+    
+    def learn_flight_physics(self, trajectory):
+        """
+        Learn flight physics (gravity, velocity) from observed trajectory.
         
-        # EVALUATE AND TRACK LEARNING PROGRESS
-        self._evaluate_collision_learning(collisions, bird_observed_features, FRAME_RATE)
+        Stores trajectory in KB and learns state transition functions
+        that can predict the next state from the previous state.
         
-        # DEBUG: Print collision learning status with model comparison
-        if self.debug_collision and "collision" in self.kb:
-            self._print_collision_learning_status()
-            # Plot LOO-CV comparison graph (needs at least 2 samples)
-            n_samples = len(self.kb["collision"]["states"])
-            if n_samples >= 2:
-                # Save to file to avoid threading issues with matplotlib
-                self.plot_model_comparison(save_path="loo_cv_comparison.png")
+        Parameters:
+        -----------
+        trajectory : np.ndarray
+            The observed trajectory (first segment, before any collision)
         
-        # DEBUG: Visualize post-collision trajectory comparison AFTER learning
-        if self.debug_collision and len(collisions) > 0:
-            print("\n[DEBUG] Visualizing post-collision trajectory comparison (V2 - Direct Velocity)...")
-            visualize_post_collision_trajectory_v2(
-                bird_observed_trajectory,
-                bird_observed_features,
-                event_indexes_by_event,
-                self.world_model,
-                kb=self.kb
-            )
-
-        # LEARN PROCESS
-        bird_observed_trajectory = parts[0] # override everything else, only learn on part 1
-
-        # Store trajectory in KB (unlimited storage)
+        Updates:
+        --------
+        self.kb["trajectories"] with new trajectory
+        self.learned_transitions with updated models
+        self.learned_transition_world_model with new WorldModel
+        """
+        # Store trajectory in KB
         if "trajectories" not in self.kb:
             self.kb["trajectories"] = []
-        self.kb["trajectories"].append(bird_observed_trajectory.copy())
-
-        # Only learn if we haven't reached the freeze threshold (8 games)
+        self.kb["trajectories"].append(trajectory.copy())
+        
+        # Only learn if we haven't reached the freeze threshold
         if self.games_played < 8:
-            # Learn physics parameters (gravity, velocity) - existing method
-            # new_world_model = self.learn_process(bird_observed_trajectory)
-            
-            # Learn state transition functions - new method
-            # This learns how to predict next state from previous state
-            # Uses multiple trajectories from KB
             self.learn_process_transitions()
-            
-            # Create a new world model from learned transitions
             self.learned_transition_world_model = self._create_learned_transition_world_model()
-            
-            # Print both world models
-            print(f"\nOriginal World Model: {self.learned_transition_world_model.hyperparams_values}")
-            print(f"Learned Transition World Model: {self.learned_transition_world_model.hyperparams_values}")
+            print(f"\nLearned World Model: {self.learned_transition_world_model.hyperparams_values}")
         else:
             print(f"\nModel learning FROZEN (game {self.games_played} >= 8)")
 
-        # VISUALIZE
-        limit = np.max( bird_observed_trajectory,axis=0)[0]
+    def solve(self):
+        """
+        Solve a particular level by shooting birds directly to pigs.
+        
+        Flow:
+        1. Get angle from PDDL planner
+        2. Execute shot and record trajectory
+        3. Learn collision effects (bounce physics)
+        4. Learn flight physics (gravity, velocity)
+        5. Visualize and update world model
+        """
+        ground_truth_type = GroundTruthType.ground_truth_screenshot
+        vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
 
-        # Use RK4 integration for better accuracy (can also try 'midpoint' or 'euler')
+        sling = vision.find_slingshot_mbr()[0]
+        sling.width, sling.height = sling.height, sling.width
+        
+        # 1. Get angle (priority: determinism_test > override_angle > PDDL planner)
+        if self.determinism_test_mode:
+            angle = self.determinism_angles[self.determinism_angle_index]
+            self.determinism_angle_index = (self.determinism_angle_index + 1) % len(self.determinism_angles)
+            print(f"\n[DETERMINISM] Angle: {angle}° (index {self.determinism_angle_index}/{len(self.determinism_angles)})")
+        elif self.override_angle is not None:
+            angle = self.override_angle
+        else:
+            actions = self.get_action_to_perform(self.world_model)[0]
+            _, angle = actions
+
+        # 2. Execute shot and record trajectory
+        release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
+        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+
+        # Extract trajectory and events
+        groundtruth_trajectories, groundtruth_objects = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
+        event_indexes_by_event, objects_features = getSegmentsEvents(groundtruth_trajectories, groundtruth_objects)
+
+        bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
+        bird_observed_features = objects_features["redBird_0"]
+        event_indexes = sorted([val for values in event_indexes_by_event.values() for val in values])
+        parts = np.split(bird_observed_trajectory, event_indexes)
+        
+        # 3. Learn collision effects (bounce physics)
+        collisions = event_indexes_by_event["ground_collision"]
+        self.learn_collision_effects(collisions, bird_observed_features)
+
+        # 4. Learn flight physics (gravity, velocity) - use first segment only
+        first_segment = parts[0]
+        self.learn_flight_physics(first_segment)
+
+        # 5. Visualize trajectory comparison
+        limit = np.max(first_segment, axis=0)[0]
         estimated_trajectory = construct_trajectory(
-            bird_observed_trajectory[0], 
-            angle, 
-            self.world_model, 
-            limit, 
-            prt=False,
-            integration_method='rk4'  # Options: 'euler', 'midpoint', 'rk4'
+            first_segment[0], angle, self.world_model, limit,
+            prt=False, integration_method='rk4', stop_at_ground=True
         )
-        suggested_trajectoty = construct_trajectory(
-            bird_observed_trajectory[0], 
-            angle, 
-            self.learned_transition_world_model, 
-            limit, 
-            prt=False,
-            integration_method='rk4'  # Options: 'euler', 'midpoint', 'rk4'
+        suggested_trajectory = construct_trajectory(
+            first_segment[0], angle, self.learned_transition_world_model, limit,
+            prt=False, integration_method='rk4', stop_at_ground=True
         )
 
-        self.rmse.append(calculate_rmse(bird_observed_trajectory, estimated_trajectory,trim_start_percent=0,trim_end_percent=0,apply_bias_correction=False))
-        self.suggested_rmse.append(calculate_rmse(bird_observed_trajectory,suggested_trajectoty))
-
-        # Visualize starting point offset to diagnose alignment issues
-        # Get PDDL bird position (reference point from slingshot)
-        ref_point = self.tp.get_reference_point(sling)
-        pddl_ref_pos = (ref_point.X, 640 - ref_point.Y)  # PDDL uses inverted Y coordinate
+        self.rmse.append(calculate_rmse(first_segment, estimated_trajectory, trim_start_percent=0, trim_end_percent=0, apply_bias_correction=False))
+        self.suggested_rmse.append(calculate_rmse(first_segment, suggested_trajectory))
         
-        # Calculate PDDL bird position AFTER pa-twang action
-        # pa-twang decreases x_bird by (* 22 (cosine)) and y_bird by (* 12 (sinus))
-        # Check which domain file is used (domain.pddl uses 22, base_domain.pddl uses 16)
-        import math
-        angle_rad = angle * math.pi / 180
-        cosine = math.cos(angle_rad)
-        sinus = math.sin(angle_rad)
-        
-        # Use 22 for domain.pddl, 16 for base_domain.pddl (check which is active)
-        # Default to 22 (domain.pddl) but can be adjusted
-        patwang_x_offset = 22  # domain.pddl uses 22, base_domain.pddl uses 16
-        patwang_y_offset = 12  # Both use 12
-        
-        pddl_bird_pos_after_patwang = (
-            ref_point.X - patwang_x_offset * cosine,
-            640 - ref_point.Y - patwang_y_offset * sinus
-        )
-        
-        # visualize_starting_point_offset(
-        #     bird_observed_trajectory,
-        #     estimated_trajectory,
-        #     show_first_n_points=15,  # Show first 15 points in detail
-        #     pddl_bird_pos=pddl_bird_pos_after_patwang,  # PDDL bird position AFTER pa-twang
-        #     pddl_ref_pos=pddl_ref_pos,  # PDDL reference point (before pa-twang)
-        #     angle=angle  # Angle for display
-        # )
-        
-        # visualize_compare( bird_observed_trajectory, estimated_trajectory, suggested_trajectoty)
-        # visualize_rmse(self.rmse)
-        # visualize_rmse_vs_suggsted(self.rmse,self.suggested_rmse)
+        visualize_compare(first_segment, estimated_trajectory, suggested_trajectory)
 
-        from agents.pddl.metrics import analyze_launch_angle
-
-        from agents.pddl.metrics import compare_rmse_with_and_without_bias
-
-        # Show visualizations starting from the 9th game
-        if self.games_played >= 9:
-            full_trajectory_comparison(bird_observed_trajectory, estimated_trajectory, frame_rate=0.02, n_frames=20)
-
-        # get_robust_launch_angle(bird_observed_trajectory, num_points=20, commanded_angle_deg=-angle)
-
+        # 6. Update game state and world model
         game_result = self.ar.get_game_state() == GameState.WON
         self.wins.append(game_result)
         
-        # Track wins/losses per level
         self.games_played += 1
         if self.games_played > self.start_counting_from_game:
             self.game_results.append((self.current_level, "win" if game_result else "loss"))
+
+        print(f"Old World Model: {self.world_model.hyperparams_values}")
+        print(f"New World Model: {self.learned_transition_world_model.hyperparams_values}")
         
-        # visuallize_wins_percentage(self.wins)
-
-        from agents.pddl.metrics import compare_interpolation_methods
-
-        # result = compare_interpolation_methods(bird_observed_trajectory, estimated_trajectory)
-        # Compare truncation: Option 1 (observed range) vs Option 3 (minimum overlap)
-        # result1 = compare_truncation_methods(bird_observed_trajectory, estimated_trajectory)
-
-        from agents.pddl.metrics import analyze_error_by_position
-
-        # Default: 10 segments
-        # result = analyze_error_by_position(bird_observed_trajectory, estimated_trajectory)
-
-        # Or specify more/fewer segments
-        # result = analyze_error_by_position(bird_observed_trajectory, estimated_trajectory, num_segments=20)
-
-        print(f"Old values- {self.world_model.hyperparams_values} ")
-        print(f"New values- gravity: {self.learned_transition_world_model.hyperparams_values} ")
-            # Update world model
+        # Update world model with learned parameters
         self.world_model = self.learned_transition_world_model
         self.world_model.kb = self.kb
 
-        if len(self.aggravate_score) == 0:
-            self.aggravate_score.append(self.check_current_level_score())
-        else:
-            self.aggravate_score.append(self.aggravate_score[-1] + self.check_current_level_score())
+        print(f"RMSE: {self.rmse}")
+        print(f"Game results: {self.game_results}")
 
-        # plot_score(self.aggravate_score)
-        print(self.rmse)
-        print(self.game_results)
+        time.sleep(5)
+
+        print(f"Old values- {self.world_model.hyperparams_values} ")
+        print(f"New values- gravity: {self.learned_transition_world_model.hyperparams_values} ")
+        
+        # Update world model
+        self.world_model = self.learned_transition_world_model
+        self.world_model.kb = self.kb
+
+        print(f"RMSE: {self.rmse}")
+        print(f"Game results: {self.game_results}")
 
         time.sleep(5)
 
@@ -724,113 +613,11 @@ class PDDLAgent(BaselineAgent):
                         constant_val = round(model.constant_value, 2)
                         transition_dict["string"] += f", {var_name}(0) = {constant_val:.2f}"
             
-            # Print detailed coefficients for all learned transitions
-            print("\n" + "="*80)
-            print("DETAILED COEFFICIENTS FOR LEARNED TRANSITIONS:")
-            print("="*80)
-            for var_name in ["x", "y", "xdot", "ydot", "xddot", "yddot"]:
-                if self.learned_transitions[var_name] is not None:
-                    transition_dict = self.learned_transitions[var_name]
-                    model = transition_dict.get("model")
-                    features = feature_dependencies.get(var_name, [f"{var_name}(t-1)"])
-                    
-                    print(f"\n{var_name}(t):")
-                    if model is not None:
-                        if hasattr(model, 'poly_features') and hasattr(model, 'coef_'):
-                            # Multi-feature model with PolynomialFeatures
-                            poly_features = model.poly_features
-                            coefs = model.coef_
-                            intercept = model.intercept_
-                            
-                            try:
-                                feature_names_poly = poly_features.get_feature_names_out()
-                            except AttributeError:
-                                feature_names_poly = poly_features.get_feature_names()
-                            
-                            print(f"  Intercept: {intercept:.6f}")
-                            print(f"  Total polynomial features: {len(feature_names_poly)}")
-                            print(f"  Total coefficients: {len(coefs)}")
-                            print(f"  Feature names from PolynomialFeatures: {list(feature_names_poly[:min(10, len(feature_names_poly))])}")  # Show first 10
-                            bias_offset = 1 if len(feature_names_poly) > 0 and feature_names_poly[0] == "1" else 0
-                            print(f"  Bias offset: {bias_offset}")
-                            
-                            # Check specifically for the first feature (should be x(t-1) or y(t-1))
-                            print(f"  First feature name: '{features[0] if features else 'N/A'}'")
-                            print(f"  Looking for coefficient mapping to '{features[0] if features else 'N/A'}'")
-                            
-                            # IMPORTANT: When PolynomialFeatures has include_bias=True and LinearRegression has fit_intercept=True,
-                            # there's a double bias. LinearRegression's coef_ includes coefficients for ALL columns in X_poly,
-                            # including the bias column. So coef_[0] corresponds to feature_names_poly[0] which is '1'.
-                            # We need to check if LinearRegression actually used the bias column or its own intercept.
-                            
-                            # Check if first coefficient corresponds to bias column
-                            if len(coefs) == len(feature_names_poly):
-                                # coef_ includes bias column from PolynomialFeatures
-                                # coef_[0] = coefficient for '1' (bias column)
-                                # coef_[1] = coefficient for 'x0'
-                                # etc.
-                                print(f"  NOTE: coef_ includes bias column from PolynomialFeatures")
-                                for i, coef in enumerate(coefs):
-                                    if i < len(feature_names_poly):
-                                        poly_feat_name = feature_names_poly[i]
-                                        if poly_feat_name == "1":
-                                            print(f"  Coefficient[{i}] -> '{poly_feat_name}' (bias from PolynomialFeatures): {coef:.6f}")
-                                        else:
-                                            readable_term = self._parse_polynomial_feature(poly_feat_name, features)
-                                            if readable_term:
-                                                is_first_feature = (readable_term == features[0] if features else False)
-                                                marker = " <-- FIRST FEATURE" if is_first_feature else ""
-                                                print(f"  Coefficient[{i}] -> '{poly_feat_name}' -> '{readable_term}': {coef:.6f}{marker}")
-                                            else:
-                                                print(f"  Coefficient[{i}] -> '{poly_feat_name}' (unparseable): {coef:.6f}")
-                            else:
-                                # coef_ does NOT include bias column (LinearRegression handles it separately)
-                                # Use bias_offset as before
-                                for i, coef in enumerate(coefs):
-                                    poly_idx = i + bias_offset
-                                    if poly_idx < len(feature_names_poly):
-                                        poly_feat_name = feature_names_poly[poly_idx]
-                                        readable_term = self._parse_polynomial_feature(poly_feat_name, features)
-                                        if readable_term:
-                                            is_first_feature = (readable_term == features[0] if features else False)
-                                            marker = " <-- FIRST FEATURE" if is_first_feature else ""
-                                            print(f"  Coefficient[{i}] -> '{poly_feat_name}' -> '{readable_term}': {coef:.6f}{marker}")
-                                        else:
-                                            print(f"  Coefficient[{i}] -> '{poly_feat_name}' (unparseable): {coef:.6f}")
-                                    else:
-                                        print(f"  Coefficient[{i}]: {coef:.6f} (index {poly_idx} out of range)")
-                            
-                            # Also print raw coefficient array for debugging
-                            print(f"  Raw coefficients array: {coefs[:min(5, len(coefs))]}")  # First 5 coefficients
-                        elif hasattr(model, 'coef_'):
-                            # Simple linear model
-                            coefs = model.coef_
-                            intercept = model.intercept_ if hasattr(model, 'intercept_') else 0
-                            print(f"  Intercept: {intercept:.6f}")
-                            if len(coefs.shape) == 1:
-                                for i, coef in enumerate(coefs):
-                                    if i < len(features):
-                                        print(f"  Coefficient for '{features[i]}': {coef:.6f}")
-                                    else:
-                                        print(f"  Coefficient[{i}]: {coef:.6f}")
-                            else:
-                                print(f"  Coefficients shape: {coefs.shape}")
-                                print(f"  Coefficients: {coefs}")
-                    else:
-                        print("  Model is None")
-                else:
-                    print(f"\n{var_name}(t): Not learned")
-            
-            # Print all learned transition functions (formatted strings)
-            print("\n" + "="*80)
-            print("LEARNED STATE TRANSITION FUNCTIONS (FORMATTED):")
-            print("="*80)
-            for var_name in ["x", "y", "xdot", "ydot", "xddot", "yddot"]:
+            # Print learned transition summary
+            print("\nLearned transitions:")
+            for var_name in ["yddot", "xdot", "ydot"]:
                 if self.learned_transitions[var_name] is not None and "string" in self.learned_transitions[var_name]:
-                    print(self.learned_transitions[var_name]["string"])
-                else:
-                    print(f"{var_name}(t) = Not learned")
-            print("="*80 + "\n")
+                    print(f"  {self.learned_transitions[var_name]['string']}")
         except Exception as e:
             print(f"Error in learn_process_transitions step 3: {e}")
             print("Some transition functions may not have been learned.")
@@ -1103,269 +890,3 @@ class PDDLAgent(BaselineAgent):
             # If parsing fails, return None (term will be skipped)
             return None
 
-    def _evaluate_collision_learning(self, collisions, bird_observed_features, frame_rate):
-        """
-        Evaluate the collision model's performance using Leave-One-Out Cross-Validation.
-        This measures how well the model GENERALIZES to unseen collisions.
-        
-        Tracks:
-        - Training error (how well it fits known data)
-        - LOO-CV error (how well it predicts unseen data - TRUE generalization measure)
-        """
-        from sklearn.preprocessing import PolynomialFeatures
-        from sklearn.linear_model import LinearRegression
-        import numpy as np
-        
-        n_samples = len(self.kb["collision"]["states"])
-        
-        if n_samples < 2:
-            # Can't do cross-validation with less than 2 samples
-            return
-        
-        # Get all states and targets
-        states = np.array([[s['x'], s['y'], s['v_x'], s['v_y']] for s in self.kb["collision"]["states"]])
-        targets = {
-            'v_x': np.array(self.kb["collision"]["variables"]["v_x"]["value"]),
-            'v_y': np.array(self.kb["collision"]["variables"]["v_y"]["value"]),
-            'y': np.array(self.kb["collision"]["variables"]["y"]["value"])
-        }
-        
-        # Calculate Leave-One-Out Cross-Validation error
-        loo_errors = {'v_x': [], 'v_y': [], 'y': []}
-        training_errors = {'v_x': [], 'v_y': [], 'y': []}
-        
-        for var_name in ['v_x', 'v_y', 'y']:
-            y = targets[var_name]
-            
-            # Training error (using all data)
-            model = self.kb["collision"]["variables"][var_name]["model"]
-            if model is not None:
-                poly = PolynomialFeatures(degree=1, include_bias=False)
-                X_poly = poly.fit_transform(states)
-                predictions = model.predict(X_poly)
-                train_mse = np.mean((predictions - y) ** 2)
-                training_errors[var_name] = np.sqrt(train_mse)
-            
-            # LOO-CV error
-            loo_predictions = []
-            for i in range(n_samples):
-                # Train on all except sample i
-                X_train = np.delete(states, i, axis=0)
-                y_train = np.delete(y, i)
-                X_test = states[i:i+1]
-                y_test = y[i]
-                
-                # Fit model
-                poly = PolynomialFeatures(degree=1, include_bias=False)
-                X_train_poly = poly.fit_transform(X_train)
-                X_test_poly = poly.transform(X_test)
-                
-                loo_model = LinearRegression()
-                loo_model.fit(X_train_poly, y_train)
-                
-                pred = loo_model.predict(X_test_poly)[0]
-                loo_predictions.append((pred - y_test) ** 2)
-            
-            loo_mse = np.mean(loo_predictions)
-            loo_errors[var_name] = np.sqrt(loo_mse)
-        
-        # Store in learning history
-        history_entry = {
-            'game': self.games_played,
-            'n_samples': n_samples,
-            'training_rmse': {k: float(v) for k, v in training_errors.items()},
-            'loo_cv_rmse': {k: float(v) for k, v in loo_errors.items()}
-        }
-        self.kb["collision"]["learning_history"].append(history_entry)
-        
-        # Print learning progress
-        print("\n" + "="*70)
-        print(f"COLLISION LEARNING PROGRESS (Game {self.games_played}, {n_samples} samples)")
-        print("="*70)
-        print(f"{'Variable':<10} {'Train RMSE':<15} {'LOO-CV RMSE':<15} {'Generalization':<20}")
-        print("-"*70)
-        
-        for var_name in ['v_x', 'v_y', 'y']:
-            train_err = training_errors[var_name]
-            loo_err = loo_errors[var_name]
-            
-            # Generalization gap: if LOO >> Train, model is overfitting
-            if train_err > 0.01:
-                gap_ratio = loo_err / train_err
-                if gap_ratio < 1.5:
-                    status = "✓ Good"
-                elif gap_ratio < 3.0:
-                    status = "⚠ Moderate overfit"
-                else:
-                    status = "✗ Overfitting"
-            else:
-                status = "Perfect fit"
-            
-            print(f"{var_name:<10} {train_err:<15.4f} {loo_err:<15.4f} {status:<20}")
-        
-        print("-"*70)
-        
-        # Show improvement over time
-        if len(self.kb["collision"]["learning_history"]) > 1:
-            prev = self.kb["collision"]["learning_history"][-2]
-            curr = self.kb["collision"]["learning_history"][-1]
-            
-            print("\nImprovement from previous game:")
-            for var_name in ['v_x', 'v_y']:
-                prev_loo = prev['loo_cv_rmse'].get(var_name, float('inf'))
-                curr_loo = curr['loo_cv_rmse'].get(var_name, float('inf'))
-                
-                if prev_loo > 0:
-                    improvement = (prev_loo - curr_loo) / prev_loo * 100
-                    arrow = "↓" if improvement > 0 else "↑"
-                    print(f"  {var_name}: {arrow} {abs(improvement):.1f}% {'better' if improvement > 0 else 'worse'}")
-        
-        print("="*70 + "\n")
-    
-    def _print_collision_learning_status(self):
-        """
-        Print comprehensive collision learning status with model comparison.
-        
-        Shows:
-        - Sample count and diversity warnings
-        - Model comparison table (General vs Domain-specific)
-        - Selected model coefficients
-        - Actual sample ratios
-        """
-        from agents.pddl.pddl_files.events.learn_events import PhysicsRatioModel, AngleDependentFrictionModel
-        
-        n_samples = len(self.kb["collision"]["states"])
-        states = self.kb["collision"]["states"]
-        
-        # Header
-        print("\n" + "=" * 70)
-        print(f"COLLISION LEARNING STATUS: {n_samples} sample(s) in KB")
-        print("=" * 70)
-        
-        # Warning for few samples
-        if n_samples < 5:
-            print("⚠️  WARNING: Need more samples for reliable learning!")
-            print("   With few samples, the model just memorizes - no generalization.")
-        
-        # Sample diversity
-        if n_samples > 0:
-            v_y_values = [s['v_y'] for s in states]
-            v_x_values = [s['v_x'] for s in states]
-            print(f"\n📊 SAMPLE DIVERSITY (pre-collision velocities):")
-            print(f"   v_y_pre range: [{min(v_y_values):.1f}, {max(v_y_values):.1f}]  (spread: {max(v_y_values)-min(v_y_values):.1f})")
-            print(f"   v_x_pre range: [{min(v_x_values):.1f}, {max(v_x_values):.1f}]  (spread: {max(v_x_values)-min(v_x_values):.1f})")
-            if max(v_y_values) - min(v_y_values) < 50:
-                print("   ⚠️  Low v_y diversity! Try different shooting angles for better learning.")
-        
-        # Model comparison for each variable
-        print("\n" + "=" * 70)
-        print("MODEL COMPARISON (General vs Domain-Specific)")
-        print("=" * 70)
-        
-        for var_name in ["v_x", "v_y", "y"]:
-            comparison = self.kb["collision"]["variables"][var_name].get("model_comparison")
-            if comparison:
-                self._print_model_comparison(var_name, comparison)
-        
-        # Actual ratios from samples
-        if n_samples > 0:
-            self._print_sample_ratios(states, n_samples)
-        
-        print("=" * 70)
-    
-    def _print_model_comparison(self, var_name, comparison):
-        """Print formatted model comparison table for a single variable."""
-        n = comparison['n_samples']
-        
-        print(f"\n--- {var_name} ({n} samples) ---")
-        print(f"{'Model':<28} {'Train RMSE':<12} {'LOO-CV':<12} {'R²':<10}")
-        print("-" * 62)
-        
-        # General model row
-        gen = comparison['general_stats']
-        gen_label = "General (Poly deg=1)"
-        loo_str = f"{gen['loo_cv']:.4f}" if np.isfinite(gen['loo_cv']) else "N/A"
-        print(f"{gen_label:<28} {gen['train_rmse']:<12.4f} {loo_str:<12} {gen['r2']:<10.4f}")
-        
-        # Domain model row (if exists)
-        if comparison['domain_stats']:
-            dom = comparison['domain_stats']
-            domain_label = f"Domain ({comparison['domain_name']})"
-            dom_loo_str = f"{dom['loo_cv']:.4f}" if np.isfinite(dom['loo_cv']) else "N/A"
-            print(f"{domain_label:<28} {dom['train_rmse']:<12.4f} {dom_loo_str:<12} {dom['r2']:<10.4f}")
-        
-        # Winner
-        print("-" * 62)
-        winner_str = f"SELECTED: {comparison['winner_name']}"
-        if comparison['improvement_pct'] > 0:
-            winner_str += f" ({comparison['improvement_pct']:.1f}% better LOO-CV)"
-        print(winner_str)
-        
-        # Show coefficients of selected model
-        self._print_selected_coefficients(var_name, comparison)
-    
-    def _print_selected_coefficients(self, var_name, comparison):
-        """Print coefficients of the selected model in physics-interpretable format."""
-        from agents.pddl.pddl_files.events.learn_events import PhysicsRatioModel, AngleDependentFrictionModel
-        
-        model = comparison['winner']
-        
-        if isinstance(model, PhysicsRatioModel):
-            print(f"\n  {var_name}_after = {model.ratio:.4f} * {var_name}_before")
-            stats = model.get_stats()
-            if stats['n_samples'] > 0:
-                print(f"  └─ Learned ratio: {model.ratio:.4f} ± {stats['std']:.4f} (from {stats['n_samples']} samples)")
-            if var_name == 'v_y' and abs(model.ratio - (-0.33)) < 0.15:
-                print(f"  └─ ✅ Restitution coefficient close to expected ~-0.33")
-                
-        elif isinstance(model, AngleDependentFrictionModel):
-            print(f"\n  {var_name}_ratio = {model.base_ratio:.4f} + ({model.angle_coef:.4f}) * impact_angle_factor")
-            print(f"  └─ impact_angle_factor = |v_y| / (|v_x| + |v_y|)  [0=horizontal, 1=vertical]")
-            stats = model.get_stats()
-            if stats['n_samples'] > 0:
-                print(f"  └─ R² score: {stats['r_squared']:.3f}, samples: {stats['n_samples']}")
-            if model.angle_coef < -0.1:
-                print(f"  └─ ✅ Steeper impacts lose more v_x (physically correct)")
-            elif model.angle_coef > 0.1:
-                print(f"  └─ ⚠️ Steeper impacts retain more v_x (unusual)")
-                
-        elif hasattr(model, 'coef_') and hasattr(model, 'intercept_'):
-            # General linear model
-            coef_names = ["x", "y", "v_x", "v_y"]
-            terms = [f"{model.intercept_:.4f}"]
-            for coef, name in zip(model.coef_, coef_names):
-                if abs(coef) > 0.0001:
-                    terms.append(f"({coef:.4f})*{name}")
-            print(f"\n  {var_name}_after = " + " + ".join(terms))
-    
-    def _print_sample_ratios(self, states, n_samples):
-        """Print actual ratios from all samples."""
-        post_v_y = self.kb["collision"]["variables"]["v_y"]["value"]
-        post_v_x = self.kb["collision"]["variables"]["v_x"]["value"]
-        
-        print(f"\n📈 ACTUAL RATIOS FROM SAMPLES:")
-        for i, (pre, vy_post, vx_post) in enumerate(zip(states, post_v_y, post_v_x)):
-            vy_ratio = vy_post / pre['v_y'] if abs(pre['v_y']) > 0.1 else 0
-            vx_ratio = vx_post / pre['v_x'] if abs(pre['v_x']) > 0.1 else 0
-            print(f"   Sample {i+1}: v_y ratio = {vy_ratio:.3f}, v_x ratio = {vx_ratio:.3f}")
-        
-        # Average ratios
-        vy_ratios = [post_v_y[i] / states[i]['v_y'] for i in range(n_samples) if abs(states[i]['v_y']) > 0.1]
-        vx_ratios = [post_v_x[i] / states[i]['v_x'] for i in range(n_samples) if abs(states[i]['v_x']) > 0.1]
-        if vy_ratios:
-            print(f"   Average v_y ratio: {np.mean(vy_ratios):.3f} ± {np.std(vy_ratios):.3f}")
-        if vx_ratios:
-            print(f"   Average v_x ratio: {np.mean(vx_ratios):.3f} ± {np.std(vx_ratios):.3f}")
-    
-    def plot_model_comparison(self, event_name="collision", save_path=None):
-        """
-        Plot LOO-CV comparison between General (Ridge) and Domain-Specific models.
-        
-        LOO-CV = Leave-One-Out Cross-Validation RMSE
-        Lower values = better generalization to unseen data
-        
-        Usage:
-            agent.plot_model_comparison()  # Interactive plot
-            agent.plot_model_comparison(save_path="comparison.png")  # Save to file
-        """
-        plot_loo_cv_comparison(self.kb, event_name=event_name, save_path=save_path)

@@ -50,13 +50,26 @@ def visualize_compare(observed_trajectory, estimated_trajectory, changed_traject
     plt.show()
 
 
-def visualize_rmse(rmse_values):
-
+def visualize_rmse(rmse_values, suggested_rmse_values=None):
+    """
+    Visualize RMSE values over time, optionally comparing with suggested RMSE values.
+    
+    Parameters:
+    -----------
+    rmse_values : list or np.ndarray
+        Primary RMSE values to plot
+    suggested_rmse_values : list or np.ndarray, optional
+        Secondary RMSE values to compare against (shown in orange)
+    """
     time_steps = list(range(len(rmse_values)))
 
-    # Plotting
     plt.figure(figsize=(8, 4))
-    plt.plot(time_steps, rmse_values, marker='o',color="blue")
+    plt.plot(time_steps, rmse_values, marker='o', color="blue", label="RMSE")
+    
+    if suggested_rmse_values is not None:
+        plt.plot(time_steps, suggested_rmse_values, marker='o', color="orange", label="Suggested RMSE")
+        plt.legend()
+    
     plt.title('RMSE Over Time')
     plt.xlabel('Time Step')
     plt.ylabel('RMSE')
@@ -65,20 +78,15 @@ def visualize_rmse(rmse_values):
     plt.show()
 
 
-def visualize_rmse_vs_suggsted(rmse_values,suggested_rmse_values):
-
-    time_steps = list(range(len(rmse_values)))
-
-    # Plotting
-    plt.figure(figsize=(8, 4))
-    plt.plot(time_steps, rmse_values, marker='o',color="blue")
-    plt.plot(time_steps, suggested_rmse_values, marker='o', color="orange")
-    plt.title('RMSE Over Time')
-    plt.xlabel('Time Step')
-    plt.ylabel('RMSE')
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+def visualize_rmse_vs_suggsted(rmse_values, suggested_rmse_values):
+    """Deprecated: Use visualize_rmse(rmse_values, suggested_rmse_values) instead."""
+    import warnings
+    warnings.warn(
+        "visualize_rmse_vs_suggsted is deprecated, use visualize_rmse(rmse_values, suggested_rmse_values) instead",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    visualize_rmse(rmse_values, suggested_rmse_values)
 
 
 def visuallize_wins_percentage(wins):
@@ -1640,7 +1648,12 @@ def visualize_ground_collision_detection(bird_trajectory, bird_features, event_i
 def visualize_post_collision_trajectory(bird_trajectory, bird_features, event_indexes_by_event,
                                          world_model, kb=None):
     """
-    Compare actual post-collision trajectory with predicted trajectory using learned model.
+    Deprecated: Use visualize_post_collision_trajectory_v2 instead.
+    
+    V2 improvements:
+    - Uses v_x, v_y directly instead of angle/magnitude conversion (avoids precision loss)
+    - Multi-frame velocity calculation to avoid quantization noise
+    - Skips first 2 post-collision frames where bird may still be at ground level
     
     Parameters:
     -----------
@@ -1655,6 +1668,12 @@ def visualize_post_collision_trajectory(bird_trajectory, bird_features, event_in
     kb : dict, optional
         Knowledge base with learned collision models
     """
+    import warnings
+    warnings.warn(
+        "visualize_post_collision_trajectory is deprecated, use visualize_post_collision_trajectory_v2 instead",
+        DeprecationWarning,
+        stacklevel=2
+    )
     from agents.pddl.trajectory_parser import construct_trajectory
     from agents.pddl.pddl_files.world_model.params import Params
     
@@ -2288,31 +2307,53 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
     if n_vars == 1:
         axes = [axes]
     
-    fig.suptitle("LOO-CV Comparison: General (ElasticNet) vs Domain-Specific Models\n"
+    # Get current regularization type from config
+    try:
+        from agents.pddl.pddl_files.events.learn_events import REGULARIZATION_CONFIG
+        reg_type = REGULARIZATION_CONFIG.get('type', 'elasticnet').upper()
+        reg_name = {'NONE': 'OLS', 'L1': 'Lasso/L1', 'L2': 'Ridge/L2', 'ELASTICNET': 'ElasticNet'}.get(reg_type, reg_type)
+    except:
+        reg_name = 'ElasticNet'
+    
+    fig.suptitle(f"LOO-CV Comparison: General ({reg_name}) vs Domain-Specific Models\n"
                  "(Lower = Better Generalization)", fontsize=12, fontweight='bold')
     
     for ax, var_name in zip(axes, vars_with_history):
         history = variables[var_name]["loo_cv_history"]
         n_samples = history["n_samples"]
         general_loo = history["general"]
+        general_std = history.get("general_std", [0] * len(general_loo))  # Get std if available
         domain_loo = history["domain"]
         
         # X-axis: number of samples at each measurement point
         x = list(range(1, len(n_samples) + 1))
         
-        # Filter out inf values for plotting
-        general_valid = [(i, v) for i, v in zip(x, general_loo) if v != float('inf') and v < 1000]
+        # Filter out inf values for plotting (include std for general)
+        general_valid = [(i, v, s) for i, v, s in zip(x, general_loo, general_std) 
+                        if v != float('inf') and v < 1000]
         domain_valid = [(i, v) for i, v in zip(x, domain_loo) if v != float('inf') and v < 1000]
         
-        # Plot General (ElasticNet) model
+        # Plot General (ElasticNet) model with variance bands
         if general_valid:
-            gx, gy = zip(*general_valid)
+            gx, gy, gstd = zip(*general_valid)
+            gx, gy, gstd = np.array(gx), np.array(gy), np.array(gstd)
+            
+            # Plot variance band (±1 std) for General model only
+            ax.fill_between(gx, gy - gstd, gy + gstd, alpha=0.2, color='blue', 
+                           label='General ±1σ')
+            
+            # Plot main line
             ax.plot(gx, gy, 'b-o', linewidth=2, markersize=8, label='General (ElasticNet)', alpha=0.8)
-            # Annotate final value
-            ax.annotate(f'{gy[-1]:.2f}', (gx[-1], gy[-1]), textcoords="offset points", 
-                       xytext=(5, 5), fontsize=9, color='blue')
+            
+            # Annotate final value with std
+            if gstd[-1] > 0:
+                ax.annotate(f'{gy[-1]:.2f}±{gstd[-1]:.2f}', (gx[-1], gy[-1]), 
+                           textcoords="offset points", xytext=(5, 5), fontsize=9, color='blue')
+            else:
+                ax.annotate(f'{gy[-1]:.2f}', (gx[-1], gy[-1]), textcoords="offset points", 
+                           xytext=(5, 5), fontsize=9, color='blue')
         
-        # Plot Domain-Specific model
+        # Plot Domain-Specific model (no variance bands)
         if domain_valid:
             dx, dy = zip(*domain_valid)
             ax.plot(dx, dy, 'r-s', linewidth=2, markersize=8, label='Domain-Specific', alpha=0.8)
@@ -2343,11 +2384,10 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"LOO-CV comparison plot saved to: {save_path}")
-        plt.close(fig)  # Close to free memory when saving
-    else:
-        # Only show interactively if not saving
-        plt.show(block=False)
-        plt.pause(0.1)
+    
+    # Show interactively - block=True waits for user to close the window
+    print("\n[LOO-CV] Showing plot... Close the window to continue.")
+    plt.show(block=True)
     
     # Print summary
     print("\n" + "="*60)

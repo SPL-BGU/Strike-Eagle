@@ -2,7 +2,12 @@
     (:domain angry_birds_scaled)
     (:objects
         bird_0 - bird
+bird_1 - bird
 pig_0 - pig
+block_0 - block
+block_1 - block
+platform_0 - platform
+platform_1 - platform
     )
     (:init
         (= (angle) 90)
@@ -12,7 +17,7 @@ pig_0 - pig
 (= (cosine) 0 )
 (= (sinus) 1 )
 (= (bounce_count) 0)
-(= (gravity) 85.87057732997192)
+(= (gravity) 86.06806977261883)
 (= (active_bird) 0)
 (= (ground_y_damper) 0.1)(= (ground_x_damper) 0.5)
 (= (x_bird bird_0) 97)
@@ -21,13 +26,47 @@ pig_0 - pig
 (= (bird_type bird_0) 0)
 (= (m_bird bird_0) 56)
 (= (bird_radius bird_0) 3.5)
-(= (v_bird bird_0) 180.51183368411057)
+(= (v_bird bird_0) 182.03061995169932)
 (= (bounce_count bird_0) 0)
-(= (x_pig pig_0) 126.5)
-(= (y_pig pig_0) 355)
+(= (bird_block_damage bird_0 block_0) 0.01)
+(= (bird_block_damage bird_0 block_1) 0.01)
+(= (x_bird bird_1) 97)
+(= (y_bird bird_1) 388)
+(= (bird_id bird_1) 1)
+(= (bird_type bird_1) 0)
+(= (m_bird bird_1) 315)
+(= (bird_radius bird_1) 7.5)
+(= (v_bird bird_1) 182.03061995169932)
+(= (bounce_count bird_1) 0)
+(= (bird_block_damage bird_1 block_0) 0.01)
+(= (bird_block_damage bird_1 block_1) 0.01)
+(= (x_pig pig_0) 192.5)
+(= (y_pig pig_0) 413)
 (= (m_pig pig_0) 56)
 (= (pig_radius pig_0) 3.5)
 (= (pig_life pig_0) 1)
+(= (x_block block_0) 458.5)
+(= (y_block block_0) 362.5)
+(= (block_width block_0) 15)
+(= (block_height block_0) 15)
+(= (block_life block_0) 0.375)
+(= (block_mass block_0) 84.375)
+(= (block_stability block_0) 1)
+(= (x_block block_1) 175.0)
+(= (y_block block_1) 453.5)
+(= (block_width block_1) 28)
+(= (block_height block_1) 27)
+(= (block_life block_1) 0.375)
+(= (block_mass block_1) 283.5)
+(= (block_stability block_1) 1)
+(= (x_platform platform_0) 174.0)
+(= (y_platform platform_0) 412.0)
+(= (platform_width platform_0) 56)
+(= (platform_height platform_0) 6)
+(= (x_platform platform_1) 199.0)
+(= (y_platform platform_1) 426.0)
+(= (platform_width platform_1) 6)
+(= (platform_height platform_1) 36)
     )
     (:goal
         ; Define your goal conditions here

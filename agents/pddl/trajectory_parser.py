@@ -127,7 +127,9 @@ def construct_trajectory_from_velocity(
         limit: float,
         frame_rate=0.02,
         prt=False,
-        integration_method='rk4'):
+        integration_method='rk4',
+        stop_at_ground=False,
+        ground_level=280):
     """
     Construct trajectory directly from velocity components (v_x, v_y).
     
@@ -152,6 +154,10 @@ def construct_trajectory_from_velocity(
         Whether to print debug information
     integration_method : str
         'euler', 'midpoint', or 'rk4'
+    stop_at_ground : bool
+        If True, stop trajectory when bird hits ground level (default False)
+    ground_level : float
+        Ground level in natural coordinates (default 280, which is 640-360)
     
     Returns:
     --------
@@ -188,6 +194,9 @@ def construct_trajectory_from_velocity(
         
         if state[0] > limit:
             break
+        
+        if stop_at_ground and state[1] <= ground_level:
+            break
     
     return trajectory
 
@@ -199,7 +208,9 @@ def construct_trajectory(
         limit: int,
         frame_rate=.02,
         prt=True,
-        integration_method='rk4'):
+        integration_method='rk4',
+        stop_at_ground=False,
+        ground_level=280):
     """
     Construct trajectory with improved numerical integration.
     
@@ -221,6 +232,10 @@ def construct_trajectory(
         'euler' - Simple Euler (O(Δt²) error, fastest)
         'midpoint' - Midpoint method (O(Δt³) error, good balance)
         'rk4' - Runge-Kutta 4th order (O(Δt⁵) error, most accurate)
+    stop_at_ground : bool
+        If True, stop trajectory when bird hits ground level (default False)
+    ground_level : float
+        Ground level in natural coordinates (default 280, which is 640-360)
     
     Returns:
     --------
@@ -261,6 +276,9 @@ def construct_trajectory(
         trajectory = np.vstack([trajectory, state[0:2]])
         
         if state[0] > limit:
+            break
+        
+        if stop_at_ground and state[1] <= ground_level:
             break
     
     return trajectory
