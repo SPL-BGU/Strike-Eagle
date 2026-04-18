@@ -70,6 +70,12 @@ def write_problem_file(path: str, problem_data: dict, init_angle: float, angel_r
 
 
 def inject_domain_file(path: str, world_model: WorldModel):
+    """
+    Inject learned collision models into the PDDL domain file.
+    
+    Always uses the General (Linear) model for PDDL injection.
+    CART models are used only for comparison, not for injection.
+    """
     with open(path, "r") as file:
         content = file.read()
     new_content = content
@@ -77,23 +83,21 @@ def inject_domain_file(path: str, world_model: WorldModel):
     for variable_name, variable_data in world_model.kb["collision"]["variables"].items():
         placeholder = "{{SE-collision-{}}}".format(variable_name)
         
-        if variable_data["model"] == None:
-            # If no model available, inject 0
+        if variable_data["model"] is None:
             new_content = new_content.replace(placeholder, "0.0")
             continue
         
-        coefs = variable_data["model"].coef_
-        bias = variable_data["model"].intercept_
+        model = variable_data["model"]
+        coefs = model.coef_
+        bias = model.intercept_
         vars = ['x_bird', 'y_bird', 'vx_bird', 'vy_bird']
 
-        # === Step 2: generate the PDDL effect ===
-        threshold = 1e-8  # you can adjust this threshold if needed
+        threshold = 1e-8
         terms = [
             f"(* {c:.4f} ({v} ?b))"
             for c, v in zip(coefs, vars)
             if abs(c) >= threshold
         ]
-        # terms = [f"(* {0 if abs(c) < threshold else c} ({v} ?b))" for c, v in zip(coeffs, vars)] // for explainability
 
         def nest_terms(term_list):
             if not term_list:
@@ -104,20 +108,19 @@ def inject_domain_file(path: str, world_model: WorldModel):
 
         nested_terms = nest_terms(terms[:4])
 
-        # Wrap bias with the nested terms
         if abs(bias) > threshold:
-            equation = f"(+ {bias} {nested_terms})"
+            equation = f"(+ {bias:.4f} {nested_terms})"
         else:
-            equation = nested_terms
-        # === Step 4: replace the tag ===
+            equation = nested_terms if nested_terms else "0.0"
+        
         new_content = new_content.replace(placeholder, equation)
     
-    # Replace any remaining placeholders (not in KB) with 0 as fallback
+    # Replace any remaining placeholders with 0 as fallback
     remaining_placeholders = re.findall(r'\{\{SE-collision-[^}]+\}\}', new_content)
     for placeholder in remaining_placeholders:
         new_content = new_content.replace(placeholder, "0.0")
 
-    # === Save modified file in same folder ===
+    # Save modified file
     base_dir = os.path.dirname(path)
     base_name = os.path.splitext(os.path.basename(path))[0]
     output_path = os.path.join(base_dir, f"{base_name}_modified.pddl")
@@ -126,7 +129,6 @@ def inject_domain_file(path: str, world_model: WorldModel):
         file.write(new_content)
 
     print(f"Modified file saved to: {output_path}")
-    # === Step 5: save to a new file (or overwrite if you prefer) ==
     print("Injection complete.")
 
 

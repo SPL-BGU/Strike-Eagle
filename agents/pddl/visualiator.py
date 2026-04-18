@@ -2272,25 +2272,26 @@ If RED matches GREEN: learned model is working
 
 def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
     """
-    Plot LOO-CV (Leave-One-Out Cross-Validation) comparison between 
-    General (ElasticNet) and Domain-Specific models over time.
-    
-    LOO-CV measures how well a model generalizes to unseen data.
-    Lower values = better generalization.
-    
-    Parameters:
-        kb: Knowledge base containing event learning data
-        event_name: Name of the event to plot (default: "collision")
-        save_path: Optional path to save the figure
+    Plot LOO-CV for General (injected), CART, and four M5 variants (leaf: OLS, L1, L2, L1+L2).
     """
     if event_name not in kb:
         print(f"Event '{event_name}' not found in KB")
         return
     
+    try:
+        from agents.pddl.pddl_files.events.learn_events import (
+            REGULARIZATION_CONFIG,
+            M5_LEAF_REG_ORDER,
+            M5_LEAF_REG_LABELS,
+        )
+    except ImportError:
+        REGULARIZATION_CONFIG = {'type': 'elasticnet'}
+        M5_LEAF_REG_ORDER = ('none', 'l1', 'l2', 'elasticnet')
+        M5_LEAF_REG_LABELS = {k: k for k in M5_LEAF_REG_ORDER}
+    
     event_data = kb[event_name]
     variables = event_data.get("variables", {})
     
-    # Find variables with LOO-CV history
     vars_with_history = []
     for var_name, var_data in variables.items():
         if "loo_cv_history" in var_data and len(var_data["loo_cv_history"]["n_samples"]) > 1:
@@ -2300,84 +2301,116 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
         print("No LOO-CV history available yet. Need at least 2 samples.")
         return
     
-    # Create subplots - one for each variable with history
     n_vars = len(vars_with_history)
-    fig, axes = plt.subplots(1, n_vars, figsize=(6*n_vars, 5))
+    fig, axes = plt.subplots(1, n_vars, figsize=(8 * n_vars, 5.5))
     
     if n_vars == 1:
         axes = [axes]
     
-    # Get current regularization type from config
-    try:
-        from agents.pddl.pddl_files.events.learn_events import REGULARIZATION_CONFIG
-        reg_type = REGULARIZATION_CONFIG.get('type', 'elasticnet').upper()
-        reg_name = {'NONE': 'OLS', 'L1': 'Lasso/L1', 'L2': 'Ridge/L2', 'ELASTICNET': 'ElasticNet'}.get(reg_type, reg_type)
-    except:
-        reg_name = 'ElasticNet'
+    reg_type = REGULARIZATION_CONFIG.get('type', 'elasticnet').upper()
+    reg_name = {'NONE': 'OLS', 'L1': 'Lasso/L1', 'L2': 'Ridge/L2', 'ELASTICNET': 'ElasticNet'}.get(reg_type, reg_type)
     
-    fig.suptitle(f"LOO-CV Comparison: General ({reg_name}) vs Domain-Specific Models\n"
-                 "(Lower = Better Generalization)", fontsize=12, fontweight='bold')
+    m5_plot_styles = [
+        ('m5_none', 's', '#d62728', 'M5 OLS leaves'),
+        ('m5_l1', 'D', '#ff7f0e', 'M5 L1 leaves'),
+        ('m5_l2', '^', '#9467bd', 'M5 L2 leaves'),
+        ('m5_elasticnet', 'v', '#8c564b', 'M5 L1+L2 leaves'),
+    ]
+    
+    fig.suptitle(
+        f"LOO-CV: General ({reg_name}) vs CART vs M5 (4 leaf regularizations)\n"
+        f"(Lower = better) | General used for PDDL injection",
+        fontsize=11,
+        fontweight='bold',
+    )
     
     for ax, var_name in zip(axes, vars_with_history):
         history = variables[var_name]["loo_cv_history"]
         n_samples = history["n_samples"]
         general_loo = history["general"]
-        general_std = history.get("general_std", [0] * len(general_loo))  # Get std if available
-        domain_loo = history["domain"]
+        general_std = history.get("general_std", [0] * len(general_loo))
+        cart_loo = history.get("cart", history.get("domain", []))
         
-        # X-axis: number of samples at each measurement point
         x = list(range(1, len(n_samples) + 1))
         
-        # Filter out inf values for plotting (include std for general)
-        general_valid = [(i, v, s) for i, v, s in zip(x, general_loo, general_std) 
-                        if v != float('inf') and v < 1000]
-        domain_valid = [(i, v) for i, v in zip(x, domain_loo) if v != float('inf') and v < 1000]
+        general_valid = [(i, v, s) for i, v, s in zip(x, general_loo, general_std)
+                         if v != float('inf') and v < 1000]
+        cart_valid = [(i, v) for i, v in zip(x, cart_loo) if v != float('inf') and v < 1000]
         
-        # Plot General (ElasticNet) model with variance bands
         if general_valid:
             gx, gy, gstd = zip(*general_valid)
             gx, gy, gstd = np.array(gx), np.array(gy), np.array(gstd)
-            
-            # Plot variance band (±1 std) for General model only
-            ax.fill_between(gx, gy - gstd, gy + gstd, alpha=0.2, color='blue', 
-                           label='General ±1σ')
-            
-            # Plot main line
-            ax.plot(gx, gy, 'b-o', linewidth=2, markersize=8, label='General (ElasticNet)', alpha=0.8)
-            
-            # Annotate final value with std
+            ax.fill_between(gx, gy - gstd, gy + gstd, alpha=0.2, color='blue', label='General ±1σ')
+            ax.plot(gx, gy, 'b-o', linewidth=2, markersize=7,
+                    label=f'General ({reg_name}) [INJECTED]', alpha=0.85)
             if gstd[-1] > 0:
-                ax.annotate(f'{gy[-1]:.2f}±{gstd[-1]:.2f}', (gx[-1], gy[-1]), 
-                           textcoords="offset points", xytext=(5, 5), fontsize=9, color='blue')
+                ax.annotate(f'{gy[-1]:.2f}±{gstd[-1]:.2f}', (gx[-1], gy[-1]),
+                            textcoords="offset points", xytext=(5, 5), fontsize=8, color='blue')
             else:
-                ax.annotate(f'{gy[-1]:.2f}', (gx[-1], gy[-1]), textcoords="offset points", 
-                           xytext=(5, 5), fontsize=9, color='blue')
+                ax.annotate(f'{gy[-1]:.2f}', (gx[-1], gy[-1]), textcoords="offset points",
+                            xytext=(5, 5), fontsize=8, color='blue')
         
-        # Plot Domain-Specific model (no variance bands)
-        if domain_valid:
-            dx, dy = zip(*domain_valid)
-            ax.plot(dx, dy, 'r-s', linewidth=2, markersize=8, label='Domain-Specific', alpha=0.8)
-            # Annotate final value
-            ax.annotate(f'{dy[-1]:.2f}', (dx[-1], dy[-1]), textcoords="offset points", 
-                       xytext=(5, -10), fontsize=9, color='red')
+        if cart_valid:
+            cx, cy = zip(*cart_valid)
+            ax.plot(cx, cy, 'g-^', linewidth=2, markersize=7, label='CART (constants)', alpha=0.85)
+            ax.annotate(f'{cy[-1]:.2f}', (cx[-1], cy[-1]), textcoords="offset points",
+                        xytext=(5, -12), fontsize=8, color='green')
         
-        # Get current comparison result
+        m5_finals = {}
+        for hkey, marker, color, lbl in m5_plot_styles:
+            series = history.get(hkey, [])
+            if not series and hkey == 'm5_l1' and history.get("m5"):
+                series = history["m5"]
+            m5_valid = [(i, v) for i, v in zip(x, series) if v != float('inf') and v < 1000] if series else []
+            if m5_valid:
+                mx, my = zip(*m5_valid)
+                ax.plot(mx, my, color=color, linestyle='-', marker=marker, linewidth=1.8, markersize=6,
+                        label=lbl, alpha=0.85)
+                m5_finals[hkey] = my[-1]
+                ax.annotate(f'{my[-1]:.2f}', (mx[-1], my[-1]), textcoords="offset points",
+                            xytext=(8, 4), fontsize=7, color=color)
+            else:
+                ax.plot([], [], color=color, linestyle='-', marker=marker, linewidth=1.8, markersize=6,
+                        label=f'{lbl} (no data)', alpha=0.35)
+        
         comparison = variables[var_name].get("model_comparison", {})
-        winner_name = comparison.get("winner_name", "unknown")
+        cart_model = comparison.get("cart_model")
+        cart_info = ""
+        if cart_model and hasattr(cart_model, 'get_stats'):
+            st = cart_model.get_stats()
+            cart_info = f"CART d={st.get('best_depth', '?')},l={st.get('n_leaves', '?')}"
         
-        ax.set_xlabel("Training Iteration", fontsize=11)
-        ax.set_ylabel("LOO-CV RMSE", fontsize=11)
-        ax.set_title(f"{var_name}_after\n(Winner: {winner_name})", fontsize=11)
-        ax.legend(loc='upper right')
+        best_m5_reg = comparison.get("best_m5_leaf_reg", "")
+        m5_info = f"best M5 leaf={best_m5_reg}" if best_m5_reg else ""
+        
+        best_info = ""
+        if general_valid:
+            final_general = gy[-1] if len(gy) > 0 else float('inf')
+            final_cart = cy[-1] if cart_valid and len(cy) > 0 else float('inf')
+            cand = [('General', final_general), ('CART', final_cart)]
+            for hkey, _, _, lbl in m5_plot_styles:
+                if hkey in m5_finals:
+                    cand.append((lbl, m5_finals[hkey]))
+            best_name, best_val = min(cand, key=lambda t: t[1])
+            if best_val < final_general and np.isfinite(best_val):
+                pct = ((final_general - best_val) / final_general * 100)
+                best_info = f"{best_name} best ({pct:.1f}% vs General)"
+            else:
+                best_info = "General best"
+        
+        ax.set_xlabel("Training Iteration", fontsize=10)
+        ax.set_ylabel("LOO-CV RMSE", fontsize=10)
+        sub = " | ".join(s for s in (cart_info, m5_info) if s)
+        ax.set_title(f"{var_name}_after\n{sub}\n{best_info}", fontsize=9)
+        ax.legend(loc='upper right', fontsize=7)
         ax.grid(True, alpha=0.3)
         ax.set_xticks(x)
         
-        # Add sample count as secondary x-axis labels
         ax2 = ax.twiny()
         ax2.set_xlim(ax.get_xlim())
         ax2.set_xticks(x)
-        ax2.set_xticklabels([f"n={n}" for n in n_samples], fontsize=8)
-        ax2.set_xlabel("Sample Count", fontsize=9)
+        ax2.set_xticklabels([f"n={n}" for n in n_samples], fontsize=7)
+        ax2.set_xlabel("Sample Count", fontsize=8)
     
     plt.tight_layout()
     
@@ -2385,41 +2418,62 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"LOO-CV comparison plot saved to: {save_path}")
     
-    # Show interactively - block=True waits for user to close the window
     print("\n[LOO-CV] Showing plot... Close the window to continue.")
     plt.show(block=True)
     
-    # Print summary
-    print("\n" + "="*60)
-    print("LOO-CV COMPARISON SUMMARY")
-    print("="*60)
-    print("LOO-CV = Leave-One-Out Cross-Validation RMSE")
-    print("Measures how well the model predicts data it hasn't seen")
-    print("Lower value = better generalization (less overfitting)")
-    print("-"*60)
+    print("\n" + "=" * 70)
+    print("LOO-CV SUMMARY: General vs CART vs M5 (OLS / L1 / L2 / L1+L2 leaves)")
+    print("=" * 70)
+    print("General: injected into PDDL. All others are comparison only.")
+    print("-" * 70)
     
     for var_name in vars_with_history:
         history = variables[var_name]["loo_cv_history"]
         comparison = variables[var_name].get("model_comparison", {})
-        
         general_final = history["general"][-1] if history["general"] else float('inf')
-        domain_final = history["domain"][-1] if history["domain"] else float('inf')
-        winner = comparison.get("winner_name", "unknown")
+        cart_history = history.get("cart", history.get("domain", []))
+        cart_final = cart_history[-1] if cart_history else float('inf')
+        
+        cart_model = comparison.get("cart_model")
+        cart_info = ""
+        if cart_model and hasattr(cart_model, 'get_stats'):
+            stats = cart_model.get_stats()
+            cart_info = f" (d={stats.get('best_depth', '?')}, l={stats.get('n_leaves', '?')})"
         
         print(f"\n{var_name}_after:")
-        print(f"  General (ElasticNet) LOO-CV: {general_final:.4f}")
-        if domain_final != float('inf'):
-            print(f"  Domain-Specific LOO-CV: {domain_final:.4f}")
-        else:
-            print(f"  Domain-Specific LOO-CV: N/A (no domain model)")
-        print(f"  Winner: {winner}")
+        print(f"  General LOO-CV: {general_final:.4f} [INJECTED]")
+        print(f"  CART LOO-CV:    {cart_final:.4f}{cart_info}" if cart_final != float('inf') else "  CART LOO-CV:    N/A")
         
-        if domain_final != float('inf') and general_final != float('inf'):
-            if general_final < domain_final and domain_final > 0:
-                improvement = ((domain_final - general_final) / domain_final) * 100
-                print(f"  General is {improvement:.1f}% better")
-            elif domain_final < general_final and general_final > 0:
-                improvement = ((general_final - domain_final) / general_final) * 100
-                print(f"  Domain is {improvement:.1f}% better")
+        for reg in M5_LEAF_REG_ORDER:
+            hkey = f"m5_{reg}"
+            ser = history.get(hkey, [])
+            if not ser and reg == 'l1' and history.get("m5"):
+                ser = history["m5"]
+            fin = ser[-1] if ser else float('inf')
+            label = M5_LEAF_REG_LABELS.get(reg, reg)
+            mm = comparison.get("m5_models", {}).get(reg)
+            dlv = ""
+            if mm and hasattr(mm, 'get_stats'):
+                st = mm.get_stats()
+                dlv = f" (d={st.get('best_depth', '?')}, l={st.get('n_leaves', '?')})"
+            if fin != float('inf'):
+                print(f"  {label}: {fin:.4f}{dlv}")
+            else:
+                print(f"  {label}: N/A")
+        
+        cand = [('General', general_final), ('CART', cart_final)]
+        for reg in M5_LEAF_REG_ORDER:
+            hkey = f"m5_{reg}"
+            ser = history.get(hkey, [])
+            if not ser and reg == 'l1' and history.get("m5"):
+                ser = history["m5"]
+            fin = ser[-1] if ser else float('inf')
+            cand.append((M5_LEAF_REG_LABELS.get(reg, reg), fin))
+        best_name, best_val = min(cand, key=lambda t: t[1] if np.isfinite(t[1]) else float('inf'))
+        if np.isfinite(general_final) and np.isfinite(best_val) and best_val < general_final:
+            pct = ((general_final - best_val) / general_final * 100)
+            print(f"  --> Best: {best_name} ({pct:.1f}% lower LOO-CV than General)")
+        else:
+            print(f"  --> Best: General (or tie)")
     
-    print("="*60)
+    print("=" * 70)

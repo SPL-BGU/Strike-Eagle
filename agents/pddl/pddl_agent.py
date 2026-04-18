@@ -14,7 +14,7 @@ from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import visualize_compare
+from agents.pddl.visualiator import visualize_compare, plot_loo_cv_comparison
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
@@ -212,11 +212,20 @@ class PDDLAgent(BaselineAgent):
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
         
-        # 1. Get angle (priority: determinism_test > override_angle > PDDL planner)
+        # 1. Get angle (priority: determinism_test > random_test_angle > override_angle > PDDL planner)
+        # Count collision samples to determine if we should test with random angle
+        n_collision_samples = 0
+        if "collision" in self.kb and "states" in self.kb["collision"]:
+            n_collision_samples = len(self.kb["collision"]["states"])
+        
         if self.determinism_test_mode:
             angle = self.determinism_angles[self.determinism_angle_index]
             self.determinism_angle_index = (self.determinism_angle_index + 1) % len(self.determinism_angles)
             print(f"\n[DETERMINISM] Angle: {angle}° (index {self.determinism_angle_index}/{len(self.determinism_angles)})")
+        elif n_collision_samples >= 20:
+            # After 20 collision samples, inject random angle to test CART generalization
+            angle = random.uniform(25, 80)
+            print(f"\n[CART TEST] Random angle: {angle:.1f}° (testing generalization after {n_collision_samples} samples)")
         elif self.override_angle is not None:
             angle = self.override_angle
         else:
@@ -239,6 +248,10 @@ class PDDLAgent(BaselineAgent):
         # 3. Learn collision effects (bounce physics)
         collisions = event_indexes_by_event["ground_collision"]
         self.learn_collision_effects(collisions, bird_observed_features)
+        
+        # 3.5 Visualize General vs CART comparison for collision learning
+        if len(collisions) > 0 and "collision" in self.kb:
+            plot_loo_cv_comparison(self.kb, event_name="collision")
 
         # 4. Learn flight physics (gravity, velocity) - use first segment only
         first_segment = parts[0]

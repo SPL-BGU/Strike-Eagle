@@ -1,6 +1,8 @@
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.tree import DecisionTreeRegressor
+from lineartree import LinearTreeRegressor
 
 
 # ==============================================================================
@@ -51,6 +53,579 @@ def polyfit_var(X, y):
     model.fit(X_poly, y)
 
     return model
+
+
+class CARTEventModel:
+    """
+    CART (Classification and Regression Trees) model for event learning.
+    
+    Uses DecisionTreeRegressor to learn conditional effects based on pre-event state.
+    Automatically selects optimal tree depth via cross-validation.
+    
+    Key features:
+    - CV-based depth selection (tests depths 1-3, capped to prevent overfitting)
+    - min_samples_leaf=3 prevents overfitting
+    - Generates PDDL conditional effects from tree structure
+    - Compatible interface with General models (coef_, intercept_)
+    """
+    
+    # Maximum depth cap to prevent overfitting (reduced from 5 to 3)
+    MAX_DEPTH_CAP = 3
+    
+    def __init__(self, var_name):
+        self.var_name = var_name
+        self.tree = None
+        self.best_depth = None
+        self.cv_scores = {}
+        
+        # For compatibility with existing code (inject_domain_file)
+        self.coef_ = np.array([0.0, 0.0, 0.0, 0.0])
+        self.intercept_ = 0.0
+        self.model_type = 'cart'
+    
+    def fit(self, X, y):
+        """
+        Fit the CART model with cross-validation to select optimal depth.
+        
+        Parameters:
+            X: Feature matrix of shape (n_samples, 4) with [x, y, v_x, v_y]
+            y: Target values (post-event values)
+        
+        Returns:
+            self
+        """
+        n_samples = len(y)
+        
+        # Need minimum samples for meaningful tree
+        if n_samples < 3:
+            # Fall back to mean prediction (single leaf)
+            self.tree = DecisionTreeRegressor(max_depth=1, min_samples_leaf=1)
+            self.tree.fit(X, y)
+            self.best_depth = 1
+            self._set_compatibility_attributes(X, y)
+            return self
+        
+        # Cross-validation to find optimal depth (capped at MAX_DEPTH_CAP to prevent overfitting)
+        max_depth_limit = min(self.MAX_DEPTH_CAP + 1, n_samples // 2 + 1)
+        max_depths_to_test = range(1, max_depth_limit)
+        best_cv_score = float('inf')
+        best_depth = 1
+        
+        for depth in max_depths_to_test:
+            # LOO-CV for this depth
+            cv_errors = []
+            min_leaf = max(1, n_samples // (2 ** depth + 1))  # Adaptive min_samples_leaf
+            min_leaf = min(min_leaf, 3)  # Cap at 3
+            
+            for i in range(n_samples):
+                X_train = np.delete(X, i, axis=0)
+                y_train = np.delete(y, i)
+                X_test = X[i:i+1]
+                y_test = y[i]
+                
+                try:
+                    tree = DecisionTreeRegressor(
+                        max_depth=depth,
+                        min_samples_leaf=min_leaf,
+                        random_state=42
+                    )
+                    tree.fit(X_train, y_train)
+                    pred = tree.predict(X_test)[0]
+                    cv_errors.append((pred - y_test) ** 2)
+                except Exception:
+                    continue
+            
+            if len(cv_errors) > 0:
+                cv_rmse = np.sqrt(np.mean(cv_errors))
+                self.cv_scores[depth] = cv_rmse
+                
+                if cv_rmse < best_cv_score:
+                    best_cv_score = cv_rmse
+                    best_depth = depth
+        
+        # Train final model with best depth
+        self.best_depth = best_depth
+        min_leaf = max(1, min(3, n_samples // (2 ** best_depth + 1)))
+        
+        self.tree = DecisionTreeRegressor(
+            max_depth=best_depth,
+            min_samples_leaf=min_leaf,
+            random_state=42
+        )
+        self.tree.fit(X, y)
+        
+        self._set_compatibility_attributes(X, y)
+        return self
+    
+    def print_tree_rules(self):
+        """
+        Print the decision rules learned by the CART tree in a human-readable format.
+        """
+        if self.tree is None:
+            print(f"  [{self.var_name}] No tree fitted yet")
+            return
+        
+        feature_names = ['x', 'y', 'v_x', 'v_y']
+        tree_ = self.tree.tree_
+        
+        print(f"\n  {'='*60}")
+        print(f"  CART RULES for {self.var_name}_after (depth={self.best_depth}, leaves={tree_.n_leaves})")
+        print(f"  {'='*60}")
+        
+        rules = self.get_tree_rules()
+        
+        for i, (conditions, leaf_value) in enumerate(rules):
+            if not conditions:
+                print(f"  Leaf {i+1}: {self.var_name}_after = {leaf_value:.4f} (default)")
+            else:
+                cond_strs = []
+                for feat_idx, threshold, direction in conditions:
+                    feat_name = feature_names[feat_idx] if feat_idx < len(feature_names) else f"f{feat_idx}"
+                    cond_strs.append(f"{feat_name} {direction} {threshold:.2f}")
+                
+                print(f"  Leaf {i+1}: IF {' AND '.join(cond_strs)}")
+                print(f"           THEN {self.var_name}_after = {leaf_value:.4f}")
+        
+        # Also print impact factor interpretation if v_x or v_y splits on velocity
+        print(f"\n  Interpretation:")
+        for conditions, leaf_value in rules:
+            if conditions:
+                # Check if split is on v_y (index 3) - related to impact angle
+                vy_splits = [c for c in conditions if c[0] == 3]
+                vx_splits = [c for c in conditions if c[0] == 2]
+                
+                if vy_splits or vx_splits:
+                    if self.var_name == 'v_x':
+                        print(f"    - {leaf_value:.4f}: ", end="")
+                        if vy_splits:
+                            for _, thresh, direction in vy_splits:
+                                if direction == '<':
+                                    print(f"shallow impact (v_y < {thresh:.0f})", end=" ")
+                                else:
+                                    print(f"steep impact (v_y >= {thresh:.0f})", end=" ")
+                        print()
+        
+        print(f"  {'='*60}")
+    
+    def _set_compatibility_attributes(self, X, y):
+        """Set coef_ and intercept_ for compatibility with inject_domain_file."""
+        # For single-leaf trees, extract the mean as intercept
+        if self.tree.tree_.node_count == 1:
+            self.intercept_ = self.tree.tree_.value[0, 0, 0]
+            self.coef_ = np.array([0.0, 0.0, 0.0, 0.0])
+        else:
+            # For multi-leaf trees, set intercept to 0 and coef to indicate CART model
+            self.intercept_ = 0.0
+            self.coef_ = np.array([0.0, 0.0, 0.0, 0.0])
+    
+    def predict(self, X):
+        """Predict using the trained tree."""
+        if self.tree is None:
+            return np.zeros(len(X))
+        return self.tree.predict(X)
+    
+    def get_tree_rules(self):
+        """
+        Extract decision rules from the tree for PDDL generation.
+        
+        Returns:
+            List of tuples: [(conditions, leaf_value), ...]
+            where conditions is a list of (feature_idx, threshold, direction)
+            and direction is '<' or '>='
+        """
+        if self.tree is None:
+            return []
+        
+        tree = self.tree.tree_
+        rules = []
+        
+        def recurse(node_id, path):
+            # Check if leaf
+            if tree.children_left[node_id] == tree.children_right[node_id]:
+                # Leaf node
+                leaf_value = tree.value[node_id, 0, 0]
+                rules.append((list(path), leaf_value))
+                return
+            
+            feature = tree.feature[node_id]
+            threshold = tree.threshold[node_id]
+            
+            # Left child: feature < threshold
+            left_child = tree.children_left[node_id]
+            recurse(left_child, path + [(feature, threshold, '<')])
+            
+            # Right child: feature >= threshold
+            right_child = tree.children_right[node_id]
+            recurse(right_child, path + [(feature, threshold, '>=')])
+        
+        recurse(0, [])
+        return rules
+    
+    def get_n_leaves(self):
+        """Return number of leaves in the tree."""
+        if self.tree is None:
+            return 0
+        return self.tree.tree_.n_leaves
+    
+    def is_single_leaf(self):
+        """Check if tree is just a single leaf (no splits)."""
+        return self.get_n_leaves() == 1
+    
+    def get_stats(self):
+        """Return statistics about the CART model."""
+        return {
+            'best_depth': self.best_depth,
+            'n_leaves': self.get_n_leaves(),
+            'cv_scores': self.cv_scores,
+            'is_single_leaf': self.is_single_leaf()
+        }
+
+
+# M5 compares these leaf estimators (alpha / l1_ratio from REGULARIZATION_CONFIG).
+M5_LEAF_REG_ORDER = ('none', 'l1', 'l2', 'elasticnet')
+M5_LEAF_REG_LABELS = {
+    'none': 'M5 (no reg / OLS leaves)',
+    'l1': 'M5 (L1 / Lasso leaves)',
+    'l2': 'M5 (L2 / Ridge leaves)',
+    'elasticnet': 'M5 (L1+L2 / ElasticNet leaves)',
+}
+
+
+def _m5_leaf_estimator(leaf_reg='l1', alpha=None, l1_ratio=None):
+    """
+    Linear model at M5 leaves / depth-0 baseline.
+    leaf_reg: 'none' | 'l1' | 'l2' | 'elasticnet'
+    """
+    cfg = REGULARIZATION_CONFIG
+    if alpha is None:
+        alpha = float(cfg['alpha'])
+    if l1_ratio is None:
+        l1_ratio = float(cfg['l1_ratio'])
+    if leaf_reg == 'none':
+        return LinearRegression()
+    if leaf_reg == 'l1':
+        return Lasso(alpha=alpha, max_iter=10000)
+    if leaf_reg == 'l2':
+        return Ridge(alpha=alpha, max_iter=10000)
+    if leaf_reg == 'elasticnet':
+        return ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10000)
+    return Lasso(alpha=alpha, max_iter=10000)
+
+
+class M5ModelTree:
+    """
+    M5 Model Tree for event learning.
+    
+    Unlike standard CART which outputs constants at leaves, M5 Model Trees
+    output LINEAR MODELS at each leaf, allowing it to learn formulas like:
+        v_x_after = 0.65 * v_x_before
+    
+    Uses linear-tree library's LinearTreeRegressor.
+    
+    Key features:
+    - Leaf regularization: none (OLS), L1, L2, or ElasticNet (see m5_leaf_reg)
+    - CV-based depth selection (tests depths 1-2 only; max depth capped at 2)
+    - Each leaf contains coefficients for: intercept + x + y + v_x + v_y
+    """
+    
+    MAX_DEPTH_CAP = 2
+    
+    def __init__(self, var_name, m5_leaf_reg='l1'):
+        self.var_name = var_name
+        self.m5_leaf_reg = m5_leaf_reg  # 'none', 'l1', 'l2', 'elasticnet'
+        self.tree = None
+        self.best_depth = None
+        self.cv_scores = {}
+        self.leaf_models = []  # Store (conditions, linear_model) for each leaf
+        
+        # For compatibility with existing code
+        self.coef_ = np.array([0.0, 0.0, 0.0, 0.0])
+        self.intercept_ = 0.0
+        self.model_type = 'm5'
+    
+    def fit(self, X, y):
+        """
+        Fit the M5 Model Tree with cross-validation to select optimal depth.
+        
+        Parameters:
+            X: Feature matrix of shape (n_samples, 4) with [x, y, v_x, v_y]
+            y: Target values (post-event values)
+        
+        Returns:
+            self
+        """
+        n_samples = len(y)
+        
+        reg_label = M5_LEAF_REG_LABELS.get(self.m5_leaf_reg, self.m5_leaf_reg)
+        print(f"[M5 DEBUG] Fitting {reg_label} with {n_samples} samples")
+        
+        # Need minimum samples for meaningful tree with linear models
+        if n_samples < 4:
+            print(f"[M5 DEBUG] Too few samples, using leaf baseline ({self.m5_leaf_reg})")
+            self.tree = _m5_leaf_estimator(self.m5_leaf_reg)
+            self.tree.fit(X, y)
+            self.best_depth = 0
+            self.coef_ = self.tree.coef_
+            self.intercept_ = self.tree.intercept_
+            return self
+        
+        # Try depths 1 to MAX_DEPTH_CAP (max 2)
+        max_depths_to_test = range(1, self.MAX_DEPTH_CAP + 1)
+        best_cv_score = float('inf')
+        best_depth = 0  # Default to Lasso baseline (no splits)
+        
+        # Depth 0: global Lasso (L1) baseline for CV comparison
+        lr_cv_errors = []
+        for i in range(n_samples):
+            X_train = np.delete(X, i, axis=0)
+            y_train = np.delete(y, i)
+            X_test = X[i:i+1]
+            y_test = y[i]
+            lr = _m5_leaf_estimator(self.m5_leaf_reg)
+            lr.fit(X_train, y_train)
+            pred = lr.predict(X_test)[0]
+            lr_cv_errors.append((pred - y_test) ** 2)
+        
+        lr_cv_rmse = np.sqrt(np.mean(lr_cv_errors))
+        self.cv_scores[0] = lr_cv_rmse
+        best_cv_score = lr_cv_rmse
+        print(f"[M5 DEBUG] Depth 0 ({self.m5_leaf_reg}) CV-RMSE: {lr_cv_rmse:.4f}")
+        
+        for depth in max_depths_to_test:
+            cv_errors = []
+            # Use small min_samples_leaf to allow splits
+            min_leaf = 2
+            
+            for i in range(n_samples):
+                X_train = np.delete(X, i, axis=0)
+                y_train = np.delete(y, i)
+                X_test = X[i:i+1]
+                y_test = y[i]
+                
+                try:
+                    tree = LinearTreeRegressor(
+                        base_estimator=_m5_leaf_estimator(self.m5_leaf_reg),
+                        max_depth=depth,
+                        min_samples_leaf=max(3, min_leaf)  # LinearTreeRegressor requires > 2
+                    )
+                    tree.fit(X_train, y_train)
+                    pred = tree.predict(X_test)[0]
+                    cv_errors.append((pred - y_test) ** 2)
+                except Exception as e:
+                    print(f"[M5 DEBUG] Depth {depth}, fold {i} failed: {e}")
+                    continue
+            
+            if len(cv_errors) > 0:
+                cv_rmse = np.sqrt(np.mean(cv_errors))
+                self.cv_scores[depth] = cv_rmse
+                print(f"[M5 DEBUG] Depth {depth} CV-RMSE: {cv_rmse:.4f} ({len(cv_errors)}/{n_samples} folds)")
+                
+                if cv_rmse < best_cv_score:
+                    best_cv_score = cv_rmse
+                    best_depth = depth
+            else:
+                print(f"[M5 DEBUG] Depth {depth} - all folds failed!")
+        
+        # Train final model with best depth
+        self.best_depth = best_depth
+        print(f"[M5 DEBUG] Selected depth: {best_depth}")
+        
+        if best_depth == 0:
+            self.tree = _m5_leaf_estimator(self.m5_leaf_reg)
+            self.tree.fit(X, y)
+            self.coef_ = self.tree.coef_
+            self.intercept_ = self.tree.intercept_
+        else:
+            try:
+                self.tree = LinearTreeRegressor(
+                    base_estimator=_m5_leaf_estimator(self.m5_leaf_reg),
+                    max_depth=best_depth,
+                    min_samples_leaf=3  # LinearTreeRegressor requires > 2
+                )
+                self.tree.fit(X, y)
+            except Exception as e:
+                print(f"[M5 DEBUG] Final fit failed: {e}, falling back to leaf baseline")
+                self.tree = _m5_leaf_estimator(self.m5_leaf_reg)
+                self.tree.fit(X, y)
+                self.best_depth = 0
+                self.coef_ = self.tree.coef_
+                self.intercept_ = self.tree.intercept_
+        
+        # Extract leaf models for printing
+        self._extract_leaf_models(X, y)
+        
+        return self
+    
+    def _extract_leaf_models(self, X, y):
+        """Extract the linear models from each leaf."""
+        self.leaf_models = []
+        
+        if not hasattr(self.tree, 'summary'):
+            return
+        
+        try:
+            summary = self.tree.summary()
+            # summary contains info about splits and leaves
+            self.tree_summary = summary
+        except Exception:
+            pass
+    
+    def predict(self, X):
+        """Predict using the trained tree."""
+        if self.tree is None:
+            return np.zeros(len(X))
+        return self.tree.predict(X)
+    
+    def get_n_leaves(self):
+        """Return number of leaves in the tree."""
+        if self.tree is None:
+            return 0
+        try:
+            if hasattr(self.tree, 'n_features_in_'):
+                # Count leaves by traversing the tree structure
+                summary = self.tree.summary()
+                return len([k for k in summary.keys() if summary[k].get('children') == (None, None)])
+        except Exception:
+            pass
+        return 1
+    
+    def is_single_leaf(self):
+        """Check if tree is just a single leaf (no splits)."""
+        return self.best_depth == 0 or self.get_n_leaves() <= 1
+    
+    def get_stats(self):
+        """Return statistics about the M5 model."""
+        return {
+            'best_depth': self.best_depth,
+            'n_leaves': self.get_n_leaves(),
+            'cv_scores': self.cv_scores,
+            'is_single_leaf': self.is_single_leaf()
+        }
+    
+    def print_tree_rules(self):
+        """
+        Print the decision rules and linear models learned by the M5 tree.
+        """
+        feature_names = ['x', 'y', 'v_x', 'v_y']
+        
+        leaf_desc = M5_LEAF_REG_LABELS.get(self.m5_leaf_reg, self.m5_leaf_reg)
+        print(f"\n  {'='*70}")
+        print(f"  M5 MODEL TREE RULES for {self.var_name}_after ({leaf_desc}, depth={self.best_depth})")
+        print(f"  Each leaf contains a LINEAR MODEL (not a constant!)")
+        print(f"  {'='*70}")
+        
+        if self.tree is None:
+            print(f"  No tree fitted yet")
+            print(f"  {'='*70}")
+            return
+        
+        # Depth 0: single global leaf model (no splits)
+        if self.best_depth == 0 or isinstance(self.tree, (LinearRegression, Lasso, Ridge, ElasticNet)):
+            single_label = {
+                'none': 'Single OLS model (no splits)',
+                'l1': 'Single Lasso (L1) model (no splits)',
+                'l2': 'Single Ridge (L2) model (no splits)',
+                'elasticnet': 'Single ElasticNet (L1+L2) model (no splits)',
+            }.get(self.m5_leaf_reg, 'Single linear model (no splits)')
+            print(f"\n  {single_label}:")
+            coef = self.tree.coef_ if hasattr(self.tree, 'coef_') else [0,0,0,0]
+            intercept = self.tree.intercept_ if hasattr(self.tree, 'intercept_') else 0
+            self._print_linear_equation(intercept, coef, feature_names)
+            print(f"  {'='*70}")
+            return
+        
+        try:
+            summary = self.tree.summary()
+            
+            # Print tree structure
+            print(f"\n  Tree Structure:")
+            self._print_tree_recursive(summary, 0, [], feature_names)
+            
+        except Exception as e:
+            print(f"  Could not extract tree structure: {e}")
+            
+            # Fallback: show predictions for sample points
+            print(f"\n  Sample predictions (showing learned behavior):")
+            test_cases = [
+                [400, 5, 100, -50],   # shallow impact, low speed
+                [400, 5, 150, -100],  # medium impact
+                [400, 5, 200, -150],  # steep impact, high speed
+            ]
+            for x, y, vx, vy in test_cases:
+                pred = self.predict(np.array([[x, y, vx, vy]]))[0]
+                print(f"    v_x={vx}, v_y={vy} → {self.var_name}_after = {pred:.2f}")
+        
+        print(f"  {'='*70}")
+    
+    def _print_tree_recursive(self, summary, node_id, conditions, feature_names):
+        """Recursively print the tree structure with linear models at leaves."""
+        if node_id not in summary:
+            return
+        
+        node = summary[node_id]
+        indent = "    " * (len(conditions) + 1)
+        
+        # Check if leaf
+        children = node.get('children', (None, None))
+        if children == (None, None) or children[0] is None:
+            # Leaf node - print conditions and linear model
+            print(f"\n{indent}Leaf {node_id}:")
+            if conditions:
+                cond_str = " AND ".join(conditions)
+                print(f"{indent}  IF {cond_str}")
+            else:
+                print(f"{indent}  (root leaf - no conditions)")
+            
+            # Get the linear model for this leaf
+            models = node.get('models', None)
+            if models is not None:
+                # models should contain the linear regression
+                if hasattr(models, 'coef_'):
+                    print(f"{indent}  THEN ", end="")
+                    self._print_linear_equation(models.intercept_, models.coef_, feature_names, inline=True)
+            else:
+                # Try to get coefficients another way
+                col = node.get('col', None)
+                th = node.get('th', None)
+                print(f"{indent}  THEN {self.var_name}_after = <linear model>")
+            return
+        
+        # Internal node - get split info
+        col = node.get('col', None)
+        th = node.get('th', None)
+        
+        if col is not None and th is not None:
+            feat_name = feature_names[col] if col < len(feature_names) else f"f{col}"
+            
+            # Left child (< threshold)
+            left_cond = f"{feat_name} < {th:.2f}"
+            self._print_tree_recursive(summary, children[0], conditions + [left_cond], feature_names)
+            
+            # Right child (>= threshold)
+            right_cond = f"{feat_name} >= {th:.2f}"
+            self._print_tree_recursive(summary, children[1], conditions + [right_cond], feature_names)
+    
+    def _print_linear_equation(self, intercept, coef, feature_names, inline=False):
+        """Print a linear equation in readable format."""
+        terms = []
+        if abs(intercept) > 1e-6:
+            terms.append(f"{intercept:.4f}")
+        
+        for c, name in zip(coef, feature_names):
+            if abs(c) > 1e-6:
+                if c > 0 and terms:
+                    terms.append(f"+ {c:.4f}*{name}")
+                elif c > 0:
+                    terms.append(f"{c:.4f}*{name}")
+                else:
+                    terms.append(f"- {abs(c):.4f}*{name}")
+        
+        equation = " ".join(terms) if terms else "0"
+        
+        if inline:
+            print(f"{self.var_name}_after = {equation}")
+        else:
+            print(f"    {self.var_name}_after = {equation}")
 
 
 class PhysicsRatioModel:
@@ -322,78 +897,59 @@ class AngleDependentFrictionModel:
 
 class EventModelManager:
     """
-    Manages general and domain-specific models for event learning.
+    Model comparison for event learning: General vs CART vs four M5 variants.
     
-    This class:
-    1. Always trains a general Linear/Polynomial model
-    2. Optionally trains domain-specific models if available for the event type
-    3. Compares models using LOO-CV and selects the best one
-    4. Provides debug output for model comparison
+    Trains General (for PDDL injection), CART, and M5 model trees with leaf
+    regularization: none (OLS), L1, L2, ElasticNet (alpha/l1_ratio from config).
+    Compares all via LOO-CV; General is still always used for PDDL injection.
     """
-    
-    # Registry of domain-specific models by event type and variable
-    DOMAIN_MODELS = {
-        'collision': {
-            'v_x': ('AngleDependentFriction', AngleDependentFrictionModel),
-            'v_y': ('PhysicsRatio', PhysicsRatioModel),
-        }
-        # Can add more event types: 'wall_collision', 'block_collision', etc.
-    }
     
     def __init__(self):
         self.comparison_results = {}  # Store results for debug output
     
     def train_and_compare(self, event_name, var_name, X, y, pre_states=None):
         """
-        Train both general and domain-specific models, compare, and return winner.
-        
-        Parameters:
-            event_name: Name of the event (e.g., 'collision')
-            var_name: Variable being predicted (e.g., 'v_x', 'v_y', 'y')
-            X: Feature matrix of shape (n_samples, n_features)
-            y: Target values of shape (n_samples,)
-            pre_states: List of pre-event state dicts (needed for some domain models)
+        Train General, CART, and four M5 trees (leaf reg: none, L1, L2, ElasticNet).
         
         Returns:
-            dict with keys:
-                'winner': The selected model object
-                'winner_name': String name of winner ('General' or domain model name)
-                'general_model': The general model object
-                'general_stats': Stats dict for general model
-                'domain_model': Domain model object (or None)
-                'domain_stats': Stats dict for domain model (or None)
-                'improvement_pct': Percentage improvement of winner over loser
-                'n_samples': Number of samples used
+            dict with general_model, cart_model, m5_models (by reg key), m5_stats_by_reg,
+            m5_model / m5_stats (best M5 by LOO-CV among the four), winner, etc.
         """
         n_samples = len(y)
         
-        # Always train general model using global regularization config
         config = REGULARIZATION_CONFIG
         general_model = self._train_general_model(
-            X, y, 
-            alpha=config['alpha'], 
+            X, y,
+            alpha=config['alpha'],
             l1_ratio=config['l1_ratio'],
             regularization=config['type']
         )
         general_stats = self._compute_model_stats(general_model, X, y, 'general')
         
-        # Check if domain-specific model is available for this event/variable
-        domain_model = None
-        domain_stats = None
-        domain_name = None
+        cart_model = CARTEventModel(var_name)
+        cart_model.fit(X, y)
+        cart_stats = self._compute_model_stats(cart_model, X, y, 'cart')
         
-        if event_name in self.DOMAIN_MODELS and var_name in self.DOMAIN_MODELS[event_name]:
-            domain_name, domain_model_class = self.DOMAIN_MODELS[event_name][var_name]
-            domain_model = self._train_domain_model(
-                domain_model_class, var_name, X, y, pre_states
-            )
-            if domain_model is not None:
-                domain_stats = self._compute_model_stats(domain_model, X, y, 'domain')
+        m5_models = {}
+        m5_stats_by_reg = {}
+        for reg in M5_LEAF_REG_ORDER:
+            m = M5ModelTree(var_name, m5_leaf_reg=reg)
+            m.fit(X, y)
+            m5_models[reg] = m
+            m5_stats_by_reg[reg] = self._compute_model_stats(m, X, y, 'm5')
         
-        # Compare and select winner
-        winner, winner_name, improvement_pct = self._select_winner(
-            general_model, general_stats, 
-            domain_model, domain_stats, domain_name
+        def _loo_key(r):
+            v = m5_stats_by_reg[r]['loo_cv']
+            return v if np.isfinite(v) else float('inf')
+        
+        best_m5_reg = min(M5_LEAF_REG_ORDER, key=_loo_key)
+        m5_model = m5_models[best_m5_reg]
+        m5_stats = m5_stats_by_reg[best_m5_reg]
+        
+        winner, winner_name, improvement_pct = self._select_winner_m5_suite(
+            general_model, general_stats,
+            cart_model, cart_stats,
+            m5_models, m5_stats_by_reg
         )
         
         result = {
@@ -401,14 +957,20 @@ class EventModelManager:
             'winner_name': winner_name,
             'general_model': general_model,
             'general_stats': general_stats,
-            'domain_model': domain_model,
-            'domain_stats': domain_stats,
-            'domain_name': domain_name,
+            'cart_model': cart_model,
+            'cart_stats': cart_stats,
+            'm5_models': m5_models,
+            'm5_stats_by_reg': m5_stats_by_reg,
+            'm5_model': m5_model,
+            'm5_stats': m5_stats,
+            'best_m5_leaf_reg': best_m5_reg,
+            'domain_model': cart_model,
+            'domain_stats': cart_stats,
+            'domain_name': 'CART',
             'improvement_pct': improvement_pct,
             'n_samples': n_samples
         }
         
-        # Store for debug output
         self.comparison_results[var_name] = result
         
         return result
@@ -489,32 +1051,6 @@ class EventModelManager:
         
         return model
     
-    def _train_domain_model(self, model_class, var_name, X, y, pre_states):
-        """Train a domain-specific model if applicable."""
-        try:
-            if model_class == PhysicsRatioModel:
-                # PhysicsRatioModel needs pre and post values for the specific variable
-                if pre_states is None:
-                    return None
-                pre_values = np.array([s[var_name] for s in pre_states])
-                model = PhysicsRatioModel(var_name)
-                model.fit(pre_values, y)
-                return model
-                
-            elif model_class == AngleDependentFrictionModel:
-                # AngleDependentFrictionModel needs pre_states, pre_vx, post_vx
-                if pre_states is None:
-                    return None
-                pre_vx_values = np.array([s['v_x'] for s in pre_states])
-                model = AngleDependentFrictionModel()
-                model.fit(pre_states, pre_vx_values, y)
-                return model
-            
-            return None
-        except Exception as e:
-            print(f"Warning: Failed to train domain model for {var_name}: {e}")
-            return None
-    
     def _compute_model_stats(self, model, X, y, model_type):
         """Compute training RMSE, LOO-CV RMSE, and R² for a model."""
         n_samples = len(y)
@@ -524,6 +1060,7 @@ class EventModelManager:
             X_poly = model.poly_features.transform(X)
             predictions = model.predict(X_poly)
         else:
+            # CART or M5 model
             predictions = model.predict(X)
         
         # Training RMSE
@@ -576,45 +1113,52 @@ class EventModelManager:
                     
                     # Create appropriate model based on regularization type
                     if model_type_str == 'general_ols':
-                        # Version 1: No regularization
                         temp_model = LinearRegression()
                     elif model_type_str == 'general_lasso':
-                        # Version 2: L1 only
                         temp_model = Lasso(alpha=alpha, max_iter=10000)
                     elif model_type_str == 'general_ridge':
-                        # Version 3: L2 only
                         temp_model = Ridge(alpha=alpha, max_iter=10000)
                     else:
-                        # Version 4: ElasticNet (L1 + L2)
                         temp_model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10000)
                     
                     temp_model.fit(X_train_poly, y_train)
                     pred = temp_model.predict(X_test_poly)[0]
-                else:
-                    # For domain models, we need to handle differently based on type
-                    if isinstance(model, PhysicsRatioModel):
-                        # Simple ratio - just use the ratio from remaining samples
-                        # This is a simplified LOO-CV for ratio models
-                        if hasattr(model, 'ratios') and len(model.ratios) > 1:
-                            ratios_loo = [r for j, r in enumerate(model.ratios) if j != i]
-                            if len(ratios_loo) > 0:
-                                ratio_loo = np.median(ratios_loo)
-                                # Get the corresponding pre value
-                                if model.var_name == 'v_x':
-                                    pred = ratio_loo * X_test[0, 2]
-                                elif model.var_name == 'v_y':
-                                    pred = ratio_loo * X_test[0, 3]
-                                else:
-                                    pred = model.predict(X_test)[0]
-                            else:
-                                pred = model.predict(X_test)[0]
-                        else:
-                            pred = model.predict(X_test)[0]
-                    elif isinstance(model, AngleDependentFrictionModel):
-                        # For angle-dependent model, use simplified LOO
-                        pred = model.predict(X_test)[0]
+                    
+                elif model_type == 'cart':
+                    # Retrain CART model with same configuration
+                    best_depth = model.best_depth if model.best_depth else 2
+                    min_leaf = max(1, min(3, len(y_train) // (2 ** best_depth + 1)))
+                    
+                    temp_tree = DecisionTreeRegressor(
+                        max_depth=best_depth,
+                        min_samples_leaf=min_leaf,
+                        random_state=42
+                    )
+                    temp_tree.fit(X_train, y_train)
+                    pred = temp_tree.predict(X_test)[0]
+                    
+                elif model_type == 'm5':
+                    leaf_reg = getattr(model, 'm5_leaf_reg', 'l1')
+                    best_depth = model.best_depth if model.best_depth else 0
+                    
+                    if best_depth == 0 or len(y_train) < 4:
+                        temp_m5 = _m5_leaf_estimator(leaf_reg)
+                        temp_m5.fit(X_train, y_train)
                     else:
-                        pred = model.predict(X_test)[0]
+                        try:
+                            temp_m5 = LinearTreeRegressor(
+                                base_estimator=_m5_leaf_estimator(leaf_reg),
+                                max_depth=min(best_depth, M5ModelTree.MAX_DEPTH_CAP),
+                                min_samples_leaf=3  # LinearTreeRegressor requires > 2
+                            )
+                            temp_m5.fit(X_train, y_train)
+                        except Exception:
+                            temp_m5 = _m5_leaf_estimator(leaf_reg)
+                            temp_m5.fit(X_train, y_train)
+                    pred = temp_m5.predict(X_test)[0]
+                else:
+                    # Fallback for any other model type
+                    pred = model.predict(X_test)[0]
                 
                 loo_errors.append((pred - y_test) ** 2)
             except Exception:
@@ -630,8 +1174,8 @@ class EventModelManager:
         
         return rmse, std_error
     
-    def _select_winner(self, general_model, general_stats, domain_model, domain_stats, domain_name):
-        """Select the best model based on LOO-CV RMSE."""
+    def _select_winner(self, general_model, general_stats, cart_model, cart_stats):
+        """Select the best model based on LOO-CV RMSE (legacy 2-way comparison)."""
         # Get the general model type name for display
         model_type_str = getattr(general_model, 'model_type', 'general_elasticnet')
         model_type_display = {
@@ -641,32 +1185,71 @@ class EventModelManager:
             'general_elasticnet': 'General (ElasticNet/L1+L2)'
         }.get(model_type_str, 'General')
         
-        if domain_model is None or domain_stats is None:
-            return general_model, model_type_display, 0
-        
         general_loo = general_stats['loo_cv']
-        domain_loo = domain_stats['loo_cv']
+        cart_loo = cart_stats['loo_cv']
         
         # Handle infinite or invalid LOO-CV values
         if not np.isfinite(general_loo):
             general_loo = float('inf')
-        if not np.isfinite(domain_loo):
-            domain_loo = float('inf')
+        if not np.isfinite(cart_loo):
+            cart_loo = float('inf')
         
-        if domain_loo < general_loo:
-            # Domain model wins
+        # Generate CART display name with tree info
+        cart_stats_info = cart_model.get_stats()
+        cart_display = f"CART (depth={cart_stats_info['best_depth']}, leaves={cart_stats_info['n_leaves']})"
+        
+        if cart_loo < general_loo:
+            # CART wins
             if general_loo > 0 and np.isfinite(general_loo):
-                improvement = ((general_loo - domain_loo) / general_loo) * 100
+                improvement = ((general_loo - cart_loo) / general_loo) * 100
             else:
                 improvement = 0
-            return domain_model, f'Domain ({domain_name})', improvement
+            return cart_model, cart_display, improvement
         else:
             # General model wins
-            if domain_loo > 0 and np.isfinite(domain_loo):
-                improvement = ((domain_loo - general_loo) / domain_loo) * 100
+            if cart_loo > 0 and np.isfinite(cart_loo):
+                improvement = ((cart_loo - general_loo) / cart_loo) * 100
             else:
                 improvement = 0
             return general_model, model_type_display, improvement
+    
+    def _select_winner_m5_suite(self, general_model, general_stats, cart_model, cart_stats,
+                                m5_models, m5_stats_by_reg):
+        """Select best model by LOO-CV among General, CART, and all M5 leaf-regularization variants."""
+        model_type_str = getattr(general_model, 'model_type', 'general_elasticnet')
+        model_type_display = {
+            'general_ols': 'General (OLS)',
+            'general_lasso': 'General (Lasso/L1)',
+            'general_ridge': 'General (Ridge/L2)',
+            'general_elasticnet': 'General (ElasticNet/L1+L2)'
+        }.get(model_type_str, 'General')
+        
+        general_loo = general_stats['loo_cv'] if np.isfinite(general_stats['loo_cv']) else float('inf')
+        cart_loo = cart_stats['loo_cv'] if np.isfinite(cart_stats['loo_cv']) else float('inf')
+        
+        cart_info = cart_model.get_stats()
+        cart_display = f"CART (d={cart_info['best_depth']}, l={cart_info['n_leaves']})"
+        
+        candidates = [
+            (general_model, model_type_display, general_loo),
+            (cart_model, cart_display, cart_loo),
+        ]
+        for reg in M5_LEAF_REG_ORDER:
+            m = m5_models[reg]
+            st = m5_stats_by_reg[reg]
+            lo = st['loo_cv'] if np.isfinite(st['loo_cv']) else float('inf')
+            info = m.get_stats()
+            name = f"{M5_LEAF_REG_LABELS[reg]} (d={info['best_depth']}, l={info['n_leaves']})"
+            candidates.append((m, name, lo))
+        
+        best_model, best_name, best_loo = min(candidates, key=lambda x: x[2])
+        
+        if general_loo > 0 and np.isfinite(general_loo) and best_loo < general_loo:
+            improvement = ((general_loo - best_loo) / general_loo) * 100
+        else:
+            improvement = 0
+        
+        return best_model, best_name, improvement
     
     def get_debug_output(self, n_samples=None):
         """Generate formatted debug output for all compared models."""
@@ -687,54 +1270,92 @@ class EventModelManager:
             
             lines.append("")
             lines.append("=" * 70)
-            lines.append(f"MODEL COMPARISON: {var_name} ({n} samples)")
+            lines.append(f"MODEL COMPARISON: {var_name} ({n} samples) — General, CART, M5×4")
             lines.append("=" * 70)
-            lines.append(f"{'Model':<25} {'Train RMSE':<12} {'LOO-CV':<12} {'R²':<10}")
+            lines.append(f"{'Model':<42} {'Train RMSE':<12} {'LOO-CV':<12} {'R²':<10}")
             lines.append("-" * 70)
             
             # General model row
             gen = result['general_stats']
-            lines.append(f"{model_type_display:<25} {gen['train_rmse']:<12.4f} {gen['loo_cv']:<12.4f} {gen['r2']:<10.4f}")
+            general_marker = " [INJECTED]" if result['winner_name'].startswith('General') else ""
+            lines.append(f"{(model_type_display + general_marker):<42} {gen['train_rmse']:<12.4f} {gen['loo_cv']:<12.4f} {gen['r2']:<10.4f}")
             
-            # Domain model row (if exists)
-            if result['domain_stats']:
-                dom = result['domain_stats']
-                domain_label = f"Domain ({result['domain_name']})"
-                lines.append(f"{domain_label:<25} {dom['train_rmse']:<12.4f} {dom['loo_cv']:<12.4f} {dom['r2']:<10.4f}")
+            # CART model row
+            cart = result['cart_stats']
+            cart_model = result['cart_model']
+            cart_info = cart_model.get_stats()
+            cart_label = f"CART (d={cart_info['best_depth']}, l={cart_info['n_leaves']})"
+            lines.append(f"{cart_label:<42} {cart['train_rmse']:<12.4f} {cart['loo_cv']:<12.4f} {cart['r2']:<10.4f}")
+            
+            # M5 variants (leaf regularization)
+            if result.get('m5_stats_by_reg') and result.get('m5_models'):
+                for reg in M5_LEAF_REG_ORDER:
+                    m5 = result['m5_stats_by_reg'][reg]
+                    m5_model = result['m5_models'][reg]
+                    m5_info = m5_model.get_stats()
+                    short = M5_LEAF_REG_LABELS[reg]
+                    m5_label = f"{short} (d={m5_info['best_depth']}, l={m5_info['n_leaves']})"
+                    lines.append(f"{m5_label:<42} {m5['train_rmse']:<12.4f} {m5['loo_cv']:<12.4f} {m5['r2']:<10.4f}")
+            elif 'm5_stats' in result and 'm5_model' in result:
+                m5 = result['m5_stats']
+                m5_model = result['m5_model']
+                m5_info = m5_model.get_stats()
+                m5_label = f"M5 (d={m5_info['best_depth']}, l={m5_info['n_leaves']})"
+                lines.append(f"{m5_label:<42} {m5['train_rmse']:<12.4f} {m5['loo_cv']:<12.4f} {m5['r2']:<10.4f}")
             
             # Winner line
             lines.append("-" * 70)
-            winner_str = f"SELECTED: {result['winner_name']}"
+            winner_str = f"BEST MODEL: {result['winner_name']}"
             if result['improvement_pct'] > 0:
-                winner_str += f" ({result['improvement_pct']:.1f}% better LOO-CV)"
+                winner_str += f" ({result['improvement_pct']:.1f}% better LOO-CV vs General)"
             lines.append(winner_str)
+            lines.append("NOTE: General model is ALWAYS used for PDDL injection")
             
-            # Coefficients of selected model
+            # Details of selected model
             lines.extend(self._format_model_coefficients(var_name, result['winner']))
         
         lines.append("=" * 70)
         return "\n".join(lines)
     
     def _format_model_coefficients(self, var_name, model):
-        """Format the coefficients of a model for display."""
+        """Format the coefficients/rules of a model for display."""
         lines = []
         
-        if isinstance(model, PhysicsRatioModel):
-            lines.append(f"\n  {var_name}_after = {model.ratio:.4f} * {var_name}_before")
+        if isinstance(model, CARTEventModel):
+            # Format CART tree rules
             stats = model.get_stats()
-            if stats['n_samples'] > 0:
-                lines.append(f"  └─ Learned ratio: {model.ratio:.4f} ± {stats['std']:.4f} (from {stats['n_samples']} samples)")
-            if var_name == 'v_y' and abs(model.ratio - (-0.33)) < 0.15:
-                lines.append(f"  └─ Restitution coefficient close to expected ~-0.33")
-                
-        elif isinstance(model, AngleDependentFrictionModel):
-            lines.append(f"\n  {var_name}_ratio = {model.base_ratio:.4f} + ({model.angle_coef:.4f}) * impact_angle_factor")
-            lines.append(f"  └─ impact_angle_factor = |v_y| / (|v_x| + |v_y|)  [0=horizontal, 1=vertical]")
+            if stats['is_single_leaf']:
+                # Single leaf = just a constant (mean prediction)
+                leaf_value = model.tree.tree_.value[0, 0, 0]
+                lines.append(f"\n  {var_name}_after = {leaf_value:.4f} (constant)")
+            else:
+                lines.append(f"\n  CART Decision Rules:")
+                rules = model.get_tree_rules()
+                feature_names = ['x', 'y', 'v_x', 'v_y']
+                for conditions, leaf_value in rules:
+                    if conditions:
+                        cond_strs = []
+                        for feat_idx, threshold, direction in conditions:
+                            feat_name = feature_names[feat_idx] if feat_idx < len(feature_names) else f"f{feat_idx}"
+                            cond_strs.append(f"{feat_name} {direction} {threshold:.2f}")
+                        lines.append(f"    IF {' AND '.join(cond_strs)}:")
+                        lines.append(f"       → {var_name}_after = {leaf_value:.4f}")
+                    else:
+                        lines.append(f"    DEFAULT: {var_name}_after = {leaf_value:.4f}")
+            
+            # Show CV scores for different depths
+            if stats['cv_scores']:
+                lines.append(f"  └─ CV scores by depth: {stats['cv_scores']}")
+        
+        elif isinstance(model, M5ModelTree):
+            reg_lbl = M5_LEAF_REG_LABELS.get(model.m5_leaf_reg, model.m5_leaf_reg)
+            lines.append(f"\n  M5 Model Tree ({reg_lbl}):")
             stats = model.get_stats()
-            if stats['n_samples'] > 0:
-                lines.append(f"  └─ R² score: {stats['r_squared']:.3f}, samples: {stats['n_samples']}")
-            if model.angle_coef < -0.1:
-                lines.append(f"  └─ Steeper impacts lose more v_x (physically correct)")
+            if stats['is_single_leaf']:
+                lines.append(f"    (Single leaf - global linear model)")
+            else:
+                lines.append(f"    Depth: {stats['best_depth']}, Leaves: {stats['n_leaves']}")
+            lines.append(f"    See console output above for detailed tree structure.")
                 
         elif hasattr(model, 'coef_') and hasattr(model, 'intercept_'):
             # General linear model
@@ -843,9 +1464,9 @@ def _format_equation(var_name, intercept, coefs, coef_names):
 # Default regularization configuration
 # Change this to switch between different regularization methods
 REGULARIZATION_CONFIG = {
-    'type': 'elasticnet',  # Options: 'none', 'l1', 'l2', 'elasticnet'
-    'alpha': 1.0,          # Regularization strength
-    'l1_ratio': 0.5        # For ElasticNet: 0=Ridge, 1=Lasso, 0.5=balanced
+    'type': 'elasticnet',  # Options: 'none', 'l1', 'l2', 'elasticnet' — controls General model only
+    'alpha': 1.0,          # Strength for General; also used for all four M5 leaf estimators
+    'l1_ratio': 0.5        # For General ElasticNet and for M5 ElasticNet leaves
 }
 
 
@@ -913,10 +1534,10 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
     Updates the knowledge base with a new event and retrains variable models based on accumulated data.
     
     Uses EventModelManager to:
-    1. Always train a general Linear/Polynomial model
-    2. Optionally train domain-specific models if available
-    3. Compare models using LOO-CV and select the best one
-    4. Store comparison results for debug output
+    1. Train a General model (always used for PDDL injection)
+    2. Train CART for comparison
+    3. Train four M5 model trees (leaf reg: none, L1, L2, ElasticNet) for comparison
+    4. Compare all via LOO-CV; CART/M5 are not injected
 
     Parameters:
         event_name (str): Name of the event.
@@ -962,29 +1583,75 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
             pre_states=pre_states
         )
         
-        # Store winner model and full comparison results
-        variable["model"] = result['winner']
+        # ALWAYS store the General model for PDDL injection
+        # CART is used only for comparison to show if tree-based learning would be better
+        variable["model"] = result['general_model']
         variable["model_comparison"] = result
+        
+        m5_hist_keys = [f"m5_{r}" for r in M5_LEAF_REG_ORDER]
         
         # Track LOO-CV history for plotting
         if "loo_cv_history" not in variable:
             variable["loo_cv_history"] = {
                 "general": [],
-                "general_std": [],  # Standard error for variance bands
-                "domain": [],
+                "general_std": [],
+                "cart": [],
+                **{k: [] for k in m5_hist_keys},
                 "n_samples": []
             }
+        
+        hist = variable["loo_cv_history"]
+        n_existing = len(hist["n_samples"])
+        
+        # Migrate legacy single "m5" series → m5_l1; add per-reg keys with inf padding
+        if "m5" in hist and "m5_l1" not in hist:
+            hist["m5_l1"] = list(hist["m5"])
+            del hist["m5"]
+        for k in m5_hist_keys:
+            if k not in hist:
+                hist[k] = [float('inf')] * n_existing
         
         # Append current LOO-CV values
         general_loo = result['general_stats']['loo_cv'] if result['general_stats'] else float('inf')
         general_std = result['general_stats'].get('loo_cv_std', 0) if result['general_stats'] else 0
-        domain_loo = result['domain_stats']['loo_cv'] if result['domain_stats'] else float('inf')
+        cart_loo = result['cart_stats']['loo_cv'] if result['cart_stats'] else float('inf')
         n_samples = len(y)
         
-        variable["loo_cv_history"]["general"].append(general_loo)
-        variable["loo_cv_history"]["general_std"].append(general_std)
-        variable["loo_cv_history"]["domain"].append(domain_loo)
-        variable["loo_cv_history"]["n_samples"].append(n_samples)
+        m5_loo_parts = []
+        if result.get('m5_stats_by_reg'):
+            for reg in M5_LEAF_REG_ORDER:
+                st = result['m5_stats_by_reg'][reg]
+                v = st['loo_cv'] if st else float('inf')
+                m5_loo_parts.append(f"{reg}={v:.4f}")
+                hist[f"m5_{reg}"].append(v)
+        else:
+            m5_loo = result['m5_stats']['loo_cv'] if result.get('m5_stats') else float('inf')
+            m5_loo_parts.append(f"legacy={m5_loo:.4f}")
+            hist["m5_l1"].append(m5_loo)
+            for k in m5_hist_keys:
+                if k != "m5_l1":
+                    hist[k].append(float('inf'))
+        
+        print(f"[LOO-CV DEBUG] {var_name}: General={general_loo:.4f}, CART={cart_loo:.4f}, M5[{', '.join(m5_loo_parts)}]")
+        
+        hist["general"].append(general_loo)
+        hist["general_std"].append(general_std)
+        hist["cart"].append(cart_loo)
+        hist["n_samples"].append(n_samples)
+        
+        cart_model = result['cart_model']
+        if cart_model is not None and hasattr(cart_model, 'print_tree_rules'):
+            cart_model.print_tree_rules()
+        
+        if result.get('m5_models'):
+            for reg in M5_LEAF_REG_ORDER:
+                m = result['m5_models'][reg]
+                if m is not None and hasattr(m, 'print_tree_rules'):
+                    m.print_tree_rules()
+        else:
+            m5_model = result.get('m5_model')
+            if m5_model is not None and hasattr(m5_model, 'print_tree_rules'):
+                m5_model.print_tree_rules()
     
     # Print debug output if requested
     if debug:
