@@ -675,7 +675,7 @@ class MultiDQN():
                         # convert 0-50 to 10-60
                         a += 10
                         # Convert simulator coordinates to pixels...
-                        release_point = rl_client.tp.find_release_point(rl_client.sling_mbr, math.radians(a))
+                        release_point = rl_client.tp.find_release_point_random_power(rl_client.sling_mbr, math.radians(a))
                         tap_time = int(1250)
 
 

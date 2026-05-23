@@ -7,20 +7,21 @@ import numpy as np
 from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
     get_params_sensitivity, compute_derivatives, fit_state_transition
-from agents.pddl.pddl_files.events.learn_events import update_model_effects
+from agents.pddl.pddl_files.events.learn_events import update_model_effects, update_model_effects_with_ablation
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
 from agents.pddl.pddl_files.segments import getSegmentsPelt, getSegmentsEvents
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import visualize_compare, plot_loo_cv_comparison
+from agents.pddl.visualiator import visualize_compare, plot_loo_cv_comparison, visualize_learning_dashboard
+from agents.pddl.angle_protocol import AngleTrainingProtocol
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
 from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions, inject_domain_file
 from src.client.agent_client import GameState
-from agents.pddl.metrics import calculate_rmse
+from agents.pddl.metrics import calculate_rmse, calculate_impact_rmse
 
 from numpy.polynomial import Polynomial
 
@@ -31,7 +32,8 @@ class PDDLAgent(BaselineAgent):
     def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 1,
                  learn: bool = False, start_counting_from_game: int = 0, 
                  override_angle: float = None, debug_collision: bool = False,
-                 determinism_test_mode: bool = False):
+                 determinism_test_mode: bool = False,
+                 use_angle_protocol: bool = True):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
@@ -49,15 +51,38 @@ class PDDLAgent(BaselineAgent):
         self.override_angle = None  # Set to a value (e.g., 45) to override PDDL planner angle
         self.debug_collision = False  # Set to True to visualize collision detection
         
-        # Determinism test mode - cycles through fixed angles for data collection
-        self.determinism_test_mode = True  # SET TO TRUE TO ENABLE
-        self.determinism_angles = list(range(20, 80, 5))  # [20, 25, 30, ..., 75] = 12 angles
-        self.determinism_angle_index = 0
+        # Angle selection mode (priority order):
+        # 1. use_angle_protocol=True: Use train/val/test protocol
+        # 2. determinism_test_mode=True: Random angles [20, 80]
+        # 3. override_angle set: Use fixed angle
+        # 4. PDDL planner: Compute optimal angle
+        self.use_angle_protocol = use_angle_protocol  # NEW: Enable train/val/test protocol
+        self.determinism_test_mode = False  # Disabled when using protocol
         
+        # Initialize angle training protocol
+        # Protocol: Train 4 levels -> Val 1 level -> repeat until 40 train shots -> 10 test shots
+        if self.use_angle_protocol:
+            self.angle_protocol = AngleTrainingProtocol(
+                train_ratio=0.70,
+                val_ratio=0.15,
+                test_ratio=0.15,
+                seed=42,
+                val_every_n_levels=5,      # Validate every 5th level
+                test_after_n_trains=40,    # Test phase after 40 train shots
+                test_shots=10              # 10 test shots
+            )
+        else:
+            self.angle_protocol = None
+
         self.world_model = WorldModel({
             Params.gravity: 90,
             Params.velocity: 200
         })
+        
+        # Initialize learned_transition_world_model to current world model
+        # (will be updated after first training shot)
+        self.learned_transition_world_model = self.world_model
+        
         self.start_counting_from_game=8
         self.kb = {
             "collision": {
@@ -98,12 +123,17 @@ class PDDLAgent(BaselineAgent):
         self.suggested_rmse = list()
         self.wins = []
         
+        # Impact zone tracking for visualization
+        self.impact_rmse = []  # RMSE around impact zone per attempt
+        self.impact_trajectories = []  # List of (observed_impact, estimated_impact, impact_idx)
+        self.full_trajectories = []  # List of (observed, estimated, event_indexes) per attempt
+        
         # Win/loss tracking per level
         self.start_counting_from_game = start_counting_from_game  # Skip first X games before counting
         self.games_played = 0  # Total games played counter
         self.game_results = []  # Array of (level, "win"/"loss")
 
-    def learn_collision_effects(self, collisions, bird_observed_features):
+    def learn_collision_effects(self, collisions, bird_observed_features, phase: str = "train", should_learn: bool = True):
         """
         Learn how collisions affect the bird's velocity (bounce physics).
         
@@ -116,10 +146,15 @@ class PDDLAgent(BaselineAgent):
             List of frame indices where ground collisions occurred
         bird_observed_features : list
             List of feature dictionaries for each frame (x, y, v_x, v_y)
+        phase : str
+            Current phase: "train", "validation", or "test"
+        should_learn : bool
+            If True, train models on this data. If False, only record samples.
         
         Updates:
         --------
-        self.kb["collision"] with new collision samples and retrained models
+        self.kb["collision"] with new collision samples and retrained models (if should_learn)
+        self.angle_protocol collision samples (always, if protocol is active)
         """
         FRAME_RATE = 0.02  # 50 fps
         VELOCITY_FRAMES = 3  # Use 3 frames for velocity calculation
@@ -161,8 +196,18 @@ class PDDLAgent(BaselineAgent):
             if abs(pre_state['v_y']) < MIN_BOUNCE_VELOCITY:
                 continue
             
-            # Train collision model
-            update_model_effects("collision", self.kb, pre_state, post_state, debug=False)
+            # Record collision sample for algorithm comparison (always, regardless of phase)
+            # Only record first valid collision per trajectory for consistent sample counts
+            if self.use_angle_protocol and self.angle_protocol is not None:
+                self.angle_protocol.record_collision(phase, pre_state, post_state)
+            
+            # Train collision model only during training phase
+            if should_learn:
+                # Use ablation study to compare models with/without velocity_ratio feature
+                update_model_effects_with_ablation("collision", self.kb, pre_state, post_state, debug=False)
+            
+            # Only use first collision per trajectory
+            break
     
     def learn_flight_physics(self, trajectory):
         """
@@ -187,23 +232,19 @@ class PDDLAgent(BaselineAgent):
             self.kb["trajectories"] = []
         self.kb["trajectories"].append(trajectory.copy())
         
-        # Only learn if we haven't reached the freeze threshold
-        if self.games_played < 8:
-            self.learn_process_transitions()
-            self.learned_transition_world_model = self._create_learned_transition_world_model()
-            print(f"\nLearned World Model: {self.learned_transition_world_model.hyperparams_values}")
-        else:
-            print(f"\nModel learning FROZEN (game {self.games_played} >= 8)")
+        self.learn_process_transitions()
+        self.learned_transition_world_model = self._create_learned_transition_world_model()
+        print(f"\nLearned World Model: {self.learned_transition_world_model.hyperparams_values}")
 
     def solve(self):
         """
         Solve a particular level by shooting birds directly to pigs.
         
         Flow:
-        1. Get angle from PDDL planner
+        1. Get angle from protocol/planner
         2. Execute shot and record trajectory
-        3. Learn collision effects (bounce physics)
-        4. Learn flight physics (gravity, velocity)
+        3. Learn collision effects (bounce physics) - only during train phase
+        4. Learn flight physics (gravity, velocity) - only during train phase
         5. Visualize and update world model
         """
         ground_truth_type = GroundTruthType.ground_truth_screenshot
@@ -212,28 +253,40 @@ class PDDLAgent(BaselineAgent):
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
         
-        # 1. Get angle (priority: determinism_test > random_test_angle > override_angle > PDDL planner)
-        # Count collision samples to determine if we should test with random angle
-        n_collision_samples = 0
-        if "collision" in self.kb and "states" in self.kb["collision"]:
-            n_collision_samples = len(self.kb["collision"]["states"])
+        # 1. Get angle (priority: protocol > determinism_test > override_angle > PDDL planner)
+        should_learn = True  # Default: learn from shot
+        current_phase = "train"  # Default phase
         
-        if self.determinism_test_mode:
-            angle = self.determinism_angles[self.determinism_angle_index]
-            self.determinism_angle_index = (self.determinism_angle_index + 1) % len(self.determinism_angles)
-            print(f"\n[DETERMINISM] Angle: {angle}° (index {self.determinism_angle_index}/{len(self.determinism_angles)})")
-        elif n_collision_samples >= 20:
-            # After 20 collision samples, inject random angle to test CART generalization
-            angle = random.uniform(25, 80)
-            print(f"\n[CART TEST] Random angle: {angle:.1f}° (testing generalization after {n_collision_samples} samples)")
+        if self.use_angle_protocol and self.angle_protocol is not None:
+            # Use train/val/test protocol
+            angle, current_phase, should_learn = self.angle_protocol.get_next_shot()
+            
+            if current_phase == "complete":
+                print("\n" + "="*60)
+                print("TRAINING PROTOCOL COMPLETE!")
+                print("="*60)
+                self.angle_protocol.print_final_results(kb=self.kb)
+                return  # Exit solve - protocol is done
+            
+            self.angle_protocol.print_status()
+            print(f"[{current_phase.upper()}] Angle: {angle}°, Learning: {should_learn}")
+        
+        elif self.determinism_test_mode:
+            angle = round(random.uniform(20.0, 80.0), 1)
+            print(f"\n[DETERMINISM] Random angle: {angle}° (uniform [20, 80], 1 decimal)")
+        
         elif self.override_angle is not None:
             angle = self.override_angle
+            print(f"\n[OVERRIDE] Using fixed angle: {angle}°")
+        
         else:
+            # Use PDDL planner
             actions = self.get_action_to_perform(self.world_model)[0]
             _, angle = actions
+            print(f"\n[PDDL] Planner selected angle: {angle}°")
 
-        # 2. Execute shot and record trajectory
-        release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
+        # 2. Execute shot and record trajectory (always use full power)
+        release_point = self.tp.find_release_point_partial_power(sling, angle * np.pi / 180, v_portion=1.0)
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
 
         # Extract trajectory and events
@@ -245,33 +298,135 @@ class PDDLAgent(BaselineAgent):
         event_indexes = sorted([val for values in event_indexes_by_event.values() for val in values])
         parts = np.split(bird_observed_trajectory, event_indexes)
         
-        # 3. Learn collision effects (bounce physics)
-        collisions = event_indexes_by_event["ground_collision"]
-        self.learn_collision_effects(collisions, bird_observed_features)
+        # Debug: Event detection info
+        print(f"\n[EVENT DEBUG] Trajectory length: {len(bird_observed_trajectory)} frames")
+        print(f"[EVENT DEBUG] Objects tracked: {list(groundtruth_objects.keys())}")
+        print(f"[EVENT DEBUG] Events detected: {event_indexes_by_event}")
+        if len(event_indexes) == 0:
+            # Check why no events
+            last_frame = bird_observed_features[-1] if bird_observed_features else {}
+            first_frame = bird_observed_features[0] if bird_observed_features else {}
+            print(f"[EVENT DEBUG] No events! First frame y={first_frame.get('y', 'N/A')}, Last frame y={last_frame.get('y', 'N/A')}")
+            print(f"[EVENT DEBUG] Last frame v_y={last_frame.get('v_y', 'N/A')}")
+            if last_frame.get('y', 100) > 3:
+                print(f"[EVENT DEBUG] Bird still in air at end of tracking (y={last_frame.get('y', 'N/A')} > 3)")
+        else:
+            print(f"[EVENT DEBUG] First event at frame {event_indexes[0]}")
         
-        # 3.5 Visualize General vs CART comparison for collision learning
-        if len(collisions) > 0 and "collision" in self.kb:
-            plot_loo_cv_comparison(self.kb, event_name="collision")
+        # 3. Process collision effects (bounce physics)
+        # Always extract and record collision samples for algorithm comparison
+        # Only train models during train phase
+        collisions = event_indexes_by_event["ground_collision"]
+        self.learn_collision_effects(collisions, bird_observed_features, phase=current_phase, should_learn=should_learn)
+        if not should_learn:
+            print(f"[{current_phase.upper()}] Collision samples recorded (no training in evaluation mode)")
+        
+        # 3.5 Visualize General vs CART vs M5 comparison for collision learning
+        # if len(collisions) > 0 and "collision" in self.kb:
+        #     plot_loo_cv_comparison(self.kb, event_name="collision")
 
-        # 4. Learn flight physics (gravity, velocity) - use first segment only
+        # 4. Learn flight physics (gravity, velocity) - ONLY during train phase
         first_segment = parts[0]
-        self.learn_flight_physics(first_segment)
+        if should_learn:
+            self.learn_flight_physics(first_segment)
+        else:
+            print(f"[{current_phase.upper()}] Skipping flight physics learning (evaluation mode)")
 
         # 5. Visualize trajectory comparison
-        limit = np.max(first_segment, axis=0)[0]
+        # Trim 2 frames from end of first_segment for cleaner RMSE (avoid noisy impact transition)
+        first_segment_trimmed = first_segment[:-2] if len(first_segment) > 5 else first_segment
+        
+        limit = np.max(first_segment_trimmed, axis=0)[0]
         estimated_trajectory = construct_trajectory(
-            first_segment[0], angle, self.world_model, limit,
+            first_segment_trimmed[0], angle, self.world_model, limit,
             prt=False, integration_method='rk4', stop_at_ground=True
         )
+        
+        # Use learned model if available, otherwise use current world model
+        model_for_suggested = getattr(self, 'learned_transition_world_model', None) or self.world_model
         suggested_trajectory = construct_trajectory(
-            first_segment[0], angle, self.learned_transition_world_model, limit,
+            first_segment_trimmed[0], angle, model_for_suggested, limit,
             prt=False, integration_method='rk4', stop_at_ground=True
         )
 
-        self.rmse.append(calculate_rmse(first_segment, estimated_trajectory, trim_start_percent=0, trim_end_percent=0, apply_bias_correction=False))
-        self.suggested_rmse.append(calculate_rmse(first_segment, suggested_trajectory))
+        current_rmse = calculate_rmse(first_segment_trimmed, estimated_trajectory, trim_start_percent=0, trim_end_percent=0, apply_bias_correction=False)
+        self.rmse.append(current_rmse)
+        self.suggested_rmse.append(calculate_rmse(first_segment_trimmed, suggested_trajectory))
         
-        visualize_compare(first_segment, estimated_trajectory, suggested_trajectory)
+        # Record result in angle protocol (if using)
+        if self.use_angle_protocol and self.angle_protocol is not None:
+            self.angle_protocol.record_result(
+                angle=angle,
+                phase=current_phase,
+                rmse=current_rmse,
+                gravity=self.world_model.hyperparams_values.get(Params.gravity),
+                velocity=self.world_model.hyperparams_values.get(Params.velocity),
+                n_collisions=len(collisions)
+            )
+        
+        # Store full trajectory data for visualization
+        self.full_trajectories.append({
+            'observed': bird_observed_trajectory.copy(),
+            'estimated': estimated_trajectory.copy(),
+            'suggested': suggested_trajectory.copy(),
+            'event_indexes': event_indexes.copy(),
+            'event_indexes_by_event': {k: list(v) for k, v in event_indexes_by_event.items()},
+            'angle': angle,
+            'phase': current_phase,
+            'should_learn': should_learn
+        })
+        
+        # Track impact zone metrics (use first event as primary impact)
+        if len(event_indexes) > 0:
+            first_impact_idx = event_indexes[0]
+            
+            # Create extended estimated trajectory that reaches the impact zone
+            # Use the full observed trajectory's x-range as limit
+            bird_traj_array = np.array(bird_observed_trajectory)
+            impact_limit = np.max(bird_traj_array[:first_impact_idx + 21, 0]) if first_impact_idx + 21 < len(bird_traj_array) else np.max(bird_traj_array[:, 0])
+            extended_estimated = construct_trajectory(
+                bird_traj_array[0], angle, self.world_model, impact_limit,
+                prt=False, integration_method='rk4', stop_at_ground=False  # Don't stop at ground for impact comparison
+            )
+            
+            impact_result = calculate_impact_rmse(
+                bird_observed_trajectory, extended_estimated, 
+                first_impact_idx, frames_before=10, frames_after=20
+            )
+            # Show both RMSE methods side by side
+            rmse_x = impact_result.get('rmse_x_aligned', impact_result['rmse'])
+            rmse_t = impact_result.get('rmse_time_aligned', impact_result['rmse'])
+            method = impact_result.get('method_used', 'x_aligned')
+            x_per_frame = impact_result.get('x_per_frame', 0)
+            
+            print(f"[IMPACT DEBUG] Impact at frame {first_impact_idx}")
+            print(f"[IMPACT DEBUG] RMSE Comparison: x_aligned={rmse_x:.2f} | time_aligned={rmse_t:.2f} | selected={method} (x/frame={x_per_frame:.2f})")
+            print(f"[IMPACT DEBUG] Observed window: {len(impact_result['observed_window'])} frames, Estimated window: {len(impact_result['estimated_window'])} frames")
+            
+            # Use the adaptively selected RMSE
+            self.impact_rmse.append(impact_result['rmse'])
+            self.impact_trajectories.append({
+                'observed_window': impact_result['observed_window'].copy(),
+                'estimated_window': impact_result['estimated_window'].copy(),
+                'impact_idx': first_impact_idx,
+                'impact_idx_in_window': impact_result['impact_idx_in_window'],
+                'attempt': len(self.impact_rmse)
+            })
+        else:
+            # No impact detected, use inf for RMSE
+            print(f"[IMPACT DEBUG] No events detected, setting RMSE=inf")
+            self.impact_rmse.append(float('inf'))
+            self.impact_trajectories.append(None)
+        
+        # Show combined learning dashboard every 10 attempts
+        if len(self.full_trajectories) % 10 == 0:
+            visualize_learning_dashboard(
+                self.full_trajectories, 
+                self.rmse, 
+                self.suggested_rmse,
+                self.impact_rmse, 
+                self.impact_trajectories
+            )
 
         # 6. Update game state and world model
         game_result = self.ar.get_game_state() == GameState.WON
@@ -281,29 +436,27 @@ class PDDLAgent(BaselineAgent):
         if self.games_played > self.start_counting_from_game:
             self.game_results.append((self.current_level, "win" if game_result else "loss"))
 
-        print(f"Old World Model: {self.world_model.hyperparams_values}")
-        print(f"New World Model: {self.learned_transition_world_model.hyperparams_values}")
-        
-        # Update world model with learned parameters
-        self.world_model = self.learned_transition_world_model
-        self.world_model.kb = self.kb
+        # Only update world model during training phase
+        if should_learn and hasattr(self, 'learned_transition_world_model') and self.learned_transition_world_model is not None:
+            print(f"Old World Model: {self.world_model.hyperparams_values}")
+            print(f"New World Model: {self.learned_transition_world_model.hyperparams_values}")
+            
+            # Update world model with learned parameters
+            self.world_model = self.learned_transition_world_model
+            self.world_model.kb = self.kb
+        else:
+            print(f"[{current_phase.upper()}] World model NOT updated (evaluation mode)")
+            print(f"Current World Model: {self.world_model.hyperparams_values}")
 
-        print(f"RMSE: {self.rmse}")
-        print(f"Game results: {self.game_results}")
+        print(f"RMSE: {self.rmse[-1]:.2f} (current) | Mean: {np.mean(self.rmse):.2f}")
+        print(f"Game results: {len([r for r in self.game_results if r[1] == 'win'])}/{len(self.game_results)} wins")
 
-        time.sleep(5)
+        # Print collision model comparison after each validation shot
+        if self.use_angle_protocol and self.angle_protocol is not None and current_phase == "validation":
+            print("\n[INTERIM COMPARISON] Printing current model comparison after validation shot...")
+            self.angle_protocol.print_collision_comparison(self.kb)
 
-        print(f"Old values- {self.world_model.hyperparams_values} ")
-        print(f"New values- gravity: {self.learned_transition_world_model.hyperparams_values} ")
-        
-        # Update world model
-        self.world_model = self.learned_transition_world_model
-        self.world_model.kb = self.kb
-
-        print(f"RMSE: {self.rmse}")
-        print(f"Game results: {self.game_results}")
-
-        time.sleep(5)
+        time.sleep(3)
 
     def get_action_to_perform(self, agent_world_model: WorldModel):
         """

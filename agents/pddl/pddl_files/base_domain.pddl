@@ -1,5 +1,5 @@
 (define (domain angry_birds_scaled)
-    (:requirements :typing :disjunctive-preconditions :fluents :time :negative-preconditions)
+    (:requirements :typing :disjunctive-preconditions :fluents :time :negative-preconditions :conditional-effects)
     (:types bird pig block platform external_agent)
     (:predicates (bird_released ?b - bird) (pig_dead ?p - pig) (angle_adjusted) (block_explosive ?bl - block) (pig_killed) (agent_dead ?ea - external_agent) (bird_tapped ?b - bird))
 
@@ -139,10 +139,7 @@
 
         )
         :effect (and
-            (assign (y_bird ?b) {SE-collision-y})
-            (assign (vy_bird ?b) {SE-collision-v_y})
-            (assign (vx_bird ?b) {SE-collision-v_x})
-            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
+            {SE-collision-ground-effect}
         )
     )
 

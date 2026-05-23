@@ -500,7 +500,10 @@ class ClientNaiveAgent(Thread):
                 # Get the release point from the trajectory prediction module
                 tap_time = 0
                 if release_point != None:
-                    release_angle = self.tp.get_release_angle(sling,release_point)
+                    if pts:
+                        ra = self.tp.get_release_angle(sling, release_point)
+                        release_point = self.tp.find_release_point_random_power(sling, ra)
+                    release_angle = self.tp.get_release_angle(sling, release_point)
                     self.logger.info("Release Point: %s"%release_point)
                     self.logger.info("Release Angle: %s"%degrees(release_angle))
                     tap_interval = 0

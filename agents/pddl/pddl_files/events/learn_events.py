@@ -1,8 +1,41 @@
+import warnings
+
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
 from sklearn.tree import DecisionTreeRegressor
+from sklearn.exceptions import ConvergenceWarning
 from lineartree import LinearTreeRegressor
+
+# Noisy on small leaves / tiny dual gaps; max_iter=10000 is already set on Lasso/ElasticNet.
+warnings.filterwarnings('ignore', category=ConvergenceWarning)
+
+
+# ==============================================================================
+# VELOCITY RATIO FEATURE FOR ABLATION STUDY
+# ==============================================================================
+
+def compute_velocity_ratio(v_x, v_y, epsilon=1e-6):
+    """
+    Compute normalized velocity ratio (impact angle proxy).
+    
+    Returns |v_y| / (|v_x| + |v_y| + epsilon) to avoid division by zero.
+    Range: 0 (horizontal impact) to 1 (vertical impact)
+    
+    This feature captures the impact angle which may affect bounce behavior:
+    - Shallow impacts (ratio near 0): More sliding, less bounce
+    - Steep impacts (ratio near 1): More bouncing, less sliding
+    
+    Parameters:
+        v_x: Horizontal velocity component
+        v_y: Vertical velocity component  
+        epsilon: Small value to prevent division by zero
+        
+    Returns:
+        float: Normalized velocity ratio in range [0, 1]
+    """
+    total = abs(v_x) + abs(v_y) + epsilon
+    return abs(v_y) / total
 
 
 # ==============================================================================
@@ -282,7 +315,9 @@ class CARTEventModel:
 
 
 # M5 compares these leaf estimators (alpha / l1_ratio from REGULARIZATION_CONFIG).
-M5_LEAF_REG_ORDER = ('none', 'l1', 'l2', 'elasticnet')
+# OLS ('none') and Ridge leaf ('l2') training skipped — only L1 + ElasticNet leaves compete for injection.
+# M5_LEAF_REG_ORDER = ('none', 'l1', 'l2', 'elasticnet')
+M5_LEAF_REG_ORDER = ('l1', 'elasticnet')
 M5_LEAF_REG_LABELS = {
     'none': 'M5 (no reg / OLS leaves)',
     'l1': 'M5 (L1 / Lasso leaves)',
@@ -328,7 +363,7 @@ class M5ModelTree:
     - Each leaf contains coefficients for: intercept + x + y + v_x + v_y
     """
     
-    MAX_DEPTH_CAP = 2
+    MAX_DEPTH_CAP = 1  # Reduced from 2 to prevent overfitting
     
     def __init__(self, var_name, m5_leaf_reg='l1'):
         self.var_name = var_name
@@ -628,6 +663,133 @@ class M5ModelTree:
             print(f"    {self.var_name}_after = {equation}")
 
 
+# Column order matches make_feature_vector: x, y, v_x, v_y
+_PDDL_FLUENT_BY_COL = ("x_bird", "y_bird", "vx_bird", "vy_bird")
+
+
+def _m5_pddl_split_atoms(col: int, th: float, bird: str) -> tuple[str, str]:
+    """Left branch: feature < th; right branch: feature >= th (matches _print_tree_recursive)."""
+    if col < 0 or col >= len(_PDDL_FLUENT_BY_COL):
+        col = 0
+    feat = _PDDL_FLUENT_BY_COL[col]
+    ths = f"{float(th):.8f}"
+    return (
+        f"(< ({feat} {bird}) {ths})",
+        f"(>= ({feat} {bird}) {ths})",
+    )
+
+
+def _m5_leaf_coef_intercept(models):
+    if models is None or not hasattr(models, "coef_"):
+        return None
+    coef = np.asarray(models.coef_, dtype=float).reshape(-1)
+    if coef.size < 4:
+        pad = np.zeros(4, dtype=float)
+        pad[: coef.size] = coef
+        coef = pad
+    else:
+        coef = coef[:4].copy()
+    intercept = float(getattr(models, "intercept_", 0.0))
+    return coef, intercept
+
+
+def m5_collision_leaves_for_pddl(m5: M5ModelTree, bird_param: str = "?b", debug: bool = False, var_label: str = ""):
+    """
+    Serialize an M5ModelTree into leaf paths and affine models for PDDL collision injection.
+
+    Returns:
+        List of (path_conditions, coef[4], intercept). Path is a list of PDDL comparison atoms.
+        Empty list means the caller should fall back to the General (single affine) model.
+
+    Column order for coef: x, y, v_x, v_y — same as make_feature_vector / inject_domain_file.
+    """
+    label = f"[{var_label}] " if var_label else ""
+
+    if m5 is None or not isinstance(m5, M5ModelTree) or m5.tree is None:
+        if debug:
+            print(f"[M5-PDDL] {label}skip: no M5 model or tree (m5={type(m5).__name__ if m5 is not None else None})")
+        return []
+
+    bird = bird_param.strip()
+    if not bird.startswith("?"):
+        bird = "?" + bird.lstrip("?")
+
+    if m5.best_depth == 0 or isinstance(m5.tree, (LinearRegression, Lasso, Ridge, ElasticNet)):
+        pack = _m5_leaf_coef_intercept(m5.tree)
+        if pack is None:
+            if debug:
+                print(f"[M5-PDDL] {label}depth-0 leaf: coef/intercept missing")
+            return []
+        if debug:
+            print(
+                f"[M5-PDDL] {label}depth=0 single affine (best_depth={m5.best_depth}, "
+                f"leaf_reg={getattr(m5, 'm5_leaf_reg', '?')})"
+            )
+        return [([], pack[0], pack[1])]
+
+    if not hasattr(m5.tree, "summary"):
+        if debug:
+            print(f"[M5-PDDL] {label}skip: tree has no summary() ({type(m5.tree).__name__})")
+        return []
+
+    try:
+        summary = m5.tree.summary()
+    except Exception as ex:
+        if debug:
+            print(f"[M5-PDDL] {label}summary() failed: {ex!r}")
+        return []
+
+    leaves: list[tuple[list[str], np.ndarray, float]] = []
+    ok = {"v": True}
+
+    def recurse(node_id: int, path: list[str]) -> None:
+        if not ok["v"]:
+            return
+        if node_id not in summary:
+            ok["v"] = False
+            return
+        node = summary[node_id]
+        children = node.get("children", (None, None))
+        if isinstance(children, list) and len(children) >= 2:
+            children = (children[0], children[1])
+
+        if children == (None, None) or children[0] is None:
+            models = node.get("models")
+            pack = _m5_leaf_coef_intercept(models)
+            if pack is None:
+                ok["v"] = False
+                return
+            leaves.append((list(path), pack[0], pack[1]))
+            return
+
+        col = node.get("col")
+        th = node.get("th")
+        if col is None or th is None:
+            ok["v"] = False
+            return
+        left_atom, right_atom = _m5_pddl_split_atoms(int(col), float(th), bird)
+        recurse(children[0], path + [left_atom])
+        recurse(children[1], path + [right_atom])
+
+    recurse(0, [])
+    if not ok["v"] or len(leaves) == 0:
+        if debug:
+            print(
+                f"[M5-PDDL] {label}tree walk failed or no leaves "
+                f"(ok={ok['v']}, n_leaves={len(leaves)}, best_depth={getattr(m5, 'best_depth', None)})"
+            )
+        return []
+    if debug:
+        for i, (path, coef, icept) in enumerate(leaves):
+            path_s = " ".join(path) if path else "(no split — global leaf)"
+            print(
+                f"[M5-PDDL] {label}leaf {i}: path={path_s} | intercept={icept:.6f} "
+                f"coef={np.array2string(coef, precision=4, suppress_small=True)}"
+            )
+        print(f"[M5-PDDL] {label}serialized {len(leaves)} leaf/leaves for PDDL")
+    return leaves
+
+
 class PhysicsRatioModel:
     """
     A simple physics-based model that learns velocity ratios for collisions.
@@ -897,7 +1059,7 @@ class AngleDependentFrictionModel:
 
 class EventModelManager:
     """
-    Model comparison for event learning: General vs CART vs four M5 variants.
+    Model comparison for event learning: General vs CART vs M5 (L1 + ElasticNet leaves only).
     
     Trains General (for PDDL injection), CART, and M5 model trees with leaf
     regularization: none (OLS), L1, L2, ElasticNet (alpha/l1_ratio from config).
@@ -909,11 +1071,11 @@ class EventModelManager:
     
     def train_and_compare(self, event_name, var_name, X, y, pre_states=None):
         """
-        Train General, CART, and four M5 trees (leaf reg: none, L1, L2, ElasticNet).
+        Train General, CART, and M5 trees for leaf reg: L1, ElasticNet (OLS and L2 leaf variants disabled).
         
         Returns:
             dict with general_model, cart_model, m5_models (by reg key), m5_stats_by_reg,
-            m5_model / m5_stats (best M5 by LOO-CV among the four), winner, etc.
+            m5_model / m5_stats (best M5 by LOO-CV among trained leaf regs), winner, etc.
         """
         n_samples = len(y)
         
@@ -974,6 +1136,84 @@ class EventModelManager:
         self.comparison_results[var_name] = result
         
         return result
+    
+    def train_ablation_comparison(self, var_name, X_base, X_extended, y):
+        """
+        Compare model performance with and without the velocity ratio feature.
+        
+        This is an A/B test to validate whether adding velocity_ratio improves
+        collision model learning performance.
+        
+        Parameters:
+            var_name: Name of target variable ('v_x', 'v_y', 'y')
+            X_base: Feature matrix WITHOUT velocity_ratio [x, y, v_x, v_y] shape (n, 4)
+            X_extended: Feature matrix WITH velocity_ratio [x, y, v_x, v_y, ratio] shape (n, 5)
+            y: Target values (post-collision values)
+        
+        Returns:
+            dict with:
+            - baseline_stats: LOO-CV, train_rmse, r2 for base features
+            - extended_stats: LOO-CV, train_rmse, r2 for extended features
+            - improvement_pct: % improvement in LOO-CV (positive = extended is better)
+            - feature_helps: bool - True if extended LOO-CV is >5% better
+            - feature_hurts: bool - True if extended LOO-CV is worse (overfitting)
+        """
+        n_samples = len(y)
+        
+        if n_samples < 3:
+            return {
+                'baseline_stats': {'loo_cv': float('inf'), 'train_rmse': float('inf'), 'r2': 0},
+                'extended_stats': {'loo_cv': float('inf'), 'train_rmse': float('inf'), 'r2': 0},
+                'improvement_pct': 0,
+                'feature_helps': False,
+                'feature_hurts': False,
+                'n_samples': n_samples
+            }
+        
+        config = REGULARIZATION_CONFIG
+        
+        # Train baseline model (4 features: x, y, v_x, v_y)
+        baseline_model = self._train_general_model(
+            X_base, y,
+            alpha=config['alpha'],
+            l1_ratio=config['l1_ratio'],
+            regularization=config['type']
+        )
+        baseline_stats = self._compute_model_stats(baseline_model, X_base, y, 'general')
+        
+        # Train extended model (5 features: x, y, v_x, v_y, velocity_ratio)
+        extended_model = self._train_general_model(
+            X_extended, y,
+            alpha=config['alpha'],
+            l1_ratio=config['l1_ratio'],
+            regularization=config['type']
+        )
+        extended_stats = self._compute_model_stats(extended_model, X_extended, y, 'general')
+        
+        # Calculate improvement
+        baseline_loo = baseline_stats['loo_cv']
+        extended_loo = extended_stats['loo_cv']
+        
+        if baseline_loo > 0 and np.isfinite(baseline_loo) and np.isfinite(extended_loo):
+            improvement_pct = ((baseline_loo - extended_loo) / baseline_loo) * 100
+        else:
+            improvement_pct = 0
+        
+        # Decision criteria
+        SIGNIFICANCE_THRESHOLD = 5.0  # 5% improvement threshold
+        feature_helps = improvement_pct > SIGNIFICANCE_THRESHOLD
+        feature_hurts = improvement_pct < -SIGNIFICANCE_THRESHOLD
+        
+        return {
+            'baseline_model': baseline_model,
+            'baseline_stats': baseline_stats,
+            'extended_model': extended_model,
+            'extended_stats': extended_stats,
+            'improvement_pct': improvement_pct,
+            'feature_helps': feature_helps,
+            'feature_hurts': feature_hurts,
+            'n_samples': n_samples
+        }
     
     def _train_general_model(self, X, y, alpha=1.0, l1_ratio=0.5, regularization='elasticnet'):
         """
@@ -1270,7 +1510,7 @@ class EventModelManager:
             
             lines.append("")
             lines.append("=" * 70)
-            lines.append(f"MODEL COMPARISON: {var_name} ({n} samples) — General, CART, M5×4")
+            lines.append(f"MODEL COMPARISON: {var_name} ({n} samples) — General, CART, M5×{len(M5_LEAF_REG_ORDER)}")
             lines.append("=" * 70)
             lines.append(f"{'Model':<42} {'Train RMSE':<12} {'LOO-CV':<12} {'R²':<10}")
             lines.append("-" * 70)
@@ -1465,7 +1705,7 @@ def _format_equation(var_name, intercept, coefs, coef_names):
 # Change this to switch between different regularization methods
 REGULARIZATION_CONFIG = {
     'type': 'elasticnet',  # Options: 'none', 'l1', 'l2', 'elasticnet' — controls General model only
-    'alpha': 1.0,          # Strength for General; also used for all four M5 leaf estimators
+    'alpha': 10.0,         # Strength for General; also used for each trained M5 leaf estimator
     'l1_ratio': 0.5        # For General ElasticNet and for M5 ElasticNet leaves
 }
 
@@ -1515,18 +1755,28 @@ def get_regularization_config():
     return REGULARIZATION_CONFIG.copy()
 
 
-def make_feature_vector(data):
+def make_feature_vector(data, include_velocity_ratio=False):
     """
     Constructs a 2D numpy array from a list of dictionaries containing feature values.
 
     Parameters:
-        data (list of dict): Each dict represents a state with keys 'x', 'y', 'v_x', 'v_y', 'a_x', 'a_y'.
+        data (list of dict): Each dict represents a state with keys 'x', 'y', 'v_x', 'v_y'.
+        include_velocity_ratio (bool): If True, adds velocity_ratio as 5th feature.
+            velocity_ratio = |v_y| / (|v_x| + |v_y|) - captures impact angle.
 
     Returns:
-        np.ndarray: Array of shape (n_samples, 6) containing the feature vectors.
+        np.ndarray: Array of shape (n_samples, 4) or (n_samples, 5) if include_velocity_ratio.
+            Base features: [x, y, v_x, v_y]
+            Extended features: [x, y, v_x, v_y, velocity_ratio]
     """
-    features = ['x', 'y', 'v_x', 'v_y']
-    return np.array([[sample[f] for f in features] for sample in data])
+    result = []
+    for sample in data:
+        row = [sample['x'], sample['y'], sample['v_x'], sample['v_y']]
+        if include_velocity_ratio:
+            ratio = compute_velocity_ratio(sample['v_x'], sample['v_y'])
+            row.append(ratio)
+        result.append(row)
+    return np.array(result)
 
 
 def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_event_state: dict, debug: bool = False):
@@ -1536,7 +1786,7 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
     Uses EventModelManager to:
     1. Train a General model (always used for PDDL injection)
     2. Train CART for comparison
-    3. Train four M5 model trees (leaf reg: none, L1, L2, ElasticNet) for comparison
+    3. Train M5 model trees for leaf reg in M5_LEAF_REG_ORDER (OLS/L2 variants disabled) for comparison
     4. Compare all via LOO-CV; CART/M5 are not injected
 
     Parameters:
@@ -1657,7 +1907,7 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
     if debug:
         print(manager.get_debug_output())
     
-    # Print all 4 regularization versions for v_x and v_y
+    # Print General model equations under each regularization type (for v_x / v_y)
     config = REGULARIZATION_CONFIG
     for var_name in ['v_x', 'v_y']:
         if var_name in kb[event_name]["variables"]:
@@ -1669,6 +1919,120 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
             )
     
     return manager
+
+
+def update_model_effects_with_ablation(event_name: str, kb: dict, pre_event_state: dict, post_event_state: dict, debug: bool = False):
+    """
+    Updates knowledge base and runs ablation study comparing models with/without velocity_ratio.
+    
+    This function:
+    1. Calls the standard update_model_effects() for normal model training
+    2. Additionally runs an A/B comparison (ablation study) to validate if
+       adding velocity_ratio as a feature improves model performance
+    
+    Parameters:
+        event_name (str): Name of the event (e.g., "collision")
+        kb (dict): Knowledge base dictionary
+        pre_event_state (dict): Dictionary of features before the event
+        post_event_state (dict): Dictionary of features after the event
+        debug (bool): If True, print detailed debug output
+    
+    Returns:
+        dict with:
+        - manager: EventModelManager from standard training
+        - ablation_results: dict of ablation comparison results per variable
+    """
+    # First, run the standard model training
+    manager = update_model_effects(event_name, kb, pre_event_state, post_event_state, debug)
+    
+    # Initialize ablation storage in KB if not present
+    if "ablation" not in kb[event_name]:
+        kb[event_name]["ablation"] = {
+            "velocity_ratio": {
+                "results_by_var": {},
+                "history": {
+                    "v_x": {"baseline_loo": [], "extended_loo": [], "improvement_pct": [], "n_samples": []},
+                    "v_y": {"baseline_loo": [], "extended_loo": [], "improvement_pct": [], "n_samples": []},
+                    "y": {"baseline_loo": [], "extended_loo": [], "improvement_pct": [], "n_samples": []}
+                }
+            }
+        }
+    
+    # Create feature matrices for ablation comparison
+    states_base = make_feature_vector(kb[event_name]["states"], include_velocity_ratio=False)
+    states_extended = make_feature_vector(kb[event_name]["states"], include_velocity_ratio=True)
+    
+    ablation_results = {}
+    ablation_manager = EventModelManager()
+    
+    print("\n" + "=" * 70)
+    print("ABLATION STUDY: velocity_ratio Feature Validation")
+    print("=" * 70)
+    print(f"{'Variable':<10} {'Baseline LOO-CV':<18} {'Extended LOO-CV':<18} {'Change':<15} {'Verdict'}")
+    print("-" * 70)
+    
+    # Run ablation comparison for each target variable
+    for var_name in ['v_x', 'v_y', 'y']:
+        if var_name not in kb[event_name]["variables"]:
+            continue
+            
+        y = np.array(kb[event_name]["variables"][var_name]["value"])
+        
+        # Run ablation comparison
+        result = ablation_manager.train_ablation_comparison(
+            var_name=var_name,
+            X_base=states_base,
+            X_extended=states_extended,
+            y=y
+        )
+        
+        ablation_results[var_name] = result
+        kb[event_name]["ablation"]["velocity_ratio"]["results_by_var"][var_name] = result
+        
+        # Update history
+        history = kb[event_name]["ablation"]["velocity_ratio"]["history"][var_name]
+        history["baseline_loo"].append(result['baseline_stats']['loo_cv'])
+        history["extended_loo"].append(result['extended_stats']['loo_cv'])
+        history["improvement_pct"].append(result['improvement_pct'])
+        history["n_samples"].append(result['n_samples'])
+        
+        # Print result
+        baseline_loo = result['baseline_stats']['loo_cv']
+        extended_loo = result['extended_stats']['loo_cv']
+        improvement = result['improvement_pct']
+        
+        if result['feature_helps']:
+            verdict = "HELPS"
+        elif result['feature_hurts']:
+            verdict = "HURTS"
+        else:
+            verdict = "NEUTRAL"
+        
+        change_str = f"{improvement:+.1f}%" if np.isfinite(improvement) else "N/A"
+        print(f"{var_name:<10} {baseline_loo:<18.4f} {extended_loo:<18.4f} {change_str:<15} {verdict}")
+    
+    print("-" * 70)
+    
+    # Summary conclusion
+    helps_count = sum(1 for r in ablation_results.values() if r.get('feature_helps', False))
+    hurts_count = sum(1 for r in ablation_results.values() if r.get('feature_hurts', False))
+    
+    if helps_count > hurts_count:
+        conclusion = "velocity_ratio IMPROVES predictions"
+    elif hurts_count > helps_count:
+        conclusion = "velocity_ratio HURTS predictions (overfitting)"
+    else:
+        conclusion = "velocity_ratio has NO SIGNIFICANT EFFECT"
+    
+    print(f"[ABLATION] CONCLUSION: {conclusion}")
+    print(f"[ABLATION] Helps: {helps_count} vars, Hurts: {hurts_count} vars, Neutral: {len(ablation_results) - helps_count - hurts_count} vars")
+    print("=" * 70 + "\n")
+    
+    return {
+        'manager': manager,
+        'ablation_results': ablation_results,
+        'ablation_manager': ablation_manager
+    }
 
 
 def analyze_event_clusters(kb, event_name="collision", n_clusters=2, plot=True, save_path=None):

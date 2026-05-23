@@ -89,6 +89,550 @@ def visualize_rmse_vs_suggsted(rmse_values, suggested_rmse_values):
     visualize_rmse(rmse_values, suggested_rmse_values)
 
 
+def visualize_learning_dashboard(full_trajectories, rmse_values, suggested_rmse_values, 
+                                  impact_rmse_values, impact_trajectories):
+    """
+    Combined dashboard showing all learning visualizations in a single figure.
+    
+    Layout (2x2 grid):
+    - Top-left: Current attempt trajectory (expected vs observed with impact)
+    - Top-right: Flight RMSE history over attempts
+    - Bottom-left: Impact zone comparison (last attempt)
+    - Bottom-right: Impact RMSE history over attempts
+    
+    Parameters:
+    -----------
+    full_trajectories : list
+        List of trajectory dicts from agent.full_trajectories
+    rmse_values : list
+        RMSE values from baseline world model
+    suggested_rmse_values : list
+        RMSE values from learned world model
+    impact_rmse_values : list
+        RMSE values around impact zone per attempt
+    impact_trajectories : list
+        List of impact trajectory dicts from agent.impact_trajectories
+    """
+    if len(full_trajectories) == 0:
+        print("No trajectory data to visualize")
+        return
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Learning Dashboard - Attempt {len(full_trajectories)}', fontsize=16, fontweight='bold')
+    
+    # Get latest trajectory data
+    latest = full_trajectories[-1]
+    observed = np.array(latest['observed'])
+    estimated = np.array(latest['estimated'])
+    event_indexes = latest['event_indexes']
+    angle = latest.get('angle', 0)
+    
+    # ========== Plot 1: Current Attempt Trajectory (Top-Left) ==========
+    ax1 = axes[0, 0]
+    
+    ax1.plot(observed[:, 0], observed[:, 1], 'o-', color='blue', markersize=3, 
+             linewidth=1.5, alpha=0.7, label='Observed')
+    ax1.plot(estimated[:, 0], estimated[:, 1], 'x-', color='red', markersize=3, 
+             linewidth=1.5, alpha=0.7, label='Estimated')
+    
+    # Mark start
+    ax1.scatter(observed[0, 0], observed[0, 1], s=150, color='blue', marker='*', 
+                edgecolors='black', linewidths=2, zorder=10)
+    
+    # Mark impact points
+    if len(event_indexes) > 0:
+        first_impact = event_indexes[0]
+        if first_impact < len(observed):
+            ax1.axvline(observed[first_impact, 0], color='orange', linestyle='--', 
+                        linewidth=2, alpha=0.7, label=f'Impact (frame {first_impact})')
+            ax1.scatter(observed[first_impact, 0], observed[first_impact, 1], s=200, 
+                        color='orange', marker='D', edgecolors='black', linewidths=2, zorder=10)
+            
+            # Highlight post-impact (20 frames)
+            end_idx = min(len(observed), first_impact + 21)
+            post_impact = observed[first_impact:end_idx]
+            ax1.plot(post_impact[:, 0], post_impact[:, 1], 'o-', color='purple', 
+                     markersize=4, linewidth=2, alpha=0.8, label='Post-Impact')
+    
+    ax1.set_xlabel('X (pixels)', fontsize=10)
+    ax1.set_ylabel('Y (pixels)', fontsize=10)
+    ax1.set_title(f'Current Attempt (angle={angle:.1f}°)', fontsize=12)
+    ax1.legend(loc='best', fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    ax1.axis('equal')
+    
+    # ========== Plot 2: Flight RMSE History (Top-Right) ==========
+    ax2 = axes[0, 1]
+    
+    attempts = list(range(1, len(rmse_values) + 1))
+    ax2.plot(attempts, rmse_values, 'o-', color='blue', linewidth=2, markersize=6, 
+             label='Baseline Model')
+    
+    if suggested_rmse_values and len(suggested_rmse_values) > 0:
+        ax2.plot(attempts, suggested_rmse_values, 's-', color='green', linewidth=2, 
+                 markersize=6, label='Learned Model')
+    
+    ax2.set_xlabel('Attempt Number', fontsize=10)
+    ax2.set_ylabel('RMSE (pixels)', fontsize=10)
+    ax2.set_title('Flight RMSE Over Attempts', fontsize=12)
+    ax2.legend(loc='best', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    
+    # ========== Plot 3: Impact Zone Comparison (Bottom-Left) ==========
+    ax3 = axes[1, 0]
+    
+    # Get last valid impact trajectory
+    valid_impacts = [t for t in impact_trajectories if t is not None]
+    
+    if len(valid_impacts) > 0:
+        latest_impact = valid_impacts[-1]
+        obs_window = latest_impact['observed_window']
+        est_window = latest_impact['estimated_window']
+        impact_in_window = latest_impact['impact_idx_in_window']
+        
+        # Pre-impact
+        if impact_in_window > 0:
+            ax3.plot(obs_window[:impact_in_window+1, 0], obs_window[:impact_in_window+1, 1], 
+                     'o-', color='blue', markersize=5, linewidth=2, label='Pre-Impact')
+        
+        # Post-impact
+        ax3.plot(obs_window[impact_in_window:, 0], obs_window[impact_in_window:, 1], 
+                 'o-', color='purple', markersize=5, linewidth=2, label='Post-Impact')
+        
+        # Estimated
+        if len(est_window) > 0:
+            ax3.plot(est_window[:, 0], est_window[:, 1], 'x-', color='red', 
+                     markersize=5, linewidth=2, alpha=0.7, label='Estimated')
+        
+        # Impact point
+        ax3.scatter(obs_window[impact_in_window, 0], obs_window[impact_in_window, 1], 
+                    s=200, color='orange', marker='D', edgecolors='black', 
+                    linewidths=2, zorder=10, label='Impact')
+        
+        ax3.set_title('Impact Zone (10 before, 20 after)', fontsize=12)
+    else:
+        ax3.text(0.5, 0.5, 'No Impact Detected', ha='center', va='center', 
+                 fontsize=14, transform=ax3.transAxes)
+        ax3.set_title('Impact Zone', fontsize=12)
+    
+    ax3.set_xlabel('X (pixels)', fontsize=10)
+    ax3.set_ylabel('Y (pixels)', fontsize=10)
+    ax3.legend(loc='best', fontsize=8)
+    ax3.grid(True, alpha=0.3)
+    ax3.axis('equal')
+    
+    # ========== Plot 4: Impact RMSE History (Bottom-Right) ==========
+    ax4 = axes[1, 1]
+    
+    # Filter out inf values
+    valid_rmse = [(i+1, v) for i, v in enumerate(impact_rmse_values) if v != float('inf')]
+    
+    if len(valid_rmse) > 0:
+        attempts_valid, rmse_vals = zip(*valid_rmse)
+        ax4.plot(attempts_valid, rmse_vals, 'o-', color='purple', linewidth=2, markersize=8)
+        ax4.fill_between(attempts_valid, 0, rmse_vals, alpha=0.2, color='purple')
+        
+        # Trend line if enough points
+        if len(attempts_valid) >= 3:
+            z = np.polyfit(attempts_valid, rmse_vals, 1)
+            p = np.poly1d(z)
+            ax4.plot(attempts_valid, p(attempts_valid), '--', color='gray', linewidth=2, 
+                     label=f'Trend (slope: {z[0]:.2f})')
+            ax4.legend(loc='best', fontsize=9)
+        
+        # Mark inf values
+        inf_attempts = [i+1 for i, v in enumerate(impact_rmse_values) if v == float('inf')]
+        if len(inf_attempts) > 0:
+            ax4.scatter(inf_attempts, [0] * len(inf_attempts), s=100, color='red', 
+                        marker='x', linewidths=3, label=f'No Impact ({len(inf_attempts)})')
+    else:
+        ax4.text(0.5, 0.5, 'No Valid Impact RMSE Data', ha='center', va='center', 
+                 fontsize=14, transform=ax4.transAxes)
+    
+    ax4.set_xlabel('Attempt Number', fontsize=10)
+    ax4.set_ylabel('Impact Zone RMSE (pixels)', fontsize=10)
+    ax4.set_title('Impact RMSE Over Attempts', fontsize=12)
+    ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_current_attempt_with_impact(observed_trajectory, estimated_trajectory, 
+                                          impact_idx=None, frames_after_impact=20,
+                                          title_suffix=""):
+    """
+    Visualize expected vs observed trajectory for current attempt, including frames after impact.
+    
+    Shows the full trajectory with the impact point highlighted and extends
+    visualization to include post-impact frames.
+    
+    Parameters:
+    -----------
+    observed_trajectory : np.ndarray
+        Observed trajectory array of shape (N, 2) with [x, y] columns
+    estimated_trajectory : np.ndarray
+        Estimated trajectory array of shape (M, 2) with [x, y] columns
+    impact_idx : int, optional
+        Frame index where impact occurred. If None, no impact marker shown.
+    frames_after_impact : int
+        Number of frames to show after impact (default: 20)
+    title_suffix : str
+        Optional suffix to add to the title (e.g., attempt number)
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Determine trajectory bounds
+    if impact_idx is not None:
+        end_idx = min(len(observed_trajectory), impact_idx + frames_after_impact + 1)
+        obs_display = observed_trajectory[:end_idx]
+    else:
+        obs_display = observed_trajectory
+    
+    # Plot 1: Full trajectory with impact highlight
+    ax1 = axes[0]
+    ax1.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], 'o-', color='blue', 
+             markersize=3, linewidth=1.5, alpha=0.7, label='Observed')
+    ax1.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 'x-', color='red', 
+             markersize=3, linewidth=1.5, alpha=0.7, label='Estimated')
+    
+    # Mark start points
+    ax1.scatter(observed_trajectory[0, 0], observed_trajectory[0, 1], s=150, color='blue', 
+                marker='*', edgecolors='black', linewidths=2, zorder=10, label='Start')
+    
+    # Mark impact point if provided
+    if impact_idx is not None and impact_idx < len(observed_trajectory):
+        impact_x = observed_trajectory[impact_idx, 0]
+        impact_y = observed_trajectory[impact_idx, 1]
+        ax1.axvline(impact_x, color='orange', linestyle='--', linewidth=2, alpha=0.7, 
+                    label=f'Impact (frame {impact_idx})')
+        ax1.scatter(impact_x, impact_y, s=200, color='orange', marker='D', 
+                    edgecolors='black', linewidths=2, zorder=10)
+        
+        # Highlight post-impact region
+        if impact_idx < len(observed_trajectory) - 1:
+            post_impact = observed_trajectory[impact_idx:end_idx]
+            ax1.plot(post_impact[:, 0], post_impact[:, 1], 'o-', color='purple', 
+                     markersize=4, linewidth=2, alpha=0.8, label='Post-Impact')
+    
+    ax1.set_xlabel('X (pixels)', fontsize=11)
+    ax1.set_ylabel('Y (pixels)', fontsize=11)
+    ax1.set_title(f'Full Trajectory: Observed vs Estimated{title_suffix}', fontsize=12)
+    ax1.legend(loc='best', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.axis('equal')
+    
+    # Plot 2: Zoomed view around impact (if impact exists)
+    ax2 = axes[1]
+    
+    if impact_idx is not None and impact_idx < len(observed_trajectory):
+        # Window: 10 frames before to 20 frames after
+        start_idx = max(0, impact_idx - 10)
+        end_idx = min(len(observed_trajectory), impact_idx + frames_after_impact + 1)
+        
+        obs_window = observed_trajectory[start_idx:end_idx]
+        
+        # Get estimated trajectory in same x-range
+        x_min, x_max = obs_window[:, 0].min(), obs_window[:, 0].max()
+        est_mask = (estimated_trajectory[:, 0] >= x_min) & (estimated_trajectory[:, 0] <= x_max)
+        est_window = estimated_trajectory[est_mask]
+        
+        # Pre-impact portion
+        pre_impact_end = impact_idx - start_idx
+        if pre_impact_end > 0:
+            ax2.plot(obs_window[:pre_impact_end+1, 0], obs_window[:pre_impact_end+1, 1], 
+                     'o-', color='blue', markersize=5, linewidth=2, label='Pre-Impact (Observed)')
+        
+        # Post-impact portion
+        ax2.plot(obs_window[pre_impact_end:, 0], obs_window[pre_impact_end:, 1], 
+                 'o-', color='purple', markersize=5, linewidth=2, label='Post-Impact (Observed)')
+        
+        # Estimated trajectory
+        if len(est_window) > 0:
+            ax2.plot(est_window[:, 0], est_window[:, 1], 'x-', color='red', 
+                     markersize=5, linewidth=2, alpha=0.7, label='Estimated')
+        
+        # Mark impact point
+        ax2.scatter(observed_trajectory[impact_idx, 0], observed_trajectory[impact_idx, 1], 
+                    s=250, color='orange', marker='D', edgecolors='black', linewidths=2, 
+                    zorder=10, label='Impact Point')
+        
+        ax2.set_title(f'Impact Zone (10 before, {frames_after_impact} after){title_suffix}', fontsize=12)
+    else:
+        ax2.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], 'o-', color='blue', 
+                 markersize=4, linewidth=2, label='Observed')
+        ax2.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 'x-', color='red', 
+                 markersize=4, linewidth=2, alpha=0.7, label='Estimated')
+        ax2.set_title('No Impact Detected', fontsize=12)
+    
+    ax2.set_xlabel('X (pixels)', fontsize=11)
+    ax2.set_ylabel('Y (pixels)', fontsize=11)
+    ax2.legend(loc='best', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.axis('equal')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_flight_rmse_history(rmse_values, suggested_rmse_values=None, title="Flight RMSE Over Attempts"):
+    """
+    Visualize flight RMSE history over multiple attempts.
+    
+    Wrapper around visualize_rmse with better labeling for learning progress tracking.
+    
+    Parameters:
+    -----------
+    rmse_values : list or np.ndarray
+        RMSE values from baseline world model
+    suggested_rmse_values : list or np.ndarray, optional
+        RMSE values from learned world model
+    title : str
+        Plot title
+    """
+    attempts = list(range(1, len(rmse_values) + 1))
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(attempts, rmse_values, 'o-', color="blue", linewidth=2, markersize=6, 
+             label="Baseline Model RMSE")
+    
+    if suggested_rmse_values is not None:
+        plt.plot(attempts, suggested_rmse_values, 's-', color="green", linewidth=2, 
+                 markersize=6, label="Learned Model RMSE")
+        plt.legend(loc='best', fontsize=10)
+        
+        # Add improvement annotation
+        if len(rmse_values) > 1 and len(suggested_rmse_values) > 1:
+            final_baseline = rmse_values[-1]
+            final_learned = suggested_rmse_values[-1]
+            improvement = ((final_baseline - final_learned) / final_baseline) * 100
+            plt.annotate(f'Final improvement: {improvement:.1f}%', 
+                         xy=(0.95, 0.95), xycoords='axes fraction',
+                         ha='right', va='top', fontsize=10,
+                         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.title(title, fontsize=14)
+    plt.xlabel('Attempt Number', fontsize=12)
+    plt.ylabel('RMSE (pixels)', fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_impact_comparison(impact_trajectories, show_last_n=None, overlay=True):
+    """
+    Visualize trajectory around impact zone (10 frames before to 20 after).
+    
+    Can show single attempt or overlay multiple attempts to visualize learning progress.
+    
+    Parameters:
+    -----------
+    impact_trajectories : list
+        List of impact trajectory dicts from agent.impact_trajectories.
+        Each dict contains: observed_window, estimated_window, impact_idx, 
+        impact_idx_in_window, attempt
+    show_last_n : int, optional
+        Only show the last N attempts. If None, show all.
+    overlay : bool
+        If True, overlay all attempts on same plot. If False, create subplot grid.
+    """
+    # Filter out None entries (attempts with no impact)
+    valid_trajectories = [t for t in impact_trajectories if t is not None]
+    
+    if len(valid_trajectories) == 0:
+        print("No valid impact trajectories to visualize")
+        return
+    
+    if show_last_n is not None:
+        valid_trajectories = valid_trajectories[-show_last_n:]
+    
+    if overlay:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # Color gradient from light to dark for temporal progression
+        n_traj = len(valid_trajectories)
+        colors_obs = plt.cm.Blues(np.linspace(0.3, 1.0, n_traj))
+        colors_est = plt.cm.Reds(np.linspace(0.3, 1.0, n_traj))
+        
+        # Plot 1: All observed trajectories overlaid
+        ax1 = axes[0]
+        for i, traj in enumerate(valid_trajectories):
+            obs = traj['observed_window']
+            impact_in_window = traj['impact_idx_in_window']
+            attempt = traj.get('attempt', i + 1)
+            
+            # Pre-impact
+            if impact_in_window > 0:
+                ax1.plot(obs[:impact_in_window+1, 0], obs[:impact_in_window+1, 1], 
+                         'o-', color=colors_obs[i], markersize=3, linewidth=1.5, 
+                         alpha=0.7, label=f'Attempt {attempt}' if i == n_traj-1 else '')
+            # Post-impact
+            ax1.plot(obs[impact_in_window:, 0], obs[impact_in_window:, 1], 
+                     's-', color=colors_obs[i], markersize=3, linewidth=1.5, alpha=0.7)
+            
+            # Mark impact point
+            ax1.scatter(obs[impact_in_window, 0], obs[impact_in_window, 1], 
+                        s=50, color=colors_obs[i], marker='D', edgecolors='black', 
+                        linewidths=1, zorder=10)
+        
+        ax1.set_xlabel('X (pixels)', fontsize=11)
+        ax1.set_ylabel('Y (pixels)', fontsize=11)
+        ax1.set_title(f'Observed Impact Trajectories ({n_traj} attempts)', fontsize=12)
+        ax1.grid(True, alpha=0.3)
+        ax1.axis('equal')
+        
+        # Plot 2: All estimated trajectories overlaid
+        ax2 = axes[1]
+        for i, traj in enumerate(valid_trajectories):
+            est = traj['estimated_window']
+            attempt = traj.get('attempt', i + 1)
+            
+            if len(est) > 0:
+                ax2.plot(est[:, 0], est[:, 1], 'x-', color=colors_est[i], 
+                         markersize=3, linewidth=1.5, alpha=0.7,
+                         label=f'Attempt {attempt}' if i == n_traj-1 else '')
+        
+        ax2.set_xlabel('X (pixels)', fontsize=11)
+        ax2.set_ylabel('Y (pixels)', fontsize=11)
+        ax2.set_title(f'Estimated Impact Trajectories ({n_traj} attempts)', fontsize=12)
+        ax2.grid(True, alpha=0.3)
+        ax2.axis('equal')
+        
+        # Add colorbar to show temporal progression
+        sm = plt.cm.ScalarMappable(cmap='Blues', norm=plt.Normalize(1, n_traj))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
+        cbar.set_label('Attempt Number', fontsize=10)
+        
+    else:
+        # Grid of subplots
+        n_traj = len(valid_trajectories)
+        n_cols = min(3, n_traj)
+        n_rows = (n_traj + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        axes = np.atleast_2d(axes)
+        
+        for i, traj in enumerate(valid_trajectories):
+            row, col = i // n_cols, i % n_cols
+            ax = axes[row, col]
+            
+            obs = traj['observed_window']
+            est = traj['estimated_window']
+            impact_in_window = traj['impact_idx_in_window']
+            attempt = traj.get('attempt', i + 1)
+            
+            # Plot observed
+            ax.plot(obs[:, 0], obs[:, 1], 'o-', color='blue', markersize=4, 
+                    linewidth=1.5, label='Observed')
+            
+            # Plot estimated
+            if len(est) > 0:
+                ax.plot(est[:, 0], est[:, 1], 'x-', color='red', markersize=4, 
+                        linewidth=1.5, alpha=0.7, label='Estimated')
+            
+            # Mark impact
+            ax.scatter(obs[impact_in_window, 0], obs[impact_in_window, 1], 
+                       s=100, color='orange', marker='D', edgecolors='black', 
+                       linewidths=2, zorder=10, label='Impact')
+            
+            ax.set_title(f'Attempt {attempt}', fontsize=10)
+            ax.legend(loc='best', fontsize=8)
+            ax.grid(True, alpha=0.3)
+            ax.axis('equal')
+        
+        # Hide unused subplots
+        for i in range(n_traj, n_rows * n_cols):
+            row, col = i // n_cols, i % n_cols
+            axes[row, col].set_visible(False)
+        
+        fig.suptitle('Impact Zone Comparison Across Attempts', fontsize=14)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_impact_rmse_history(impact_rmse_values, title="Impact Zone RMSE Over Attempts"):
+    """
+    Visualize RMSE in impact zone over multiple attempts.
+    
+    Shows learning progress specifically for collision prediction accuracy.
+    
+    Parameters:
+    -----------
+    impact_rmse_values : list or np.ndarray
+        RMSE values around impact zone per attempt
+    title : str
+        Plot title
+    """
+    # Filter out inf values for display
+    valid_rmse = [(i+1, v) for i, v in enumerate(impact_rmse_values) if v != float('inf')]
+    
+    if len(valid_rmse) == 0:
+        print("No valid impact RMSE values to visualize (all inf)")
+        return
+    
+    attempts, rmse_vals = zip(*valid_rmse)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Plot 1: Impact RMSE over time
+    ax1 = axes[0]
+    ax1.plot(attempts, rmse_vals, 'o-', color='purple', linewidth=2, markersize=8)
+    ax1.fill_between(attempts, 0, rmse_vals, alpha=0.2, color='purple')
+    
+    # Add trend line if enough points
+    if len(attempts) >= 3:
+        z = np.polyfit(attempts, rmse_vals, 1)
+        p = np.poly1d(z)
+        ax1.plot(attempts, p(attempts), '--', color='gray', linewidth=2, 
+                 label=f'Trend (slope: {z[0]:.2f})')
+        ax1.legend(loc='best', fontsize=10)
+    
+    ax1.set_xlabel('Attempt Number', fontsize=12)
+    ax1.set_ylabel('Impact Zone RMSE (pixels)', fontsize=12)
+    ax1.set_title(title, fontsize=14)
+    ax1.grid(True, alpha=0.3)
+    
+    # Mark inf values with red X
+    inf_attempts = [i+1 for i, v in enumerate(impact_rmse_values) if v == float('inf')]
+    if len(inf_attempts) > 0:
+        ax1.scatter(inf_attempts, [max(rmse_vals) * 0.1] * len(inf_attempts), 
+                    s=100, color='red', marker='x', linewidths=3, 
+                    label=f'No Impact ({len(inf_attempts)})')
+        ax1.legend(loc='best', fontsize=10)
+    
+    # Plot 2: Rolling average
+    ax2 = axes[1]
+    window_size = min(5, len(rmse_vals))
+    
+    if len(rmse_vals) >= window_size:
+        rolling_avg = np.convolve(rmse_vals, np.ones(window_size)/window_size, mode='valid')
+        rolling_attempts = attempts[window_size-1:]
+        
+        ax2.plot(attempts, rmse_vals, 'o', color='purple', markersize=6, alpha=0.5, 
+                 label='Individual')
+        ax2.plot(rolling_attempts, rolling_avg, '-', color='darkviolet', linewidth=3, 
+                 label=f'Rolling Avg (window={window_size})')
+        ax2.legend(loc='best', fontsize=10)
+    else:
+        ax2.plot(attempts, rmse_vals, 'o-', color='purple', linewidth=2, markersize=8)
+    
+    ax2.set_xlabel('Attempt Number', fontsize=12)
+    ax2.set_ylabel('Impact Zone RMSE (pixels)', fontsize=12)
+    ax2.set_title('Rolling Average Impact RMSE', fontsize=14)
+    ax2.grid(True, alpha=0.3)
+    
+    # Add summary statistics
+    stats_text = f'Mean: {np.mean(rmse_vals):.2f}\nStd: {np.std(rmse_vals):.2f}\nMin: {np.min(rmse_vals):.2f}\nMax: {np.max(rmse_vals):.2f}'
+    ax2.annotate(stats_text, xy=(0.95, 0.95), xycoords='axes fraction',
+                 ha='right', va='top', fontsize=10,
+                 bbox=dict(boxstyle='round', facecolor='lavender', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
+
+
 def visuallize_wins_percentage(wins):
     # Compute cumulative win percentage
     cumulative_wins = np.cumsum(wins)
@@ -2272,12 +2816,21 @@ If RED matches GREEN: learned model is working
 
 def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
     """
-    Plot LOO-CV for General (injected), CART, and four M5 variants (leaf: OLS, L1, L2, L1+L2).
+    Plot LOO-CV for General, CART, and each M5 leaf regularization in M5_LEAF_REG_ORDER
+    (from learn_events; OLS and L2 leaf variants are currently disabled there).
+
+    Collision PDDL injection (when enabled) uses the best M5 per variable, not the General row;
+    see agents.pddl.pddl_files.pddl_parser.COLLISION_USE_M5.
     """
     if event_name not in kb:
         print(f"Event '{event_name}' not found in KB")
         return
     
+    try:
+        from agents.pddl.pddl_files.pddl_parser import COLLISION_USE_M5
+    except ImportError:
+        COLLISION_USE_M5 = True
+
     try:
         from agents.pddl.pddl_files.events.learn_events import (
             REGULARIZATION_CONFIG,
@@ -2286,7 +2839,7 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
         )
     except ImportError:
         REGULARIZATION_CONFIG = {'type': 'elasticnet'}
-        M5_LEAF_REG_ORDER = ('none', 'l1', 'l2', 'elasticnet')
+        M5_LEAF_REG_ORDER = ('l1', 'elasticnet')
         M5_LEAF_REG_LABELS = {k: k for k in M5_LEAF_REG_ORDER}
     
     event_data = kb[event_name]
@@ -2310,16 +2863,31 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
     reg_type = REGULARIZATION_CONFIG.get('type', 'elasticnet').upper()
     reg_name = {'NONE': 'OLS', 'L1': 'Lasso/L1', 'L2': 'Ridge/L2', 'ELASTICNET': 'ElasticNet'}.get(reg_type, reg_type)
     
+    _m5_plot_markers = {
+        'none': ('s', '#d62728'),
+        'l1': ('D', '#ff7f0e'),
+        'l2': ('^', '#9467bd'),
+        'elasticnet': ('v', '#8c564b'),
+    }
     m5_plot_styles = [
-        ('m5_none', 's', '#d62728', 'M5 OLS leaves'),
-        ('m5_l1', 'D', '#ff7f0e', 'M5 L1 leaves'),
-        ('m5_l2', '^', '#9467bd', 'M5 L2 leaves'),
-        ('m5_elasticnet', 'v', '#8c564b', 'M5 L1+L2 leaves'),
+        (
+            f'm5_{reg}',
+            _m5_plot_markers.get(reg, ('o', '#333333'))[0],
+            _m5_plot_markers.get(reg, ('o', '#333333'))[1],
+            M5_LEAF_REG_LABELS.get(reg, reg),
+        )
+        for reg in M5_LEAF_REG_ORDER
     ]
+    _n_m5 = len(M5_LEAF_REG_ORDER)
     
+    _pddl_collision = (
+        f"collision PDDL: best M5 per target (lowest LOO among {_n_m5} leaf regs), else General"
+        if COLLISION_USE_M5
+        else "collision PDDL: General (ElasticNet) only"
+    )
     fig.suptitle(
-        f"LOO-CV: General ({reg_name}) vs CART vs M5 (4 leaf regularizations)\n"
-        f"(Lower = better) | General used for PDDL injection",
+        f"LOO-CV: General ({reg_name}) vs CART vs M5 ({_n_m5} leaf regularizations)\n"
+        f"(Lower = better) | {_pddl_collision}",
         fontsize=11,
         fontweight='bold',
     )
@@ -2341,8 +2909,12 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
             gx, gy, gstd = zip(*general_valid)
             gx, gy, gstd = np.array(gx), np.array(gy), np.array(gstd)
             ax.fill_between(gx, gy - gstd, gy + gstd, alpha=0.2, color='blue', label='General ±1σ')
-            ax.plot(gx, gy, 'b-o', linewidth=2, markersize=7,
-                    label=f'General ({reg_name}) [INJECTED]', alpha=0.85)
+            gen_lbl = (
+                f'General ({reg_name}) [PDDL fallback]'
+                if COLLISION_USE_M5
+                else f'General ({reg_name}) [PDDL collision]'
+            )
+            ax.plot(gx, gy, 'b-o', linewidth=2, markersize=7, label=gen_lbl, alpha=0.85)
             if gstd[-1] > 0:
                 ax.annotate(f'{gy[-1]:.2f}±{gstd[-1]:.2f}', (gx[-1], gy[-1]),
                             textcoords="offset points", xytext=(5, 5), fontsize=8, color='blue')
@@ -2422,9 +2994,19 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
     plt.show(block=True)
     
     print("\n" + "=" * 70)
-    print("LOO-CV SUMMARY: General vs CART vs M5 (OLS / L1 / L2 / L1+L2 leaves)")
+    print(
+        f"LOO-CV SUMMARY: General vs CART vs M5 "
+        f"({', '.join(M5_LEAF_REG_ORDER)} leaf regs; OLS/L2 M5 variants not trained)"
+    )
     print("=" * 70)
-    print("General: injected into PDDL. All others are comparison only.")
+    if COLLISION_USE_M5:
+        print(
+            "Collision PDDL: each of y / v_x / v_y uses model_comparison['m5_model'] "
+            "(best M5 leaf-reg by LOO). If M5 cannot serialize, that block uses General. "
+            "CART and non-chosen M5 regs are comparison only."
+        )
+    else:
+        print("Collision PDDL: General (ElasticNet) affine per variable (COLLISION_USE_M5=False).")
     print("-" * 70)
     
     for var_name in vars_with_history:
@@ -2441,7 +3023,12 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
             cart_info = f" (d={stats.get('best_depth', '?')}, l={stats.get('n_leaves', '?')})"
         
         print(f"\n{var_name}_after:")
-        print(f"  General LOO-CV: {general_final:.4f} [INJECTED]")
+        gen_note = (
+            " [PDDL fallback if M5 serialize fails]"
+            if COLLISION_USE_M5
+            else " [PDDL collision]"
+        )
+        print(f"  General LOO-CV: {general_final:.4f}{gen_note}")
         print(f"  CART LOO-CV:    {cart_final:.4f}{cart_info}" if cart_final != float('inf') else "  CART LOO-CV:    N/A")
         
         for reg in M5_LEAF_REG_ORDER:
@@ -2476,4 +3063,199 @@ def plot_loo_cv_comparison(kb, event_name="collision", save_path=None):
         else:
             print(f"  --> Best: General (or tie)")
     
+    print("=" * 70)
+
+
+def plot_feature_ablation_comparison(kb, event_name="collision", save_path=None):
+    """
+    Plot LOO-CV comparison: baseline features [x, y, v_x, v_y] vs extended features [x, y, v_x, v_y, velocity_ratio].
+    
+    This visualization shows whether adding velocity_ratio as a feature improves
+    collision model learning performance.
+    
+    Shows:
+    - Bar chart: LOO-CV for each variable (v_x, v_y) with/without ratio
+    - Line chart: LOO-CV convergence over training iterations
+    - Summary statistics and verdict
+    
+    Parameters:
+        kb: Knowledge base containing ablation results
+        event_name: Name of event (default: "collision")
+        save_path: Optional path to save the plot
+    """
+    if event_name not in kb:
+        print(f"[ABLATION PLOT] No '{event_name}' event in KB")
+        return
+    
+    if "ablation" not in kb[event_name]:
+        print(f"[ABLATION PLOT] No ablation data in KB['{event_name}']. Run update_model_effects_with_ablation() first.")
+        return
+    
+    ablation_data = kb[event_name]["ablation"].get("velocity_ratio", {})
+    history = ablation_data.get("history", {})
+    
+    # Check if we have enough data
+    vars_with_history = []
+    for var_name in ['v_x', 'v_y', 'y']:
+        if var_name in history and len(history[var_name].get("n_samples", [])) > 0:
+            vars_with_history.append(var_name)
+    
+    if not vars_with_history:
+        print("[ABLATION PLOT] No ablation history available yet.")
+        return
+    
+    # Create figure with subplots
+    n_vars = len(vars_with_history)
+    fig, axes = plt.subplots(2, n_vars, figsize=(5 * n_vars, 8))
+    
+    if n_vars == 1:
+        axes = axes.reshape(2, 1)
+    
+    fig.suptitle(
+        "Ablation Study: velocity_ratio Feature Validation\n"
+        "Comparing [x, y, v_x, v_y] vs [x, y, v_x, v_y, velocity_ratio]",
+        fontsize=12, fontweight='bold'
+    )
+    
+    colors = {
+        'baseline': '#1f77b4',  # Blue
+        'extended': '#ff7f0e',  # Orange
+    }
+    
+    for col, var_name in enumerate(vars_with_history):
+        var_history = history[var_name]
+        n_samples_list = var_history["n_samples"]
+        baseline_loo = var_history["baseline_loo"]
+        extended_loo = var_history["extended_loo"]
+        improvement_pct = var_history["improvement_pct"]
+        
+        # Top row: Bar chart comparing final LOO-CV
+        ax_bar = axes[0, col]
+        
+        final_baseline = baseline_loo[-1] if baseline_loo else 0
+        final_extended = extended_loo[-1] if extended_loo else 0
+        
+        x_pos = np.array([0, 1])
+        bars = ax_bar.bar(
+            x_pos, 
+            [final_baseline, final_extended],
+            color=[colors['baseline'], colors['extended']],
+            width=0.6,
+            edgecolor='black',
+            linewidth=1
+        )
+        
+        ax_bar.set_xticks(x_pos)
+        ax_bar.set_xticklabels(['Baseline\n[x,y,v_x,v_y]', 'Extended\n[+velocity_ratio]'])
+        ax_bar.set_ylabel('LOO-CV RMSE (lower is better)')
+        ax_bar.set_title(f'{var_name}_after')
+        ax_bar.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, [final_baseline, final_extended]):
+            if np.isfinite(val):
+                ax_bar.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.5,
+                    f'{val:.2f}',
+                    ha='center', va='bottom', fontsize=10
+                )
+        
+        # Add improvement annotation
+        final_improvement = improvement_pct[-1] if improvement_pct else 0
+        if np.isfinite(final_improvement):
+            if final_improvement > 5:
+                verdict_color = 'green'
+                verdict_text = f'+{final_improvement:.1f}% HELPS'
+            elif final_improvement < -5:
+                verdict_color = 'red'
+                verdict_text = f'{final_improvement:.1f}% HURTS'
+            else:
+                verdict_color = 'gray'
+                verdict_text = f'{final_improvement:+.1f}% NEUTRAL'
+            
+            ax_bar.annotate(
+                verdict_text,
+                xy=(0.5, 0.95), xycoords='axes fraction',
+                ha='center', va='top',
+                fontsize=11, fontweight='bold',
+                color=verdict_color,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+            )
+        
+        # Bottom row: Line chart showing convergence over iterations
+        ax_line = axes[1, col]
+        
+        iterations = list(range(1, len(n_samples_list) + 1))
+        
+        ax_line.plot(
+            iterations, baseline_loo,
+            marker='o', color=colors['baseline'],
+            label='Baseline [x,y,v_x,v_y]',
+            linewidth=2, markersize=6
+        )
+        ax_line.plot(
+            iterations, extended_loo,
+            marker='s', color=colors['extended'],
+            label='Extended [+velocity_ratio]',
+            linewidth=2, markersize=6
+        )
+        
+        ax_line.set_xlabel('Training Iteration')
+        ax_line.set_ylabel('LOO-CV RMSE')
+        ax_line.set_title(f'{var_name} Convergence Over Training')
+        ax_line.legend(loc='upper right', fontsize=8)
+        ax_line.grid(True, alpha=0.3)
+        
+        # Add sample count as secondary x-axis labels
+        if len(iterations) <= 10:
+            ax_line.set_xticks(iterations)
+            ax_line.set_xticklabels([f'{i}\n(n={n_samples_list[i-1]})' for i in iterations], fontsize=8)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[ABLATION PLOT] Saved to: {save_path}")
+    
+    print("\n[ABLATION PLOT] Showing plot... Close the window to continue.")
+    plt.show(block=True)
+    
+    # Print summary
+    print("\n" + "=" * 70)
+    print("ABLATION STUDY SUMMARY: velocity_ratio Feature")
+    print("=" * 70)
+    print(f"{'Variable':<10} {'Baseline LOO-CV':<18} {'Extended LOO-CV':<18} {'Improvement':<15}")
+    print("-" * 70)
+    
+    helps_count = 0
+    hurts_count = 0
+    
+    for var_name in vars_with_history:
+        var_history = history[var_name]
+        final_baseline = var_history["baseline_loo"][-1] if var_history["baseline_loo"] else float('inf')
+        final_extended = var_history["extended_loo"][-1] if var_history["extended_loo"] else float('inf')
+        final_improvement = var_history["improvement_pct"][-1] if var_history["improvement_pct"] else 0
+        
+        if final_improvement > 5:
+            helps_count += 1
+            verdict = "HELPS"
+        elif final_improvement < -5:
+            hurts_count += 1
+            verdict = "HURTS"
+        else:
+            verdict = "NEUTRAL"
+        
+        print(f"{var_name:<10} {final_baseline:<18.4f} {final_extended:<18.4f} {final_improvement:+.1f}% ({verdict})")
+    
+    print("-" * 70)
+    
+    if helps_count > hurts_count:
+        conclusion = "RECOMMENDATION: Use velocity_ratio feature"
+    elif hurts_count > helps_count:
+        conclusion = "RECOMMENDATION: Do NOT use velocity_ratio (overfitting)"
+    else:
+        conclusion = "RECOMMENDATION: velocity_ratio has minimal effect"
+    
+    print(f"{conclusion}")
     print("=" * 70)

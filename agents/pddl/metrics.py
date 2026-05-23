@@ -129,6 +129,207 @@ def calculate_rmse(observed_trajectory, estimated_trajectory, trim_start_percent
     return rmse
 
 
+def calculate_impact_rmse_time_aligned(observed_trajectory, estimated_trajectory, impact_idx,
+                                        frames_before=10, frames_after=20):
+    """
+    Calculate RMSE using TIME-ALIGNED windows (frame-by-frame comparison).
+    
+    This method compares trajectories at the same frame indices, which is more
+    appropriate for steep-angle trajectories where x-displacement is small.
+    
+    Args:
+        observed_trajectory: (N, 2) array or list with [x, y] columns
+        estimated_trajectory: (M, 2) array or list with [x, y] columns
+        impact_idx: Frame index where impact occurred in observed trajectory
+        frames_before: Number of frames to include before impact (default: 10)
+        frames_after: Number of frames to include after impact (default: 20)
+        
+    Returns:
+        dict with:
+            - 'rmse': RMSE value for impact zone (time-aligned)
+            - 'observed_window': observed trajectory slice around impact
+            - 'estimated_window': estimated trajectory slice (same frame count)
+            - 'impact_idx_in_window': index of impact within the window
+    """
+    observed_trajectory = np.array(observed_trajectory)
+    estimated_trajectory = np.array(estimated_trajectory)
+    
+    # Calculate window bounds for observed trajectory
+    obs_start = max(0, impact_idx - frames_before)
+    obs_end = min(len(observed_trajectory), impact_idx + frames_after + 1)
+    
+    observed_window = observed_trajectory[obs_start:obs_end]
+    impact_idx_in_window = impact_idx - obs_start
+    
+    if len(observed_window) == 0:
+        return {
+            'rmse': float('inf'),
+            'observed_window': observed_window,
+            'estimated_window': np.array([]),
+            'impact_idx_in_window': 0
+        }
+    
+    # Use same frame indices for estimated trajectory
+    est_start = obs_start
+    est_end = min(len(estimated_trajectory), obs_end)
+    
+    estimated_window = estimated_trajectory[est_start:est_end]
+    
+    if len(estimated_window) == 0:
+        return {
+            'rmse': float('inf'),
+            'observed_window': observed_window,
+            'estimated_window': estimated_window,
+            'impact_idx_in_window': impact_idx_in_window
+        }
+    
+    # Match lengths (use minimum of both)
+    min_len = min(len(observed_window), len(estimated_window))
+    obs_matched = observed_window[:min_len]
+    est_matched = estimated_window[:min_len]
+    
+    # Calculate RMSE directly on matched frames
+    rmse = root_mean_squared_error(obs_matched, est_matched)
+    
+    return {
+        'rmse': rmse,
+        'observed_window': observed_window,
+        'estimated_window': estimated_window,
+        'impact_idx_in_window': impact_idx_in_window
+    }
+
+
+def calculate_impact_rmse(observed_trajectory, estimated_trajectory, impact_idx, 
+                          frames_before=10, frames_after=20):
+    """
+    Calculate RMSE for trajectory window around impact point.
+    
+    Uses BOTH x-aligned (original) and time-aligned methods, returning both
+    for comparison. The primary RMSE returned uses adaptive selection based
+    on trajectory steepness.
+    
+    Extracts a window of frames around the impact index and calculates
+    RMSE between observed and estimated trajectories in that region.
+    
+    Args:
+        observed_trajectory: (N, 2) array or list with [x, y] columns
+        estimated_trajectory: (M, 2) array or list with [x, y] columns
+        impact_idx: Frame index where impact occurred in observed trajectory
+        frames_before: Number of frames to include before impact (default: 10)
+        frames_after: Number of frames to include after impact (default: 20)
+        
+    Returns:
+        dict with:
+            - 'rmse': RMSE value for impact zone (adaptive selection)
+            - 'rmse_x_aligned': RMSE using x-coordinate alignment (original method)
+            - 'rmse_time_aligned': RMSE using frame-by-frame alignment
+            - 'observed_window': observed trajectory slice around impact
+            - 'estimated_window': estimated trajectory slice around impact
+            - 'impact_idx_in_window': index of impact within the window
+            - 'method_used': which method was selected ('x_aligned' or 'time_aligned')
+    """
+    # Convert to numpy arrays if needed
+    observed_trajectory = np.array(observed_trajectory)
+    estimated_trajectory = np.array(estimated_trajectory)
+    
+    # Calculate window bounds for observed trajectory
+    obs_start = max(0, impact_idx - frames_before)
+    obs_end = min(len(observed_trajectory), impact_idx + frames_after + 1)
+    
+    observed_window = observed_trajectory[obs_start:obs_end]
+    impact_idx_in_window = impact_idx - obs_start
+    
+    if len(observed_window) == 0:
+        return {
+            'rmse': float('inf'),
+            'rmse_x_aligned': float('inf'),
+            'rmse_time_aligned': float('inf'),
+            'observed_window': observed_window,
+            'estimated_window': np.array([]),
+            'estimated_window_time': np.array([]),
+            'impact_idx_in_window': 0,
+            'method_used': 'none'
+        }
+    
+    # =========================================================================
+    # METHOD 1: X-ALIGNED (Original)
+    # =========================================================================
+    obs_x_min = np.min(observed_window[:, 0])
+    obs_x_max = np.max(observed_window[:, 0])
+    
+    # Filter estimated trajectory to same x-range
+    est_mask = (estimated_trajectory[:, 0] >= obs_x_min) & (estimated_trajectory[:, 0] <= obs_x_max)
+    estimated_window_x = estimated_trajectory[est_mask]
+    
+    if len(estimated_window_x) == 0:
+        rmse_x_aligned = float('inf')
+    else:
+        # Interpolate to common x-coordinates for RMSE calculation
+        N_INTERP = 100
+        common_x = np.linspace(obs_x_min, obs_x_max, N_INTERP)
+        
+        obs_y_interp = np.interp(common_x, observed_window[:, 0], observed_window[:, 1])
+        est_y_interp = np.interp(common_x, estimated_window_x[:, 0], estimated_window_x[:, 1])
+        
+        obs_resampled = np.column_stack([common_x, obs_y_interp])
+        est_resampled = np.column_stack([common_x, est_y_interp])
+        
+        rmse_x_aligned = root_mean_squared_error(obs_resampled, est_resampled)
+    
+    # =========================================================================
+    # METHOD 2: TIME-ALIGNED (New)
+    # =========================================================================
+    est_start = obs_start
+    est_end = min(len(estimated_trajectory), obs_end)
+    estimated_window_time = estimated_trajectory[est_start:est_end]
+    
+    if len(estimated_window_time) == 0:
+        rmse_time_aligned = float('inf')
+    else:
+        min_len = min(len(observed_window), len(estimated_window_time))
+        obs_matched = observed_window[:min_len]
+        est_matched = estimated_window_time[:min_len]
+        rmse_time_aligned = root_mean_squared_error(obs_matched, est_matched)
+    
+    # =========================================================================
+    # ADAPTIVE SELECTION: Use trajectory steepness to choose method
+    # =========================================================================
+    # Calculate x-displacement per frame (proxy for trajectory steepness)
+    x_range = obs_x_max - obs_x_min
+    n_frames = len(observed_window)
+    x_per_frame = x_range / max(n_frames, 1)
+    
+    # For steep trajectories (small x displacement), time-aligned is better
+    # Threshold: if less than 3 pixels per frame horizontally, use time-aligned
+    STEEP_THRESHOLD = 3.0
+    
+    if x_per_frame < STEEP_THRESHOLD:
+        method_used = 'time_aligned'
+        rmse = rmse_time_aligned
+        estimated_window = estimated_window_time
+    else:
+        method_used = 'x_aligned'
+        rmse = rmse_x_aligned
+        estimated_window = estimated_window_x
+    
+    # Print comparison when there's significant difference
+    if abs(rmse_x_aligned - rmse_time_aligned) > 10:
+        print(f"  [RMSE COMPARISON] x_aligned={rmse_x_aligned:.2f}, time_aligned={rmse_time_aligned:.2f}, "
+              f"x/frame={x_per_frame:.2f}, selected={method_used}")
+    
+    return {
+        'rmse': rmse,
+        'rmse_x_aligned': rmse_x_aligned,
+        'rmse_time_aligned': rmse_time_aligned,
+        'observed_window': observed_window,
+        'estimated_window': estimated_window,
+        'estimated_window_time': estimated_window_time,
+        'impact_idx_in_window': impact_idx_in_window,
+        'method_used': method_used,
+        'x_per_frame': x_per_frame
+    }
+
+
 def _apply_trajectory_bias_correction(estimated_trajectory, observed_trajectory, bias_degrees):
     """
     Adjust the estimated trajectory to account for slingshot angle bias.

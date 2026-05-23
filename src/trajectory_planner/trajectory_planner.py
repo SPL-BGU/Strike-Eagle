@@ -1,5 +1,6 @@
 import sys
 sys.path.append('..')
+import random
 import numpy as np
 from math import atan, atan2, acos, sqrt, sin, cos, radians
 from PIL import Image, ImageDraw
@@ -229,6 +230,14 @@ class SimpleTrajectoryPlanner:
 
         return release
 
+    def find_release_point_random_power(self, sling, theta, power_low=0.5, power_high=1.0):
+        """
+        Screen release point for launch angle theta with random pull strength.
+
+        Uses find_release_point_partial_power with v_portion ~ Uniform(power_low, power_high).
+        """
+        v_portion = random.uniform(float(power_low), float(power_high))
+        return self.find_release_point_partial_power(sling, theta, v_portion)
 
     def get_reference_point(self, sling):
         """find the reference point given the sling"""

@@ -404,7 +404,7 @@ class BaselineAgent(Thread):
         return self.tp.get_tap_time(sling, release_point, _tpt, tap_interval)
 
     def shoot_bird_by_angle(self, release_angle, sling):
-        release_point = self.tp.find_release_point(sling, release_angle * pi / 180.0)  # neeed to tranfer to radians
+        release_point = self.tp.find_release_point_random_power(sling, release_angle * pi / 180.0)  # radians; random power 0.5..1
         tap_time = 0
         if release_point != None:
             # release_angle = self.tp.get_release_angle(sling, release_point)
@@ -421,7 +421,7 @@ class BaselineAgent(Thread):
         time.sleep(1)
 
     def shoot_bird_by_angle_with_img_trail(self, release_angle, sling, time_duration: int = 1):
-        release_point = self.tp.find_release_point(sling, release_angle * pi / 180.0)  # neeed to tranfer to radians
+        release_point = self.tp.find_release_point_random_power(sling, release_angle * pi / 180.0)  # radians; random power 0.5..1
         tap_time = 0
         if release_point != None:
             # release_angle = self.tp.get_release_angle(sling, release_point)

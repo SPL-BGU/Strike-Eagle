@@ -96,7 +96,7 @@ class BirdsInBoots(BaselineAgent):
                 ################estimate the trajectory###################
                 self.logger.info('################estimate the trajectory###################')
 
-                release_point = self.tp.find_release_point(sling, release_angle * pi/180.0)  #neeed to tranfer to radians
+                release_point = self.tp.find_release_point_random_power(sling, release_angle * pi/180.0)  # radians; random power 0.5..1
                 tap_time = 0
                 if release_point != None:
                     # release_angle = self.tp.get_release_angle(sling, release_point)

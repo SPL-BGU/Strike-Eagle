@@ -2,10 +2,93 @@ from string import Template
 
 import numpy as np
 import os
-import re
 
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
+from agents.pddl.pddl_files.events.learn_events import m5_collision_leaves_for_pddl
+
+# Print [COLLISION-INJECT] lines during domain injection.
+COLLISION_INJECT_DEBUG = True
+
+
+def _collision_inject_log(msg: str) -> None:
+    if COLLISION_INJECT_DEBUG:
+        print(f"[COLLISION-INJECT] {msg}")
+
+
+_COLLISION_VAR_ORDER = ("y", "v_x", "v_y")
+_COLLISION_PDDL_FLUENT = {"y": "y_bird", "v_x": "vx_bird", "v_y": "vy_bird"}
+_PDDL_AFFINE_VARS = ("x_bird", "y_bird", "vx_bird", "vy_bird")
+
+
+def format_affine_assign_rhs(coefs, intercept, bird_var="?b", threshold=1e-8, precision=4):
+    """
+    Build nested (+ … (* c (fluent ?b)) …) PDDL numeric expression for affine bird fluents.
+    coefs: length-4 iterable matching x, y, vx, vy.
+    """
+    c = np.asarray(coefs, dtype=float).reshape(-1)
+    if c.size < 4:
+        pad = np.zeros(4, dtype=float)
+        pad[: c.size] = c
+        c = pad
+    else:
+        c = c[:4]
+    bias = float(intercept)
+    fmt = f"{{:.{precision}f}}"
+
+    def nest_terms(term_list):
+        if not term_list:
+            return "0.0"
+        if len(term_list) == 1:
+            return term_list[0]
+        return f"(+ {term_list[0]} {nest_terms(term_list[1:])})"
+
+    terms = [
+        f"(* {fmt.format(float(co))} ({v} {bird_var}))"
+        for co, v in zip(c, _PDDL_AFFINE_VARS)
+        if abs(float(co)) >= threshold
+    ]
+    nested_terms = nest_terms(terms[:4])
+    if abs(bias) > threshold:
+        return f"(+ {fmt.format(bias)} {nested_terms})"
+    return nested_terms if nested_terms else "0.0"
+
+
+def _build_collision_ground_effect_m5(collision_vars):
+    """
+    Build M5 piecewise collision effect for PDDL injection.
+    
+    Returns effect body string, or None if M5 models not available yet.
+    """
+    per_var_leaves = {}
+    for vn in _COLLISION_VAR_ORDER:
+        vd = collision_vars.get(vn, {})
+        mc = vd.get("model_comparison")
+        m5 = mc.get("m5_model") if isinstance(mc, dict) else None
+        
+        leaves = m5_collision_leaves_for_pddl(m5, debug=COLLISION_INJECT_DEBUG, var_label=vn)
+        if not leaves:
+            _collision_inject_log(f"M5 not ready for '{vn}'")
+            return None
+        
+        _collision_inject_log(f"M5 '{vn}': {len(leaves)} leaf(s)")
+        per_var_leaves[vn] = leaves
+
+    lines = []
+    for vn in _COLLISION_VAR_ORDER:
+        pb = _COLLISION_PDDL_FLUENT[vn]
+        for path, coef, intercept in per_var_leaves[vn]:
+            rhs = format_affine_assign_rhs(coef, intercept)
+            if not path:
+                lines.append(f"(assign ({pb} ?b) {rhs})")
+            else:
+                cond = path[0] if len(path) == 1 else "(and " + " ".join(path) + ")"
+                lines.append(f"(when {cond} (assign ({pb} ?b) {rhs}))")
+    
+    lines.append("(assign (bounce_count ?b) (+ (bounce_count ?b) 1))")
+    body = "\n            ".join(lines)
+    _collision_inject_log(f"M5 injection: {len(lines)} statements")
+    return body
 
 problem_template = Template("""(define (problem sample_problem)
     (:domain angry_birds_scaled)
@@ -71,54 +154,30 @@ def write_problem_file(path: str, problem_data: dict, init_angle: float, angel_r
 
 def inject_domain_file(path: str, world_model: WorldModel):
     """
-    Inject learned collision models into the PDDL domain file.
+    Inject learned M5 collision models into the PDDL domain file.
     
-    Always uses the General (Linear) model for PDDL injection.
-    CART models are used only for comparison, not for injection.
+    Always uses M5 piecewise (when/assign) for collision effects.
     """
+    _collision_inject_log(f"inject_domain_file input={path!r}")
+
     with open(path, "r") as file:
-        content = file.read()
-    new_content = content
+        new_content = file.read()
 
-    for variable_name, variable_data in world_model.kb["collision"]["variables"].items():
-        placeholder = "{{SE-collision-{}}}".format(variable_name)
-        
-        if variable_data["model"] is None:
-            new_content = new_content.replace(placeholder, "0.0")
-            continue
-        
-        model = variable_data["model"]
-        coefs = model.coef_
-        bias = model.intercept_
-        vars = ['x_bird', 'y_bird', 'vx_bird', 'vy_bird']
-
-        threshold = 1e-8
-        terms = [
-            f"(* {c:.4f} ({v} ?b))"
-            for c, v in zip(coefs, vars)
-            if abs(c) >= threshold
-        ]
-
-        def nest_terms(term_list):
-            if not term_list:
-                return "0.0"
-            if len(term_list) == 1:
-                return term_list[0]
-            return f"(+ {term_list[0]} {nest_terms(term_list[1:])})"
-
-        nested_terms = nest_terms(terms[:4])
-
-        if abs(bias) > threshold:
-            equation = f"(+ {bias:.4f} {nested_terms})"
-        else:
-            equation = nested_terms if nested_terms else "0.0"
-        
-        new_content = new_content.replace(placeholder, equation)
+    collision_vars = world_model.kb["collision"]["variables"]
+    ground_sentinel = "{SE-collision-ground-effect}"
     
-    # Replace any remaining placeholders with 0 as fallback
-    remaining_placeholders = re.findall(r'\{\{SE-collision-[^}]+\}\}', new_content)
-    for placeholder in remaining_placeholders:
-        new_content = new_content.replace(placeholder, "0.0")
+    if ground_sentinel in new_content:
+        m5_body = _build_collision_ground_effect_m5(collision_vars)
+        if m5_body is not None:
+            new_content = new_content.replace(ground_sentinel, m5_body)
+            _collision_inject_log("Injected M5 piecewise collision effect")
+        else:
+            _collision_inject_log("M5 not available yet, using placeholder 0.0")
+            new_content = new_content.replace(ground_sentinel, 
+                "(assign (y_bird ?b) 0.0)\n            "
+                "(assign (vy_bird ?b) 0.0)\n            "
+                "(assign (vx_bird ?b) 0.0)\n            "
+                "(assign (bounce_count ?b) (+ (bounce_count ?b) 1))")
 
     # Save modified file
     base_dir = os.path.dirname(path)
@@ -128,8 +187,7 @@ def inject_domain_file(path: str, world_model: WorldModel):
     with open(output_path, "w") as file:
         file.write(new_content)
 
-    print(f"Modified file saved to: {output_path}")
-    print("Injection complete.")
+    _collision_inject_log(f"Saved to {output_path}")
 
 
 def inject_learned_transitions(path: str, world_model: WorldModel):
