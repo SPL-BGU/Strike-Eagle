@@ -114,7 +114,6 @@
             (= (active_bird) (bird_id ?b))
             (not (bird_released ?b))
             (not (angle_adjusted))
-            (< (angle) 81.5)
         )
         :effect (and
             (assign (vx_bird ?b) (* (v_bird ?b) (cosine) ) ); this is a cos(angle) estimation

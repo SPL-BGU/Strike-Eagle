@@ -3,7 +3,9 @@ import ruptures as rpt
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN, KMeans
 
-from agents.pddl.pddl_files.events.event_conditions import is_ground_collision, is_hit, is_platform_collision
+from agents.pddl.pddl_files.events.event_conditions import (
+    is_ground_collision, is_hit, is_platform_collision, is_block_collision,
+)
 
 
 def getSegmentsPelt(signal, penalty):
@@ -89,8 +91,11 @@ def getSegmentsEvents(groundtruth_trajectories:dict,groundtruth_objects:dict):
                                      {
                                          "name": "platform_collision",
                                          "func": is_platform_collision
-
-                                     }
+                                     },
+                                     {
+                                         "name": "block_collision",
+                                         "func": is_block_collision
+                                     },
                                  ]
                                  )
 

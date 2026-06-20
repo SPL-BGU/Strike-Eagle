@@ -39,8 +39,8 @@
             (= (active_bird) (bird_id ?b))
             (not (bird_released ?b))
             (not (angle_adjusted))
-            (<= (angle) 90)
-            (>= (angle) 0)
+            (<= (angle) (max_angle))
+            (>= (angle) (min_angle))
         )
         :effect (and
             (decrease (angle) (* #t (angle_rate)))
@@ -116,7 +116,6 @@
             (= (active_bird) (bird_id ?b))
             (not (bird_released ?b))
             (not (angle_adjusted))
-            (< (angle) 81.5)
         )
         :effect (and
             (assign (vx_bird ?b) (* (v_bird ?b) (cosine) ) ); this is a cos(angle) estimation
@@ -372,11 +371,11 @@
             (= (active_bird) (bird_id ?b))
             (> (v_bird ?b) 0)
 
-
-            (<= (- (x_bird ?b)  (* (bird_radius ?b) 0.6)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.2)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 1.2)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            (<= (- (y_bird ?b)  (* (bird_radius ?b) 0.6)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            ; Increased collision margins (2.5/3.0 multipliers) to match Python detection (~10px threshold)
+            (<= (- (x_bird ?b)  (* (bird_radius ?b) 2.5)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
+            (>= (+ (x_bird ?b)  (* (bird_radius ?b) 3.0)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
+            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 3.0)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (<= (- (y_bird ?b)  (* (bird_radius ?b) 2.5)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
         )
         :effect (and
             (assign (v_bird ?b) 0)

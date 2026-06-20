@@ -210,6 +210,8 @@ class BaselineAgent(Thread):
 
         while True:
             state = self.ar.get_game_state()
+            print(f"[MAIN LOOP DEBUG] Current game state: {state}")
+            
             # If the level is solved , go to the next level
             if state == GameState.WON:
                 self.repeated_gt_counter = 0
@@ -219,52 +221,56 @@ class BaselineAgent(Thread):
                 # /System.out.println(" loading the level " + (self.current_level + 1) )
                 # self.check_current_level_score()
                 self.current_level = self.ar.load_next_available_level()
-                self.novelty_existence = self.ar.get_novelty_info()
+                # SKIPPED: get_novelty_info() blocks
+                # self.novelty_existence = self.ar.get_novelty_info()
 
                 # make a new trajectory planner whenever a new level is entered
                 self.tp = SimpleTrajectoryPlanner()
 
             elif state == GameState.LOST:
                 self.repeated_gt_counter = 0
-                # check for change of number of levels in the game
-                # n_levels = self.update_no_of_levels()
-
                 self.check_current_level_score()
 
-                # If lost, then restart the level
-                self.failed_counter += 1
-                if self.failed_counter > 60:  # for testing , go directly to the next level
+                # Move to next level immediately (1 trial per level - no retries)
+                self.current_level = self.ar.load_next_available_level()
+                # SKIPPED: get_novelty_info() blocks
+                # self.novelty_existence = self.ar.get_novelty_info()
 
-                    self.failed_counter = 0
-                    self.current_level = self.ar.load_next_available_level()
-                    self.novelty_existence = self.ar.get_novelty_info()
-
-                else:
-                    self.logger.info("fail level count does not reach the limit, restart the level")
-                    self.ar.load_next_available_level()
+                # Reset trajectory planner for next level
+                self.tp = SimpleTrajectoryPlanner()
 
             elif state == GameState.LEVEL_SELECTION:
                 self.logger.info(
                     "unexpected level selection page, go to the last current level : " + self.current_level)
                 self.current_level = self.ar.load_next_available_level()
-                self.novelty_existence = self.ar.get_novelty_info()
+                # SKIPPED: get_novelty_info() blocks
+                # self.novelty_existence = self.ar.get_novelty_info()
 
             elif state == GameState.MAIN_MENU:
                 self.repeated_gt_counter = 0
                 self.logger.info("unexpected main menu page, reload the level : %s" % self.current_level)
+                print(f"[MAIN LOOP DEBUG] MAIN_MENU detected - calling load_next_available_level()...")
                 self.current_level = self.ar.load_next_available_level()
-                self.novelty_existence = self.ar.get_novelty_info()
+                print(f"[MAIN LOOP DEBUG] Level loaded: {self.current_level}")
+                # SKIPPED: get_novelty_info() was blocking - not needed for PDDL testing
+                # self.novelty_existence = self.ar.get_novelty_info()
+                self.novelty_existence = -1  # Default: no novelty info
+                print(f"[MAIN LOOP DEBUG] MAIN_MENU handled (skipped novelty check), continuing loop...")
 
             elif state == GameState.EPISODE_MENU:
                 self.logger.info("unexpected episode menu page, reload the level:  %s" % self.current_level)
                 self.current_level = self.ar.load_next_available_level()
-                self.novelty_existence = self.ar.get_novelty_info()
+                # SKIPPED: get_novelty_info() blocks
+                # self.novelty_existence = self.ar.get_novelty_info()
 
             elif state == GameState.PLAYING:
                 mode = os.environ["mode"] if "mode" in os.environ else "test"
+                print(f"[MAIN LOOP DEBUG] PLAYING state detected! mode={mode}")
                 if mode == "train":
+                    print("[MAIN LOOP DEBUG] Calling train()...")
                     self.train()
                 if mode == "test":
+                    print("[MAIN LOOP DEBUG] Calling solve()...")
                     self.solve()
 
 
@@ -284,10 +290,13 @@ class BaselineAgent(Thread):
                 self.repeated_gt_counter = 0
                 # Make a fresh agents to continue with a new trial (evaluation)
                 self.logger.critical("new trial state received")
+                print("[MAIN LOOP DEBUG] NEWTRIAL - calling ready_for_new_set()...")
                 (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
                  allowNoveltyInfo) = self.ar.ready_for_new_set()
+                print(f"[MAIN LOOP DEBUG] ready_for_new_set returned: time_limit={time_limit}, n_levels={n_levels}, mode={mode}")
                 self.current_level = 0
                 self.training_level_backup = 0
+                print("[MAIN LOOP DEBUG] NEWTRIAL handled, continuing loop...")
 
             elif state == GameState.NEWTESTSET:
                 self.repeated_gt_counter = 0
@@ -305,11 +314,14 @@ class BaselineAgent(Thread):
                 self.repeated_gt_counter = 0
                 # DO something to start a fresh agents for a new training set
                 self.logger.critical("new training set state received")
+                print("[MAIN LOOP DEBUG] NEWTRAININGSET - calling ready_for_new_set()...")
                 (time_limit, interaction_limit, n_levels, attempts_per_level, mode, seq_or_set,
                  allowNoveltyInfo) = self.ar.ready_for_new_set()
+                print(f"[MAIN LOOP DEBUG] ready_for_new_set returned: time_limit={time_limit}, n_levels={n_levels}, mode={mode}")
                 self.current_level = 0
                 self.training_level_backup = 0
                 change_from_training = True
+                print("[MAIN LOOP DEBUG] NEWTRAININGSET handled, continuing loop...")
 
             elif state == GameState.RESUMETRAINING:
                 self.repeated_gt_counter = 0

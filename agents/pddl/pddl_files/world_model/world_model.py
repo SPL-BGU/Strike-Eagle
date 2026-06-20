@@ -27,8 +27,8 @@ class WorldModel:
     kb = None
 
     hyperparams_values = {
-        Params.gravity: 87.2,
-        Params.velocity: 175.9259
+        Params.gravity: 85,
+        Params.velocity: 180
     }
 
     def __init__(self,

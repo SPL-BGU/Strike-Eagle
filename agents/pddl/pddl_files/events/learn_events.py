@@ -38,6 +38,74 @@ def compute_velocity_ratio(v_x, v_y, epsilon=1e-6):
     return abs(v_y) / total
 
 
+def compute_angle_trig_features(v_x, v_y, epsilon=1e-6):
+    """
+    Compute trigonometric features based on velocity angle (atan2(v_y, v_x)).
+    
+    These features capture the impact angle in different representations:
+    - cos(angle): Horizontal component normalized by speed
+    - sin(angle): Vertical component normalized by speed  
+    - tan(angle): Ratio v_y/v_x (clamped to avoid infinity)
+    
+    Parameters:
+        v_x: Horizontal velocity component
+        v_y: Vertical velocity component
+        epsilon: Small value to prevent division by zero
+        
+    Returns:
+        tuple: (cos_angle, sin_angle, tan_angle)
+    """
+    # Compute speed (magnitude of velocity)
+    speed = np.sqrt(v_x**2 + v_y**2)
+    
+    if speed < epsilon:
+        # Near-zero velocity: return neutral values
+        return (1.0, 0.0, 0.0)
+    
+    # cos and sin are normalized velocity components
+    cos_angle = v_x / speed
+    sin_angle = v_y / speed
+    
+    # tan with clamping to avoid extreme values
+    if abs(v_x) < epsilon:
+        # Near-vertical: clamp tan to a large but finite value
+        tan_angle = np.sign(v_y) * 100.0 if abs(v_y) > epsilon else 0.0
+    else:
+        tan_angle = v_y / v_x
+        # Clamp to reasonable range
+        tan_angle = np.clip(tan_angle, -100.0, 100.0)
+    
+    return (cos_angle, sin_angle, tan_angle)
+
+
+def compute_kinetic_features(v_x, v_y):
+    """
+    Compute kinetic energy-related features from velocity components.
+    
+    These features capture energy and momentum characteristics:
+    - speed (v): sqrt(v_x² + v_y²) - total velocity magnitude
+    - v_x²: squared horizontal velocity (proportional to horizontal kinetic energy)
+    - v_y²: squared vertical velocity (proportional to vertical kinetic energy)
+    
+    Physics motivation:
+    - Kinetic energy = 0.5 * m * v² = 0.5 * m * (v_x² + v_y²)
+    - Collision outcomes often depend on energy, not just velocity
+    - Squared terms capture non-linear energy relationships
+    
+    Parameters:
+        v_x: Horizontal velocity component
+        v_y: Vertical velocity component
+        
+    Returns:
+        tuple: (speed, v_x_squared, v_y_squared)
+    """
+    speed = np.sqrt(v_x**2 + v_y**2)
+    v_x_squared = v_x**2
+    v_y_squared = v_y**2
+    
+    return (speed, v_x_squared, v_y_squared)
+
+
 # ==============================================================================
 # REGULARIZATION OPTIONS FOR EVENT LEARNING
 # ==============================================================================
@@ -1215,6 +1283,74 @@ class EventModelManager:
             'n_samples': n_samples
         }
     
+    def train_multi_feature_comparison(self, var_name, feature_sets, y):
+        """
+        Compare model performance across multiple feature sets.
+        
+        This compares different combinations of features to find the best set
+        for predicting post-collision state variables.
+        
+        Parameters:
+            var_name: Name of target variable ('v_x', 'v_y', 'y')
+            feature_sets: dict mapping feature set name to feature matrix
+                e.g., {'base': X_base, 'ratio': X_ratio, 'trig': X_trig, 'all': X_all}
+            y: Target values (post-collision values)
+        
+        Returns:
+            dict with results for each feature set:
+            - stats: LOO-CV, train_rmse, r2
+            - model: trained model
+            - n_features: number of features
+        """
+        n_samples = len(y)
+        results = {}
+        
+        if n_samples < 3:
+            for idx, name in enumerate(feature_sets):
+                results[name] = {
+                    'stats': {'loo_cv': float('inf'), 'train_rmse': float('inf'), 'r2': 0},
+                    'model': None,
+                    'n_features': feature_sets[name].shape[1] if len(feature_sets[name]) > 0 else 0,
+                    'n_samples': n_samples,
+                    'improvement_vs_base': 0,
+                    'is_best': (idx == 0)  # First one is "best" by default when no data
+                }
+            return results
+        
+        config = REGULARIZATION_CONFIG
+        
+        for name, X in feature_sets.items():
+            model = self._train_general_model(
+                X, y,
+                alpha=config['alpha'],
+                l1_ratio=config['l1_ratio'],
+                regularization=config['type']
+            )
+            stats = self._compute_model_stats(model, X, y, 'general')
+            
+            results[name] = {
+                'stats': stats,
+                'model': model,
+                'n_features': X.shape[1],
+                'n_samples': n_samples
+            }
+        
+        # Find best feature set (lowest LOO-CV)
+        best_name = min(results.keys(), key=lambda k: results[k]['stats']['loo_cv'])
+        baseline_loo = results.get('base', results[list(results.keys())[0]])['stats']['loo_cv']
+        
+        # Add comparison info to each result
+        for name, result in results.items():
+            loo = result['stats']['loo_cv']
+            if baseline_loo > 0 and np.isfinite(baseline_loo) and np.isfinite(loo):
+                improvement = ((baseline_loo - loo) / baseline_loo) * 100
+            else:
+                improvement = 0
+            result['improvement_vs_base'] = improvement
+            result['is_best'] = (name == best_name)
+        
+        return results
+    
     def _train_general_model(self, X, y, alpha=1.0, l1_ratio=0.5, regularization='elasticnet'):
         """
         Train a general regression model with configurable regularization.
@@ -1244,7 +1380,7 @@ class EventModelManager:
         Returns:
             Trained model with poly_features and model_type attributes
         """
-        poly = PolynomialFeatures(degree=1, include_bias=False)
+        poly = PolynomialFeatures(degree=2, include_bias=False)
         X_poly = poly.fit_transform(X)
         
         if regularization == 'none':
@@ -1342,7 +1478,8 @@ class EventModelManager:
             try:
                 if model_type == 'general':
                     # Retrain general model with same regularization type
-                    poly = PolynomialFeatures(degree=1, include_bias=False)
+                    # MUST use degree=2 to match _train_general_model()
+                    poly = PolynomialFeatures(degree=2, include_bias=False)
                     X_train_poly = poly.fit_transform(X_train)
                     X_test_poly = poly.transform(X_test)
                     
@@ -1755,19 +1892,26 @@ def get_regularization_config():
     return REGULARIZATION_CONFIG.copy()
 
 
-def make_feature_vector(data, include_velocity_ratio=False):
+def make_feature_vector(data, include_velocity_ratio=False, include_trig_features=False, include_kinetic_features=False):
     """
     Constructs a 2D numpy array from a list of dictionaries containing feature values.
 
     Parameters:
         data (list of dict): Each dict represents a state with keys 'x', 'y', 'v_x', 'v_y'.
-        include_velocity_ratio (bool): If True, adds velocity_ratio as 5th feature.
+        include_velocity_ratio (bool): If True, adds velocity_ratio as feature.
             velocity_ratio = |v_y| / (|v_x| + |v_y|) - captures impact angle.
+        include_trig_features (bool): If True, adds cos, sin, tan of velocity angle.
+            These capture the impact angle in trigonometric form.
+        include_kinetic_features (bool): If True, adds speed (v), v_x², v_y².
+            These capture kinetic energy-related properties.
 
     Returns:
-        np.ndarray: Array of shape (n_samples, 4) or (n_samples, 5) if include_velocity_ratio.
-            Base features: [x, y, v_x, v_y]
-            Extended features: [x, y, v_x, v_y, velocity_ratio]
+        np.ndarray: Array with features based on flags:
+            Base features: [x, y, v_x, v_y] (4 features)
+            + velocity_ratio: adds 1 feature (5 total)
+            + trig_features: adds 3 features (cos, sin, tan)
+            + kinetic_features: adds 3 features (speed, v_x², v_y²)
+            All features: [x, y, v_x, v_y, velocity_ratio, cos, sin, tan, speed, v_x², v_y²] (11 features)
     """
     result = []
     for sample in data:
@@ -1775,6 +1919,12 @@ def make_feature_vector(data, include_velocity_ratio=False):
         if include_velocity_ratio:
             ratio = compute_velocity_ratio(sample['v_x'], sample['v_y'])
             row.append(ratio)
+        if include_trig_features:
+            cos_ang, sin_ang, tan_ang = compute_angle_trig_features(sample['v_x'], sample['v_y'])
+            row.extend([cos_ang, sin_ang, tan_ang])
+        if include_kinetic_features:
+            speed, vx_sq, vy_sq = compute_kinetic_features(sample['v_x'], sample['v_y'])
+            row.extend([speed, vx_sq, vy_sq])
         result.append(row)
     return np.array(result)
 
@@ -1882,41 +2032,43 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
                 if k != "m5_l1":
                     hist[k].append(float('inf'))
         
-        print(f"[LOO-CV DEBUG] {var_name}: General={general_loo:.4f}, CART={cart_loo:.4f}, M5[{', '.join(m5_loo_parts)}]")
+        # COMMENTED OUT: LOO-CV debug output for M5/CART comparison
+        # print(f"[LOO-CV DEBUG] {var_name}: General={general_loo:.4f}, CART={cart_loo:.4f}, M5[{', '.join(m5_loo_parts)}]")
         
         hist["general"].append(general_loo)
         hist["general_std"].append(general_std)
         hist["cart"].append(cart_loo)
         hist["n_samples"].append(n_samples)
         
-        cart_model = result['cart_model']
-        if cart_model is not None and hasattr(cart_model, 'print_tree_rules'):
-            cart_model.print_tree_rules()
-        
-        if result.get('m5_models'):
-            for reg in M5_LEAF_REG_ORDER:
-                m = result['m5_models'][reg]
-                if m is not None and hasattr(m, 'print_tree_rules'):
-                    m.print_tree_rules()
-        else:
-            m5_model = result.get('m5_model')
-            if m5_model is not None and hasattr(m5_model, 'print_tree_rules'):
-                m5_model.print_tree_rules()
+        # COMMENTED OUT: M5 vs CART comparison printing
+        # cart_model = result['cart_model']
+        # if cart_model is not None and hasattr(cart_model, 'print_tree_rules'):
+        #     cart_model.print_tree_rules()
+        # 
+        # if result.get('m5_models'):
+        #     for reg in M5_LEAF_REG_ORDER:
+        #         m = result['m5_models'][reg]
+        #         if m is not None and hasattr(m, 'print_tree_rules'):
+        #             m.print_tree_rules()
+        # else:
+        #     m5_model = result.get('m5_model')
+        #     if m5_model is not None and hasattr(m5_model, 'print_tree_rules'):
+        #         m5_model.print_tree_rules()
     
     # Print debug output if requested
     if debug:
         print(manager.get_debug_output())
     
-    # Print General model equations under each regularization type (for v_x / v_y)
-    config = REGULARIZATION_CONFIG
-    for var_name in ['v_x', 'v_y']:
-        if var_name in kb[event_name]["variables"]:
-            y = np.array(kb[event_name]["variables"][var_name]["value"])
-            print_all_regularization_equations(
-                states, y, var_name,
-                alpha=config['alpha'],
-                l1_ratio=config['l1_ratio']
-            )
+    # COMMENTED OUT: Multiple alpha/regularization comparison printing
+    # config = REGULARIZATION_CONFIG
+    # for var_name in ['v_x', 'v_y']:
+    #     if var_name in kb[event_name]["variables"]:
+    #         y = np.array(kb[event_name]["variables"][var_name]["value"])
+    #         print_all_regularization_equations(
+    #             states, y, var_name,
+    #             alpha=config['alpha'],
+    #             l1_ratio=config['l1_ratio']
+    #         )
     
     return manager
 
@@ -1948,28 +2100,58 @@ def update_model_effects_with_ablation(event_name: str, kb: dict, pre_event_stat
     # Initialize ablation storage in KB if not present
     if "ablation" not in kb[event_name]:
         kb[event_name]["ablation"] = {
-            "velocity_ratio": {
+            "multi_feature": {
                 "results_by_var": {},
                 "history": {
-                    "v_x": {"baseline_loo": [], "extended_loo": [], "improvement_pct": [], "n_samples": []},
-                    "v_y": {"baseline_loo": [], "extended_loo": [], "improvement_pct": [], "n_samples": []},
-                    "y": {"baseline_loo": [], "extended_loo": [], "improvement_pct": [], "n_samples": []}
+                    "v_x": {},
+                    "v_y": {},
+                    "y": {}
                 }
             }
         }
     
-    # Create feature matrices for ablation comparison
-    states_base = make_feature_vector(kb[event_name]["states"], include_velocity_ratio=False)
-    states_extended = make_feature_vector(kb[event_name]["states"], include_velocity_ratio=True)
+    # Create feature matrices for all combinations
+    # Feature sets to compare:
+    # 1. base: [x, y, v_x, v_y] - 4 features
+    # 2. ratio: [x, y, v_x, v_y, velocity_ratio] - 5 features  
+    # 3. trig: [x, y, v_x, v_y, cos, sin, tan] - 7 features
+    # 4. kinetic: [x, y, v_x, v_y, speed, v_x², v_y²] - 7 features
+    # 5. all: [x, y, v_x, v_y, ratio, cos, sin, tan, speed, v_x², v_y²] - 11 features
+    states_base = make_feature_vector(kb[event_name]["states"], 
+                                      include_velocity_ratio=False, include_trig_features=False, include_kinetic_features=False)
+    states_ratio = make_feature_vector(kb[event_name]["states"], 
+                                       include_velocity_ratio=True, include_trig_features=False, include_kinetic_features=False)
+    states_trig = make_feature_vector(kb[event_name]["states"], 
+                                      include_velocity_ratio=False, include_trig_features=True, include_kinetic_features=False)
+    states_kinetic = make_feature_vector(kb[event_name]["states"], 
+                                         include_velocity_ratio=False, include_trig_features=False, include_kinetic_features=True)
+    states_all = make_feature_vector(kb[event_name]["states"], 
+                                     include_velocity_ratio=True, include_trig_features=True, include_kinetic_features=True)
+    
+    feature_sets = {
+        'base': states_base,           # [x, y, v_x, v_y]
+        'ratio': states_ratio,         # [x, y, v_x, v_y, velocity_ratio]
+        'trig': states_trig,           # [x, y, v_x, v_y, cos, sin, tan]
+        'kinetic': states_kinetic,     # [x, y, v_x, v_y, speed, v_x², v_y²]
+        'all': states_all              # [x, y, v_x, v_y, ratio, cos, sin, tan, speed, v_x², v_y²]
+    }
+    
+    feature_names = {
+        'base': '[x, y, v_x, v_y]',
+        'ratio': '[x, y, v_x, v_y, ratio]',
+        'trig': '[x, y, v_x, v_y, cos, sin, tan]',
+        'kinetic': '[x, y, v_x, v_y, v, v_x², v_y²]',
+        'all': '[x, y, v_x, v_y, ratio, trig, v, v_x², v_y²]'
+    }
     
     ablation_results = {}
     ablation_manager = EventModelManager()
     
-    print("\n" + "=" * 70)
-    print("ABLATION STUDY: velocity_ratio Feature Validation")
-    print("=" * 70)
-    print(f"{'Variable':<10} {'Baseline LOO-CV':<18} {'Extended LOO-CV':<18} {'Change':<15} {'Verdict'}")
-    print("-" * 70)
+    print("\n" + "=" * 110)
+    print("ABLATION STUDY: Feature Set Comparison")
+    print("=" * 110)
+    print(f"{'Variable':<8} {'Feature Set':<40} {'LOO-CV':<12} {'vs Base':<12} {'Best?'}")
+    print("-" * 110)
     
     # Run ablation comparison for each target variable
     for var_name in ['v_x', 'v_y', 'y']:
@@ -1978,60 +2160,80 @@ def update_model_effects_with_ablation(event_name: str, kb: dict, pre_event_stat
             
         y = np.array(kb[event_name]["variables"][var_name]["value"])
         
-        # Run ablation comparison
-        result = ablation_manager.train_ablation_comparison(
+        # Run multi-feature comparison
+        result = ablation_manager.train_multi_feature_comparison(
             var_name=var_name,
-            X_base=states_base,
-            X_extended=states_extended,
+            feature_sets=feature_sets,
             y=y
         )
         
         ablation_results[var_name] = result
-        kb[event_name]["ablation"]["velocity_ratio"]["results_by_var"][var_name] = result
+        kb[event_name]["ablation"]["multi_feature"]["results_by_var"][var_name] = result
         
         # Update history
-        history = kb[event_name]["ablation"]["velocity_ratio"]["history"][var_name]
-        history["baseline_loo"].append(result['baseline_stats']['loo_cv'])
-        history["extended_loo"].append(result['extended_stats']['loo_cv'])
-        history["improvement_pct"].append(result['improvement_pct'])
-        history["n_samples"].append(result['n_samples'])
+        history = kb[event_name]["ablation"]["multi_feature"]["history"][var_name]
+        for set_name, set_result in result.items():
+            if set_name not in history:
+                history[set_name] = {"loo_cv": [], "improvement_vs_base": [], "n_samples": []}
+            history[set_name]["loo_cv"].append(set_result['stats']['loo_cv'])
+            history[set_name]["improvement_vs_base"].append(set_result['improvement_vs_base'])
+            history[set_name]["n_samples"].append(set_result['n_samples'])
         
-        # Print result
-        baseline_loo = result['baseline_stats']['loo_cv']
-        extended_loo = result['extended_stats']['loo_cv']
-        improvement = result['improvement_pct']
-        
-        if result['feature_helps']:
-            verdict = "HELPS"
-        elif result['feature_hurts']:
-            verdict = "HURTS"
-        else:
-            verdict = "NEUTRAL"
-        
-        change_str = f"{improvement:+.1f}%" if np.isfinite(improvement) else "N/A"
-        print(f"{var_name:<10} {baseline_loo:<18.4f} {extended_loo:<18.4f} {change_str:<15} {verdict}")
+        # Print results for this variable
+        n_samples = result.get('base', {}).get('n_samples', 0)
+        if n_samples < 3:
+            print(f"{var_name:<8} (insufficient data: {n_samples} samples, need >= 3)")
+            print("-" * 110)
+            continue
+            
+        for set_name in ['base', 'ratio', 'trig', 'kinetic', 'all']:
+            if set_name not in result:
+                continue
+            r = result[set_name]
+            loo = r['stats']['loo_cv']
+            improvement = r['improvement_vs_base']
+            is_best = r['is_best']
+            
+            loo_str = f"{loo:.4f}" if np.isfinite(loo) else "N/A"
+            imp_str = f"{improvement:+.1f}%" if np.isfinite(improvement) and set_name != 'base' else "-"
+            best_str = "★ BEST" if is_best else ""
+            
+            print(f"{var_name:<8} {feature_names[set_name]:<40} {loo_str:<12} {imp_str:<12} {best_str}")
+        print("-" * 110)
     
-    print("-" * 70)
+    # Summary: find overall best feature set
+    print("\n" + "=" * 110)
+    print("SUMMARY: Best Feature Set per Variable")
+    print("=" * 110)
     
-    # Summary conclusion
-    helps_count = sum(1 for r in ablation_results.values() if r.get('feature_helps', False))
-    hurts_count = sum(1 for r in ablation_results.values() if r.get('feature_hurts', False))
+    best_counts = {'base': 0, 'ratio': 0, 'trig': 0, 'kinetic': 0, 'all': 0}
+    has_valid_results = False
+    for var_name, var_results in ablation_results.items():
+        for set_name, result in var_results.items():
+            # Only count if we have valid data (not inf LOO-CV)
+            loo_cv = result['stats']['loo_cv']
+            if result['is_best'] and np.isfinite(loo_cv):
+                has_valid_results = True
+                best_counts[set_name] = best_counts.get(set_name, 0) + 1
+                print(f"  {var_name}: {feature_names[set_name]} (LOO-CV: {loo_cv:.4f})")
     
-    if helps_count > hurts_count:
-        conclusion = "velocity_ratio IMPROVES predictions"
-    elif hurts_count > helps_count:
-        conclusion = "velocity_ratio HURTS predictions (overfitting)"
+    if not has_valid_results:
+        print("  (insufficient data - need >= 3 collision samples)")
+        overall_best = 'base'  # Default to base when no valid data
     else:
-        conclusion = "velocity_ratio has NO SIGNIFICANT EFFECT"
+        # Overall recommendation
+        overall_best = max(best_counts.keys(), key=lambda k: best_counts[k])
     
-    print(f"[ABLATION] CONCLUSION: {conclusion}")
-    print(f"[ABLATION] Helps: {helps_count} vars, Hurts: {hurts_count} vars, Neutral: {len(ablation_results) - helps_count - hurts_count} vars")
-    print("=" * 70 + "\n")
+    print(f"\n[ABLATION] OVERALL RECOMMENDATION: {feature_names[overall_best]}")
+    print(f"[ABLATION] Wins: base={best_counts['base']}, ratio={best_counts['ratio']}, trig={best_counts['trig']}, kinetic={best_counts['kinetic']}, all={best_counts['all']}")
+    print("=" * 110 + "\n")
     
     return {
         'manager': manager,
         'ablation_results': ablation_results,
-        'ablation_manager': ablation_manager
+        'ablation_manager': ablation_manager,
+        'best_feature_set': overall_best,
+        'feature_names': feature_names
     }
 
 

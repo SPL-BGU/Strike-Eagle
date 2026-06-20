@@ -201,6 +201,55 @@ def construct_trajectory_from_velocity(
     return trajectory
 
 
+# Defaults aligned with collision learning in pddl_agent (50 fps, multi-frame windows)
+LAUNCH_ESTIMATE_FRAME_RATE = 0.02
+LAUNCH_ESTIMATE_N_VEL = 5
+LAUNCH_ESTIMATE_N_POS = 3
+LAUNCH_ESTIMATE_SKIP = 0
+
+
+def estimate_launch_from_trajectory(
+        trajectory: np.ndarray,
+        n_vel: int = LAUNCH_ESTIMATE_N_VEL,
+        n_pos: int = LAUNCH_ESTIMATE_N_POS,
+        skip: int = LAUNCH_ESTIMATE_SKIP,
+        frame_rate: float = LAUNCH_ESTIMATE_FRAME_RATE,
+):
+    """
+    Estimate release position and initial velocity from the first frames of a GT segment.
+
+    Position: mean of the first n_pos points (after skip).
+    Velocity: linear regression of x(t), y(t) over frames skip .. skip+n_vel.
+    """
+    traj = np.asarray(trajectory, dtype=float)
+    if traj.ndim != 2 or traj.shape[1] < 2:
+        raise ValueError("trajectory must be (N, 2) with N >= 2")
+
+    n_available = len(traj) - skip
+    if n_available < 2:
+        raise ValueError(f"need at least {skip + 2} trajectory points, got {len(traj)}")
+
+    n_pos = max(1, min(n_pos, n_available))
+    n_vel = max(1, min(n_vel, n_available - 1))
+
+    release = np.mean(traj[skip: skip + n_pos], axis=0)
+    t = np.arange(skip, skip + n_vel + 1, dtype=float) * frame_rate
+    xs = traj[skip: skip + n_vel + 1, 0]
+    ys = traj[skip: skip + n_vel + 1, 1]
+    vx = float(np.polyfit(t, xs, 1)[0])
+    vy = float(np.polyfit(t, ys, 1)[0])
+    v_meas = float(np.hypot(vx, vy))
+    theta_deg = float(np.degrees(np.arctan2(vy, vx)))
+
+    return {
+        "release": release,
+        "vx": vx,
+        "vy": vy,
+        "v_meas": v_meas,
+        "theta_deg": theta_deg,
+    }
+
+
 def construct_trajectory(
         starting_point: [float, float],
         angle: float,

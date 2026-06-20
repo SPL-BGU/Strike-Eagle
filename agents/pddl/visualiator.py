@@ -975,16 +975,17 @@ def visualize_starting_point_offset(observed_trajectory, estimated_trajectory,
                     xytext=(8, -18), textcoords='offset points', fontsize=9, color='red',
                     bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.8))
     
-    # Calculate and show velocity vectors for first point
-    if len(observed_trajectory) > 1:
-        obs_vx = (observed_trajectory[1, 0] - observed_trajectory[0, 0]) / frame_rate
-        obs_vy = (observed_trajectory[1, 1] - observed_trajectory[0, 1]) / frame_rate
+    # Calculate and show velocity vectors for first point (using 10-frame span for stability)
+    vel_span = 10
+    if len(observed_trajectory) > vel_span:
+        obs_vx = (observed_trajectory[vel_span, 0] - observed_trajectory[0, 0]) / (frame_rate * vel_span)
+        obs_vy = (observed_trajectory[vel_span, 1] - observed_trajectory[0, 1]) / (frame_rate * vel_span)
         ax2.arrow(obs_start[0], obs_start[1], obs_vx * frame_rate * 5, obs_vy * frame_rate * 5,
                  head_width=5, head_length=3, fc='blue', ec='blue', alpha=0.6, linewidth=2)
     
-    if len(estimated_trajectory) > 1:
-        est_vx = (estimated_trajectory[1, 0] - estimated_trajectory[0, 0]) / frame_rate
-        est_vy = (estimated_trajectory[1, 1] - estimated_trajectory[0, 1]) / frame_rate
+    if len(estimated_trajectory) > vel_span:
+        est_vx = (estimated_trajectory[vel_span, 0] - estimated_trajectory[0, 0]) / (frame_rate * vel_span)
+        est_vy = (estimated_trajectory[vel_span, 1] - estimated_trajectory[0, 1]) / (frame_rate * vel_span)
         ax2.arrow(est_start[0], est_start[1], est_vx * frame_rate * 5, est_vy * frame_rate * 5,
                  head_width=5, head_length=3, fc='red', ec='red', alpha=0.6, linewidth=2)
     
@@ -1033,18 +1034,19 @@ def visualize_starting_point_offset(observed_trajectory, estimated_trajectory,
         else:
             print(f"  ⚠️  PDDL bird position (after pa-twang) differs from observed trajectory start!")
     
-    if len(observed_trajectory) > 1 and len(estimated_trajectory) > 1:
-        obs_vx = (observed_trajectory[10, 0] - observed_trajectory[0, 0]) / (frame_rate * 10)
-        obs_vy = (observed_trajectory[10, 1] - observed_trajectory[0, 1]) / (frame_rate * 10)
-        est_vx = (estimated_trajectory[10, 0] - estimated_trajectory[0, 0]) / (frame_rate * 10)
-        est_vy = (estimated_trajectory[10, 1] - estimated_trajectory[0, 1]) / (frame_rate * 10)
+    vel_span = 10  # Use 10-frame span for more stable velocity/angle estimation
+    if len(observed_trajectory) > vel_span and len(estimated_trajectory) > vel_span:
+        obs_vx = (observed_trajectory[vel_span, 0] - observed_trajectory[0, 0]) / (frame_rate * vel_span)
+        obs_vy = (observed_trajectory[vel_span, 1] - observed_trajectory[0, 1]) / (frame_rate * vel_span)
+        est_vx = (estimated_trajectory[vel_span, 0] - estimated_trajectory[0, 0]) / (frame_rate * vel_span)
+        est_vy = (estimated_trajectory[vel_span, 1] - estimated_trajectory[0, 1]) / (frame_rate * vel_span)
         
         obs_vel = np.sqrt(obs_vx**2 + obs_vy**2)
         est_vel = np.sqrt(est_vx**2 + est_vy**2)
         obs_angle = np.arctan2(obs_vy, obs_vx) * 180 / np.pi
         est_angle = np.arctan2(est_vy, est_vx) * 180 / np.pi
         
-        print(f"\nInitial Velocity Comparison:")
+        print(f"\nInitial Velocity Comparison (frames 0→{vel_span}):")
         print(f"  Observed: {obs_vel:.2f} px/s at {obs_angle:.2f}°")
         print(f"  Estimated: {est_vel:.2f} px/s at {est_angle:.2f}°")
         print(f"  Velocity difference: {abs(obs_vel - est_vel):.2f} px/s")
@@ -1052,7 +1054,7 @@ def visualize_starting_point_offset(observed_trajectory, estimated_trajectory,
     
     print("="*60 + "\n")
     
-    plt.show()
+    plt.show(block=True)
 
 
 def full_trajectory_comparison(observed_trajectory, estimated_trajectory, frame_rate=0.02, n_frames=20):
@@ -1636,7 +1638,13 @@ def debug_all_events_full_trajectory(objects_features, groundtruth_objects):
     pig_positions = []
     platform_data = []  # List of (frame_idx, platform_name, platform_bounds, bird_dist)
     
-    r_bird = 3.5  # Same as in is_platform_collision
+    # Get actual bird radius from groundtruth (same as in is_platform_collision)
+    COLLISION_EPSILON = 6.0  # Must match value in event_conditions.py
+    bird_dims = groundtruth_objects.get("redBird_0", [14, 14])
+    if isinstance(bird_dims, (list, tuple)) and len(bird_dims) >= 2:
+        r_bird = max(bird_dims) / 2 + COLLISION_EPSILON
+    else:
+        r_bird = 7.0 + COLLISION_EPSILON
     
     for i in range(total_frames):
         frame = frames[i]
@@ -3218,44 +3226,642 @@ def plot_feature_ablation_comparison(kb, event_name="collision", save_path=None)
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"[ABLATION PLOT] Saved to: {save_path}")
     
-    print("\n[ABLATION PLOT] Showing plot... Close the window to continue.")
+    # COMMENTED OUT: Ablation study summary printing
+    # print("\n[ABLATION PLOT] Showing plot... Close the window to continue.")
+    # plt.show(block=True)
+    # 
+    # # Print summary
+    # print("\n" + "=" * 70)
+    # print("ABLATION STUDY SUMMARY: velocity_ratio Feature")
+    # print("=" * 70)
+    # print(f"{'Variable':<10} {'Baseline LOO-CV':<18} {'Extended LOO-CV':<18} {'Improvement':<15}")
+    # print("-" * 70)
+    # 
+    # helps_count = 0
+    # hurts_count = 0
+    # 
+    # for var_name in vars_with_history:
+    #     var_history = history[var_name]
+    #     final_baseline = var_history["baseline_loo"][-1] if var_history["baseline_loo"] else float('inf')
+    #     final_extended = var_history["extended_loo"][-1] if var_history["extended_loo"] else float('inf')
+    #     final_improvement = var_history["improvement_pct"][-1] if var_history["improvement_pct"] else 0
+    #     
+    #     if final_improvement > 5:
+    #         helps_count += 1
+    #         verdict = "HELPS"
+    #     elif final_improvement < -5:
+    #         hurts_count += 1
+    #         verdict = "HURTS"
+    #     else:
+    #         verdict = "NEUTRAL"
+    #     
+    #     print(f"{var_name:<10} {final_baseline:<18.4f} {final_extended:<18.4f} {final_improvement:+.1f}% ({verdict})")
+    # 
+    # print("-" * 70)
+    # 
+    # if helps_count > hurts_count:
+    #     conclusion = "RECOMMENDATION: Use velocity_ratio feature"
+    # elif hurts_count > helps_count:
+    #     conclusion = "RECOMMENDATION: Do NOT use velocity_ratio (overfitting)"
+    # else:
+    #     conclusion = "RECOMMENDATION: velocity_ratio has minimal effect"
+    # 
+    # print(f"{conclusion}")
+    # print("=" * 70)
+    pass  # Function now just creates the plot without printing summary
+
+
+def plot_multi_feature_ablation(kb, event_name="collision", save_path=None):
+    """
+    Plot LOO-CV comparison across multiple feature sets.
+    
+    Compares:
+    - base: [x, y, v_x, v_y]
+    - ratio: [x, y, v_x, v_y, velocity_ratio]
+    - trig: [x, y, v_x, v_y, cos, sin, tan]
+    - all: [x, y, v_x, v_y, velocity_ratio, cos, sin, tan]
+    
+    Shows:
+    - Bar chart: LOO-CV for each feature set per variable
+    - Line chart: LOO-CV convergence over training iterations
+    
+    Parameters:
+        kb: Knowledge base containing ablation results
+        event_name: Name of event (default: "collision")
+        save_path: Optional path to save the plot
+    """
+    if event_name not in kb:
+        print(f"[MULTI-ABLATION PLOT] No '{event_name}' event in KB")
+        return
+    
+    if "ablation" not in kb[event_name]:
+        print(f"[MULTI-ABLATION PLOT] No ablation data in KB['{event_name}']. Run update_model_effects_with_ablation() first.")
+        return
+    
+    ablation_data = kb[event_name]["ablation"].get("multi_feature", {})
+    history = ablation_data.get("history", {})
+    
+    if not history:
+        # Try old format
+        ablation_data = kb[event_name]["ablation"].get("velocity_ratio", {})
+        history = ablation_data.get("history", {})
+        if history:
+            print("[MULTI-ABLATION PLOT] Old format detected. Use plot_feature_ablation_comparison() instead.")
+            return
+        print("[MULTI-ABLATION PLOT] No ablation history available yet.")
+        return
+    
+    # Check which variables have data
+    vars_with_history = []
+    for var_name in ['v_x', 'v_y', 'y']:
+        if var_name in history and history[var_name]:
+            vars_with_history.append(var_name)
+    
+    if not vars_with_history:
+        print("[MULTI-ABLATION PLOT] No ablation history available yet.")
+        return
+    
+    # Feature set names and colors
+    feature_sets = ['base', 'ratio', 'trig', 'kinetic', 'all']
+    feature_labels = {
+        'base': '[x,y,v_x,v_y]',
+        'ratio': '[+ratio]',
+        'trig': '[+cos,sin,tan]',
+        'kinetic': '[+v,v_x²,v_y²]',
+        'all': '[+all]'
+    }
+    colors = {
+        'base': '#1f77b4',    # Blue
+        'ratio': '#ff7f0e',   # Orange
+        'trig': '#2ca02c',    # Green
+        'kinetic': '#9467bd', # Purple
+        'all': '#d62728'      # Red
+    }
+    
+    # Create figure
+    n_vars = len(vars_with_history)
+    fig, axes = plt.subplots(2, n_vars, figsize=(6 * n_vars, 10))
+    
+    if n_vars == 1:
+        axes = axes.reshape(2, 1)
+    
+    fig.suptitle(
+        "Multi-Feature Ablation Study\n"
+        "Comparing base, +ratio, +trig, +kinetic(v,v_x²,v_y²), and all features",
+        fontsize=12, fontweight='bold'
+    )
+    
+    for col, var_name in enumerate(vars_with_history):
+        var_history = history[var_name]
+        
+        # Top row: Bar chart comparing final LOO-CV for each feature set
+        ax_bar = axes[0, col]
+        
+        x_pos = np.arange(len(feature_sets))
+        bar_values = []
+        bar_colors = []
+        
+        for set_name in feature_sets:
+            if set_name in var_history and var_history[set_name].get("loo_cv"):
+                val = var_history[set_name]["loo_cv"][-1]  # Last value
+            else:
+                val = 0
+            bar_values.append(val)
+            bar_colors.append(colors[set_name])
+        
+        bars = ax_bar.bar(
+            x_pos, 
+            bar_values,
+            color=bar_colors,
+            width=0.7,
+            edgecolor='black',
+            linewidth=1
+        )
+        
+        # Mark the best (lowest) bar
+        if bar_values:
+            valid_values = [(i, v) for i, v in enumerate(bar_values) if v > 0 and np.isfinite(v)]
+            if valid_values:
+                best_idx = min(valid_values, key=lambda x: x[1])[0]
+                bars[best_idx].set_edgecolor('gold')
+                bars[best_idx].set_linewidth(3)
+        
+        ax_bar.set_xticks(x_pos)
+        ax_bar.set_xticklabels([feature_labels[s] for s in feature_sets], fontsize=9)
+        ax_bar.set_ylabel('LOO-CV RMSE (lower is better)')
+        ax_bar.set_title(f'{var_name}_after')
+        ax_bar.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, bar_values):
+            if np.isfinite(val) and val > 0:
+                ax_bar.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.3,
+                    f'{val:.2f}',
+                    ha='center', va='bottom', fontsize=9
+                )
+        
+        # Bottom row: Line chart showing LOO-CV over iterations
+        ax_line = axes[1, col]
+        
+        for set_name in feature_sets:
+            if set_name in var_history and var_history[set_name].get("loo_cv"):
+                loo_values = var_history[set_name]["loo_cv"]
+                if loo_values:
+                    iterations = range(1, len(loo_values) + 1)
+                    ax_line.plot(
+                        iterations, loo_values,
+                        marker='o', markersize=4,
+                        color=colors[set_name],
+                        label=feature_labels[set_name],
+                        linewidth=2
+                    )
+        
+        ax_line.set_xlabel('Training Iteration')
+        ax_line.set_ylabel('LOO-CV RMSE')
+        ax_line.set_title(f'{var_name}_after - Convergence')
+        ax_line.legend(loc='upper right', fontsize=8)
+        ax_line.grid(True, alpha=0.3)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[MULTI-ABLATION PLOT] Saved to: {save_path}")
+    
+    plt.show()
+
+
+def visualize_level_setup(problem_data: dict, world_model_params: dict = None, 
+                          title: str = "Level Setup - Object Detection", save_path: str = None,
+                          show_plot: bool = True, trajectory: list = None, angle: float = None):
+    """
+    Visualize detected objects for a level to validate object detection.
+    Shows bird, pigs, blocks, platforms with their PDDL coordinates.
+    
+    Parameters:
+        problem_data: Dictionary from get_birds() | get_pigs() | get_blocks() | get_platforms()
+        world_model_params: Optional dict with gravity, velocity for display
+        title: Plot title
+        save_path: Optional path to save the figure
+        show_plot: If True, display the plot (blocking). If False, just save.
+        trajectory: Optional list of (x, y) points from simulation to draw planned path
+        angle: Optional launch angle in degrees
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.patches import Circle, Rectangle, FancyBboxPatch
+    import numpy as np
+    
+    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+    
+    # Extract objects by type
+    birds = {k: v for k, v in problem_data.items() if k.startswith('bird_')}
+    pigs = {k: v for k, v in problem_data.items() if k.startswith('pig_')}
+    blocks = {k: v for k, v in problem_data.items() if k.startswith('block_')}
+    platforms = {k: v for k, v in problem_data.items() if k.startswith('platform_')}
+    
+    # Draw ground line - ground is at y=350 in PDDL coordinates
+    GROUND_LEVEL = 350
+    ax.axhline(y=GROUND_LEVEL, color='brown', linewidth=3, linestyle='-', label=f'Ground (y={GROUND_LEVEL})')
+    ax.fill_between([0, 800], [0, 0], [GROUND_LEVEL, GROUND_LEVEL], color='saddlebrown', alpha=0.3)
+    
+    # Draw birds (red circles)
+    for name, data in birds.items():
+        x = data.get('x_bird', 0)
+        y = data.get('y_bird', 0)
+        r = data.get('bird_radius', 10)
+        v = data.get('v_bird', 0)
+        circle = Circle((x, y), r * 3, color='red', alpha=0.8, label='Bird' if name == 'bird_0' else '')
+        ax.add_patch(circle)
+        ax.annotate(f'{name}\n({x:.0f}, {y:.0f})\nv={v:.0f}', (x, y + r * 5), 
+                   fontsize=8, ha='center', color='darkred', fontweight='bold')
+    
+    # Draw pigs (green circles)
+    for name, data in pigs.items():
+        x = data.get('x_pig', 0)
+        y = data.get('y_pig', 0)
+        r = data.get('pig_radius', 10)
+        circle = Circle((x, y), r * 3, color='limegreen', alpha=0.8, label='Pig' if name == 'pig_0' else '')
+        ax.add_patch(circle)
+        ax.annotate(f'{name}\n({x:.0f}, {y:.0f})', (x, y + r * 5), 
+                   fontsize=8, ha='center', color='darkgreen', fontweight='bold')
+    
+    # Draw blocks (colored rectangles with rotation support)
+    import matplotlib.transforms as transforms
+    block_colors = {'wood': 'peru', 'ice': 'lightblue', 'stone': 'gray', 'TNT': 'red'}
+    for name, data in blocks.items():
+        x = data.get('x_block', 0)
+        y = data.get('y_block', 0)
+        w = data.get('block_width', 10)
+        h = data.get('block_height', 10)
+        life = data.get('block_life', 1)
+        angle = data.get('_block_angle', data.get('block_angle', 0))
+        block_type = data.get('_block_type', data.get('block_type', 'wood'))
+        
+        # Determine color based on block type or life
+        color = block_colors.get(block_type, 'peru')
+        if color == 'peru' and life > 1.0:
+            color = 'gray'  # stone has higher life
+        
+        # Create rectangle centered at origin, then transform
+        rect = Rectangle((- w/2, - h/2), w, h, color=color, alpha=0.7, 
+                         edgecolor='black', linewidth=1)
+        
+        # Apply rotation around center, then translate to position
+        t = transforms.Affine2D().rotate_deg(angle).translate(x, y) + ax.transData
+        rect.set_transform(t)
+        ax.add_patch(rect)
+        
+        angle_str = f"\n{angle:.0f}°" if angle != 0 else ""
+        ax.annotate(f'{name}{angle_str}\n{block_type}', (x, y + h/2 + 5), fontsize=6, ha='center', va='bottom')
+    
+    # Draw platforms (brown rectangles)
+    for name, data in platforms.items():
+        x = data.get('x_platform', 0)
+        y = data.get('y_platform', 0)
+        w = data.get('platform_width', 20)
+        h = data.get('platform_height', 10)
+        rect = Rectangle((x - w/2, y - h/2), w, h, color='saddlebrown', alpha=0.8,
+                         edgecolor='black', linewidth=2, label='Platform' if name == 'platform_0' else '')
+        ax.add_patch(rect)
+        ax.annotate(f'{name}', (x, y), fontsize=7, ha='center', va='center', color='white')
+    
+    # Draw direct line from bird to first pig (if both exist)
+    if birds and pigs:
+        bird = list(birds.values())[0]
+        pig = list(pigs.values())[0]
+        bx, by = bird.get('x_bird', 0), bird.get('y_bird', 0)
+        px, py = pig.get('x_pig', 0), pig.get('y_pig', 0)
+        
+        ax.plot([bx, px], [by, py], 'g--', linewidth=2, alpha=0.5, label='Direct line to pig')
+        
+        # Calculate direct angle
+        dx = px - bx
+        dy = py - by
+        direct_angle = np.degrees(np.arctan2(dy, dx))
+        distance = np.sqrt(dx**2 + dy**2)
+        
+        ax.annotate(f'Direct angle: {direct_angle:.1f}°\nDistance: {distance:.0f}px', 
+                   ((bx + px)/2, (by + py)/2 + 20), fontsize=9, ha='center',
+                   bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8))
+    
+    # Draw planned trajectory if provided
+    if trajectory and len(trajectory) > 1:
+        traj_x = [p[0] for p in trajectory]
+        traj_y = [p[1] for p in trajectory]
+        
+        # Draw trajectory as orange line with markers
+        ax.plot(traj_x, traj_y, 'o-', color='orange', linewidth=2, markersize=3, 
+                alpha=0.8, label=f'Planned trajectory (angle={angle:.1f}°)' if angle else 'Planned trajectory')
+        
+        # Mark start point (launch position)
+        ax.scatter(traj_x[0], traj_y[0], s=100, color='orange', marker='^', 
+                   edgecolors='black', linewidths=1, zorder=15, label='Launch point')
+        
+        # Mark end point (where simulation ended - collision or miss)
+        ax.scatter(traj_x[-1], traj_y[-1], s=100, color='red', marker='X', 
+                   edgecolors='black', linewidths=1, zorder=15, label='Sim end point')
+        
+        # Annotate end point
+        ax.annotate(f'End: ({traj_x[-1]:.0f}, {traj_y[-1]:.0f})', 
+                   (traj_x[-1], traj_y[-1] + 15), fontsize=8, ha='center',
+                   color='red', fontweight='bold')
+    
+    # Set axis properties
+    ax.set_xlim(-50, 700)
+    ax.set_ylim(-50, 500)
+    ax.set_aspect('equal')
+    ax.set_xlabel('X (PDDL coordinates)', fontsize=10)
+    ax.set_ylabel('Y (PDDL coordinates)', fontsize=10)
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper right')
+    
+    # Add world model info if provided
+    if world_model_params:
+        info_text = f"World Model:\n"
+        info_text += f"  Gravity: {world_model_params.get('gravity', 'N/A'):.2f}\n"
+        info_text += f"  Velocity: {world_model_params.get('velocity', 'N/A'):.2f}"
+        ax.text(0.02, 0.98, info_text, transform=ax.transAxes, fontsize=9,
+               verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    # Add object summary
+    summary = f"Objects: {len(birds)} bird(s), {len(pigs)} pig(s), {len(blocks)} block(s), {len(platforms)} platform(s)"
+    ax.text(0.5, 0.02, summary, transform=ax.transAxes, fontsize=10,
+           ha='center', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[LEVEL SETUP] Saved to: {save_path}")
+    
+    if show_plot:
+        print("\n[LEVEL SETUP] Visualization open - close the window to continue...")
+        plt.show(block=True)
+    else:
+        plt.close(fig)  # Close to free memory when not displaying
+    
+    return fig
+
+
+def visualize_trajectory_segment0(observed_trajectory: np.ndarray, estimated_trajectory: np.ndarray,
+                                   angle: float, world_model_params: dict,
+                                   title: str = "Segment 0 - Flight Physics Learning",
+                                   save_path: str = None):
+    """
+    Visualize trajectory segment 0 (pre-collision flight) to validate physics learning.
+    
+    Parameters:
+        observed_trajectory: Observed (x, y) positions from game
+        estimated_trajectory: Estimated trajectory from world model
+        angle: Launch angle in degrees
+        world_model_params: Dict with gravity, velocity
+        title: Plot title
+        save_path: Optional path to save
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.metrics import mean_squared_error
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # --- Plot 1: XY Trajectory Comparison ---
+    ax1 = axes[0, 0]
+    ax1.plot(observed_trajectory[:, 0], observed_trajectory[:, 1], 'b-o', 
+            markersize=3, label='Observed', alpha=0.7)
+    if len(estimated_trajectory) > 0:
+        ax1.plot(estimated_trajectory[:, 0], estimated_trajectory[:, 1], 'r--x',
+                markersize=3, label='Estimated (Model)', alpha=0.7)
+    ax1.set_xlabel('X position')
+    ax1.set_ylabel('Y position')
+    ax1.set_title(f'XY Trajectory (angle={angle:.1f}°)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_aspect('equal')
+    
+    # --- Plot 2: X vs Frame ---
+    ax2 = axes[0, 1]
+    frames = np.arange(len(observed_trajectory))
+    ax2.plot(frames, observed_trajectory[:, 0], 'b-', label='Observed X', linewidth=2)
+    if len(estimated_trajectory) > 0:
+        est_frames = np.arange(len(estimated_trajectory))
+        ax2.plot(est_frames, estimated_trajectory[:, 0], 'r--', label='Estimated X', linewidth=2)
+    ax2.set_xlabel('Frame')
+    ax2.set_ylabel('X position')
+    ax2.set_title('X Position over Time')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # --- Plot 3: Y vs Frame ---
+    ax3 = axes[1, 0]
+    ax3.plot(frames, observed_trajectory[:, 1], 'b-', label='Observed Y', linewidth=2)
+    if len(estimated_trajectory) > 0:
+        ax3.plot(est_frames, estimated_trajectory[:, 1], 'r--', label='Estimated Y', linewidth=2)
+    ax3.set_xlabel('Frame')
+    ax3.set_ylabel('Y position')
+    ax3.set_title('Y Position over Time (Parabola)')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # --- Plot 4: Velocity Analysis ---
+    ax4 = axes[1, 1]
+    
+    # Compute observed velocities
+    if len(observed_trajectory) > 1:
+        dt = 1/50  # 50 fps
+        obs_vx = np.diff(observed_trajectory[:, 0]) / dt
+        obs_vy = np.diff(observed_trajectory[:, 1]) / dt
+        vel_frames = frames[:-1]
+        
+        ax4.plot(vel_frames, obs_vx, 'b-', label='Observed Vx', alpha=0.7)
+        ax4.plot(vel_frames, obs_vy, 'g-', label='Observed Vy', alpha=0.7)
+        
+        # Compute average gravity from Vy
+        if len(obs_vy) > 1:
+            obs_ay = np.diff(obs_vy) / dt
+            avg_gravity = np.mean(obs_ay)
+            ax4.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+            
+            # Add text box with physics summary
+            initial_vx = obs_vx[0] if len(obs_vx) > 0 else 0
+            initial_vy = obs_vy[0] if len(obs_vy) > 0 else 0
+            initial_v = np.sqrt(initial_vx**2 + initial_vy**2)
+            
+            physics_text = (
+                f"Observed Physics:\n"
+                f"  Initial Vx: {initial_vx:.1f}\n"
+                f"  Initial Vy: {initial_vy:.1f}\n"
+                f"  Initial |V|: {initial_v:.1f}\n"
+                f"  Avg gravity: {avg_gravity:.1f}\n"
+                f"\nModel Parameters:\n"
+                f"  Gravity: {world_model_params.get('gravity', 'N/A')}\n"
+                f"  Velocity: {world_model_params.get('velocity', 'N/A')}"
+            )
+            ax4.text(0.98, 0.98, physics_text, transform=ax4.transAxes, fontsize=9,
+                    verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
+    
+    ax4.set_xlabel('Frame')
+    ax4.set_ylabel('Velocity')
+    ax4.set_title('Velocity Components')
+    ax4.legend(loc='upper left')
+    ax4.grid(True, alpha=0.3)
+    
+    # Compute RMSE if both trajectories available
+    if len(estimated_trajectory) > 0:
+        min_len = min(len(observed_trajectory), len(estimated_trajectory))
+        rmse = np.sqrt(mean_squared_error(observed_trajectory[:min_len], estimated_trajectory[:min_len]))
+        fig.suptitle(f'{title}\nRMSE: {rmse:.2f}', fontsize=12, fontweight='bold')
+    else:
+        fig.suptitle(title, fontsize=12, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[SEGMENT0 VIZ] Saved to: {save_path}")
+    
+    print("\n[SEGMENT0 VIZ] Visualization open - close the window to continue...")
     plt.show(block=True)
     
-    # Print summary
+    return fig
+
+
+def log_direct_hit_analysis(problem_data: dict, world_model_params: dict, angle: float = None):
+    """
+    Log detailed analysis for direct hit feasibility.
+    
+    Parameters:
+        problem_data: PDDL problem data with all objects
+        world_model_params: Current world model parameters
+        angle: Optional planned angle
+    """
+    import numpy as np
+    import math
+    
     print("\n" + "=" * 70)
-    print("ABLATION STUDY SUMMARY: velocity_ratio Feature")
+    print("DIRECT HIT ANALYSIS")
     print("=" * 70)
-    print(f"{'Variable':<10} {'Baseline LOO-CV':<18} {'Extended LOO-CV':<18} {'Improvement':<15}")
-    print("-" * 70)
     
-    helps_count = 0
-    hurts_count = 0
+    # Extract objects
+    birds = {k: v for k, v in problem_data.items() if k.startswith('bird_')}
+    pigs = {k: v for k, v in problem_data.items() if k.startswith('pig_')}
+    blocks = {k: v for k, v in problem_data.items() if k.startswith('block_')}
+    platforms = {k: v for k, v in problem_data.items() if k.startswith('platform_')}
     
-    for var_name in vars_with_history:
-        var_history = history[var_name]
-        final_baseline = var_history["baseline_loo"][-1] if var_history["baseline_loo"] else float('inf')
-        final_extended = var_history["extended_loo"][-1] if var_history["extended_loo"] else float('inf')
-        final_improvement = var_history["improvement_pct"][-1] if var_history["improvement_pct"] else 0
-        
-        if final_improvement > 5:
-            helps_count += 1
-            verdict = "HELPS"
-        elif final_improvement < -5:
-            hurts_count += 1
-            verdict = "HURTS"
-        else:
-            verdict = "NEUTRAL"
-        
-        print(f"{var_name:<10} {final_baseline:<18.4f} {final_extended:<18.4f} {final_improvement:+.1f}% ({verdict})")
+    print(f"\n[OBJECTS DETECTED]")
+    print(f"  Birds: {len(birds)}")
+    print(f"  Pigs: {len(pigs)}")
+    print(f"  Blocks: {len(blocks)}")
+    print(f"  Platforms: {len(platforms)}")
     
-    print("-" * 70)
+    if not birds:
+        print("\n[ERROR] No birds detected!")
+        return False
     
-    if helps_count > hurts_count:
-        conclusion = "RECOMMENDATION: Use velocity_ratio feature"
-    elif hurts_count > helps_count:
-        conclusion = "RECOMMENDATION: Do NOT use velocity_ratio (overfitting)"
+    if not pigs:
+        print("\n[ERROR] No pigs detected!")
+        return False
+    
+    # Bird info — use post-pa-twang launch point when angle is known
+    bird = list(birds.values())[0]
+    bird_name = list(birds.keys())[0]
+    ref_x, ref_y = bird.get('x_bird', 0), bird.get('y_bird', 0)
+    v = bird.get('v_bird', 180)
+    if angle is not None:
+        from agents.pddl.pddl_files.pddl_parser import pddl_bird_position_after_pa_twang
+        bx, by = pddl_bird_position_after_pa_twang(ref_x, ref_y, angle)
+        print(f"\n[BIRD - {bird_name}]")
+        print(f"  PDDL ref (pre-pa-twang): ({ref_x:.1f}, {ref_y:.1f})")
+        print(f"  Launch (post-pa-twang @ {angle:.1f}°): ({bx:.1f}, {by:.1f})")
     else:
-        conclusion = "RECOMMENDATION: velocity_ratio has minimal effect"
+        bx, by = ref_x, ref_y
+        print(f"\n[BIRD - {bird_name}]")
+        print(f"  Position (pre-pa-twang ref): ({bx:.1f}, {by:.1f})")
+    print(f"  Velocity: {v:.1f}")
     
-    print(f"{conclusion}")
-    print("=" * 70)
+    # Pig info
+    pig = list(pigs.values())[0]
+    pig_name = list(pigs.keys())[0]
+    px, py = pig.get('x_pig', 0), pig.get('y_pig', 0)
+    
+    print(f"\n[TARGET PIG - {pig_name}]")
+    print(f"  Position: ({px:.1f}, {py:.1f})")
+    
+    # Geometry analysis
+    dx = px - bx
+    dy = py - by
+    distance = np.sqrt(dx**2 + dy**2)
+    direct_angle = np.degrees(np.arctan2(dy, dx))
+    
+    print(f"\n[GEOMETRY]")
+    print(f"  Horizontal distance (dx): {dx:.1f}")
+    print(f"  Vertical distance (dy): {dy:.1f}")
+    print(f"  Total distance: {distance:.1f}")
+    print(f"  Direct line angle: {direct_angle:.1f}°")
+    
+    # Physics calculation - what angle would hit the pig?
+    g = world_model_params.get('gravity', 90)
+    
+    print(f"\n[WORLD MODEL]")
+    print(f"  Gravity: {g:.2f}")
+    print(f"  Velocity: {v:.2f}")
+    
+    # Calculate required angle for parabolic trajectory to hit pig
+    # Using projectile motion: y = x*tan(θ) - g*x²/(2*v²*cos²(θ))
+    # Solving for θ given (dx, dy, v, g)
+    
+    if dx > 0:
+        # Calculate discriminant for angle calculation
+        try:
+            term = (v**4 - g * (g * dx**2 + 2 * dy * v**2))
+            if term >= 0:
+                # Two possible angles (high arc and low arc)
+                angle_low = np.degrees(np.arctan((v**2 - np.sqrt(term)) / (g * dx)))
+                angle_high = np.degrees(np.arctan((v**2 + np.sqrt(term)) / (g * dx)))
+                
+                print(f"\n[CALCULATED ANGLES TO HIT PIG]")
+                print(f"  Low trajectory angle: {angle_low:.1f}°")
+                print(f"  High trajectory angle: {angle_high:.1f}°")
+                
+                if angle:
+                    print(f"\n[PLANNED ANGLE: {angle:.1f}°]")
+                    angle_error_low = abs(angle - angle_low)
+                    angle_error_high = abs(angle - angle_high)
+                    print(f"  Error from low trajectory: {angle_error_low:.1f}°")
+                    print(f"  Error from high trajectory: {angle_error_high:.1f}°")
+            else:
+                print(f"\n[WARNING] Pig may be unreachable with current velocity!")
+                print(f"  Discriminant: {term:.2f} (negative = no solution)")
+        except Exception as e:
+            print(f"\n[ERROR] Could not calculate angle: {e}")
+    else:
+        print(f"\n[WARNING] Pig is behind or at same x as bird!")
+    
+    # Check for obstacles between bird and pig
+    print(f"\n[OBSTACLE CHECK]")
+    obstacles_in_path = []
+    for block_name, block in blocks.items():
+        block_x = block.get('x_block', 0)
+        block_y = block.get('y_block', 0)
+        block_w = block.get('block_width', 0)
+        block_h = block.get('block_height', 0)
+        
+        # Simple check: is block between bird and pig horizontally?
+        if bx < block_x < px:
+            # Check if block might intersect a trajectory
+            obstacles_in_path.append((block_name, block_x, block_y, block_w, block_h))
+    
+    if obstacles_in_path:
+        print(f"  Blocks between bird and pig: {len(obstacles_in_path)}")
+        for obs in obstacles_in_path:
+            print(f"    - {obs[0]}: x={obs[1]:.0f}, y={obs[2]:.0f}, size={obs[3]:.0f}x{obs[4]:.0f}")
+    else:
+        print(f"  No blocks directly between bird and pig (clear path possible)")
+    
+    print("\n" + "=" * 70)
+    
+    return True

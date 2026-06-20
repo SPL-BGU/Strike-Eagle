@@ -1,5 +1,5 @@
 import math
-import os.path
+import os
 import time
 import random
 import pickle
@@ -13,13 +13,37 @@ from agents.pddl.pddl_files.segments import getSegmentsPelt, getSegmentsEvents
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.process import Process
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
-from agents.pddl.trajectory_parser import extract_real_trajectory, construct_trajectory
-from agents.pddl.visualiator import visualize_compare, plot_loo_cv_comparison, visualize_learning_dashboard
+from agents.pddl.trajectory_parser import (
+    extract_real_trajectory,
+    construct_trajectory,
+    construct_trajectory_from_velocity,
+    estimate_launch_from_trajectory,
+)
+from agents.pddl.visualiator import (visualize_compare, plot_loo_cv_comparison, visualize_learning_dashboard,
+                                     visualize_level_setup, visualize_trajectory_segment0,
+                                     visualize_starting_point_offset, log_direct_hit_analysis,
+                                     debug_all_events_full_trajectory)
 from agents.pddl.angle_protocol import AngleTrainingProtocol
+from agents.pddl.phyq_metrics import PhyQMetrics, PhyQLevelMapper
+from agents.pddl.comparison_csv import AgentComparisonCSV
+from agents.pddl.phyq_generalization import (
+    PhyQGeneralizationProtocol,
+    GeneralizationType,
+    create_local_generalization_protocol,
+    create_broad_generalization_protocol,
+    create_protocol_from_config
+)
 from agents.utility import GroundTruthType
 import subprocess
 from agents.utility.vision.relations import *
-from agents.pddl.pddl_files.pddl_parser import write_problem_file, parse_solution_to_actions, inject_domain_file
+from agents.pddl.pddl_files.pddl_parser import (
+    write_problem_file, parse_solution_to_actions, inject_domain_file,
+    pddl_bird_position_before_pa_twang,
+    pddl_bird_position_after_pa_twang,
+    ANGLE_REPLAN_THRESHOLD_DEG,
+    simulate_pddl_shot_plan,
+    ballistic_angle_to_target,
+)
 from src.client.agent_client import GameState
 from agents.pddl.metrics import calculate_rmse, calculate_impact_rmse
 
@@ -29,21 +53,46 @@ from numpy.polynomial import Polynomial
 class PDDLAgent(BaselineAgent):
     """Birds in boots (server/client version)"""
 
-    def __init__(self, agent_ind, agent_configs, min_deg: int = -4, max_deg: int = 78, deg_step: float = 1,
+    def __init__(self, agent_ind, agent_configs, min_deg: int = -20, max_deg: int = 89, deg_step: float = 0.5,
                  learn: bool = False, start_counting_from_game: int = 0, 
                  override_angle: float = None, debug_collision: bool = False,
-                 determinism_test_mode: bool = False,
-                 use_angle_protocol: bool = True):
+                 determinism_test_mode: bool = True,
+                 use_angle_protocol: bool = False,
+                 validate_alpha_on_validation: bool = False,
+                 phyq_config_path: str = "./config_phyq_sample.xml",  # Path to config_phyq_*.xml for Phy-Q benchmark
+                 # Phy-Q Generalization Protocol options
+                 use_generalization_protocol: bool = False,
+                 use_config_metadata: bool = False,  # Auto-load settings from .meta.json file
+                 generalization_type: str = "local",  # "local" or "broad"
+                 generalization_train_ratio: float = 0.8,  # For local: 80/20 split within templates
+                 generalization_train_templates: list = None,  # For broad: e.g., [1, 2, 3, 4]
+                 generalization_test_templates: list = None,  # For broad: e.g., [5, 6]
+                 generalization_seed: int = 42,
+                 scenario_filter: str = None,  # Filter by scenario: e.g., "single_force"
+                 levels_per_template: int = None,  # Limit levels per template
+                 visualize_pddl_input: bool = True,  # Show PDDL visualization
+                 # Agent comparison CSV options
+                 comparison_csv_path: str = "agent_comparison_results.csv",
+                 human_baseline_path: str = "external/phy-q/playdata/broad_generalization_all_agents.csv"):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
         self.min_deg = min_deg
         self.max_deg = max_deg
         self.deg_step = deg_step
+        self._last_planned_angle = None
+        self._last_plan_uses_ground = False
 
         # Override sim speed from 20
         self.sim_speed = 20
         self.visualize = False
+        
+        # Enable level visualization - saves what PDDL sees for each level
+        self.visualize_pddl_input = visualize_pddl_input  # Shows what agent sees and injects to PDDL
+        self.pddl_viz_dir = "pddl_level_viz"  # Directory for visualization outputs
+        
+        if self.visualize_pddl_input:
+            print(f"[PDDL VIZ] Visualization ENABLED - will show what agent sees for each level")
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
         
@@ -56,27 +105,102 @@ class PDDLAgent(BaselineAgent):
         # 2. determinism_test_mode=True: Random angles [20, 80]
         # 3. override_angle set: Use fixed angle
         # 4. PDDL planner: Compute optimal angle
-        self.use_angle_protocol = use_angle_protocol  # NEW: Enable train/val/test protocol
-        self.determinism_test_mode = False  # Disabled when using protocol
+        self.use_angle_protocol = use_angle_protocol  # Set to False to use PDDL planner
+        self.validate_alpha_on_validation = validate_alpha_on_validation  # Run alpha validation after each validation shot
+        self.determinism_test_mode = False  # Disabled - using PDDL planner
         
         # Initialize angle training protocol
-        # Protocol: Train 4 levels -> Val 1 level -> repeat until 40 train shots -> 10 test shots
+        # Protocol: 15 train shots -> 10 test shots (no validation)
         if self.use_angle_protocol:
             self.angle_protocol = AngleTrainingProtocol(
-                train_ratio=0.70,
-                val_ratio=0.15,
-                test_ratio=0.15,
+                train_ratio=0.80,
+                val_ratio=0.0,
+                test_ratio=0.2,
                 seed=42,
-                val_every_n_levels=5,      # Validate every 5th level
-                test_after_n_trains=40,    # Test phase after 40 train shots
-                test_shots=10              # 10 test shots
+                val_every_n_levels=0,      # Disabled - no validation
+                test_after_n_trains=30,    # Test phase after 10 train shots
+                test_shots=5               # 5 test shots
             )
         else:
             self.angle_protocol = None
 
+        # Initialize Phy-Q benchmark metrics tracking
+        self.phyq_metrics = PhyQMetrics()
+        self.phyq_level_mapper = PhyQLevelMapper(phyq_config_path)
+        self.phyq_config_path = phyq_config_path
+        
+        # Initialize Phy-Q Generalization Protocol
+        # This controls the train/test split based on the Phy-Q paper's evaluation protocols:
+        # - Local: 80/20 split within each template (tests within-task generalization)
+        # - Broad: Train on some templates, test on others (tests cross-task generalization)
+        self.use_generalization_protocol = use_generalization_protocol
+        self.generalization_protocol = None
+        
+        if use_generalization_protocol:
+            print("\n" + "=" * 70)
+            print("INITIALIZING PHY-Q GENERALIZATION PROTOCOL")
+            print("=" * 70)
+            print(f"Config path: {phyq_config_path}")
+            print(f"Use config metadata: {use_config_metadata}")
+            
+            # Try to load from metadata file first if enabled
+            if use_config_metadata:
+                print("\n[MODE] Auto-loading settings from config metadata (default behavior)")
+                print("[MODE] Use --no-config-metadata to disable and use command-line parameters instead")
+                self.generalization_protocol = create_protocol_from_config(phyq_config_path)
+                
+                if self.generalization_protocol is not None:
+                    print("\n[MODE] SUCCESS - Protocol loaded from config metadata!")
+                    print("[MODE] Agent settings are synchronized with config generation settings.")
+                else:
+                    print("\n[MODE] Metadata not found - falling back to command-line parameters")
+                    print("[MODE] To generate metadata, run: python scripts/generate_phyq_configs.py --generalization <type> ...")
+            else:
+                print("\n[MODE] Config metadata disabled - using command-line parameters")
+            
+            # Fall back to manual parameters if metadata loading failed or not enabled
+            if self.generalization_protocol is None:
+                print(f"\n[MANUAL CONFIG] Creating protocol from command-line parameters:")
+                print(f"  - Generalization type: {generalization_type}")
+                print(f"  - Train ratio: {generalization_train_ratio}")
+                print(f"  - Seed: {generalization_seed}")
+                print(f"  - Levels per template: {levels_per_template or 'unlimited'}")
+                if scenario_filter:
+                    print(f"  - Scenario filter: {scenario_filter}")
+                if generalization_train_templates:
+                    print(f"  - Train templates: {generalization_train_templates}")
+                if generalization_test_templates:
+                    print(f"  - Test templates: {generalization_test_templates}")
+                
+                if generalization_type == "local":
+                    self.generalization_protocol = create_local_generalization_protocol(
+                        config_path=phyq_config_path,
+                        train_ratio=generalization_train_ratio,
+                        seed=generalization_seed,
+                        scenario_filter=scenario_filter,
+                        levels_per_template=levels_per_template
+                    )
+                else:  # "broad"
+                    self.generalization_protocol = create_broad_generalization_protocol(
+                        config_path=phyq_config_path,
+                        train_templates=generalization_train_templates,
+                        test_templates=generalization_test_templates,
+                        seed=generalization_seed,
+                        scenario_filter=scenario_filter,
+                        levels_per_template=levels_per_template
+                    )
+            
+            self.generalization_protocol.print_summary()
+            
+            # Update level mapper to use generalization protocol's level order
+            self._generalization_level_order = self.generalization_protocol.get_all_levels_ordered()
+            print(f"\n[GENERALIZATION] Level order set: {len(self._generalization_level_order)} levels")
+            print(f"[GENERALIZATION] Train: {len(self.generalization_protocol.get_train_levels())} levels")
+            print(f"[GENERALIZATION] Test: {len(self.generalization_protocol.get_test_levels())} levels")
+
         self.world_model = WorldModel({
-            Params.gravity: 90,
-            Params.velocity: 200
+            Params.gravity: 85,
+            Params.velocity: 180
         })
         
         # Initialize learned_transition_world_model to current world model
@@ -105,6 +229,8 @@ class PDDLAgent(BaselineAgent):
             },
             "trajectories": []  # Store all past trajectories (first segment only, unlimited)
         }
+        # Always use base_domain_modified.pddl (not domain.pddl) for ENHSP
+        self.world_model.kb = self.kb
         self.x =0
 
         # Storage for learned state transition functions
@@ -127,11 +253,18 @@ class PDDLAgent(BaselineAgent):
         self.impact_rmse = []  # RMSE around impact zone per attempt
         self.impact_trajectories = []  # List of (observed_impact, estimated_impact, impact_idx)
         self.full_trajectories = []  # List of (observed, estimated, event_indexes) per attempt
-        
+        self._last_problem_data = None  # PDDL objects from last get_action_to_perform()
+
         # Win/loss tracking per level
         self.start_counting_from_game = start_counting_from_game  # Skip first X games before counting
         self.games_played = 0  # Total games played counter
         self.game_results = []  # Array of (level, "win"/"loss")
+        
+        # Initialize agent comparison CSV for tracking results across agents
+        self.comparison_csv = AgentComparisonCSV(
+            output_path=comparison_csv_path,
+            human_baseline_path=human_baseline_path
+        )
 
     def learn_collision_effects(self, collisions, bird_observed_features, phase: str = "train", should_learn: bool = True):
         """
@@ -203,8 +336,8 @@ class PDDLAgent(BaselineAgent):
             
             # Train collision model only during training phase
             if should_learn:
-                # Use ablation study to compare models with/without velocity_ratio feature
-                update_model_effects_with_ablation("collision", self.kb, pre_state, post_state, debug=False)
+                # Learn collision model (ablation disabled)
+                update_model_effects("collision", self.kb, pre_state, post_state, debug=False)
             
             # Only use first collision per trajectory
             break
@@ -227,14 +360,48 @@ class PDDLAgent(BaselineAgent):
         self.learned_transitions with updated models
         self.learned_transition_world_model with new WorldModel
         """
+        print("\n" + "=" * 60)
+        print("[FLIGHT PHYSICS LEARNING] Starting...")
+        print("=" * 60)
+        
+        # Log trajectory details
+        print(f"\n[TRAJECTORY INPUT]")
+        print(f"  Length: {len(trajectory)} frames")
+        if len(trajectory) > 0:
+            print(f"  Start position: ({trajectory[0][0]:.1f}, {trajectory[0][1]:.1f})")
+            print(f"  End position: ({trajectory[-1][0]:.1f}, {trajectory[-1][1]:.1f})")
+            
+            # Calculate observed physics from trajectory
+            if len(trajectory) > 2:
+                dt = 1/50  # 50 fps
+                dx = np.diff(trajectory[:, 0])
+                dy = np.diff(trajectory[:, 1])
+                vx = dx / dt
+                vy = dy / dt
+                
+                print(f"\n[OBSERVED PHYSICS FROM TRAJECTORY]")
+                print(f"  Initial Vx: {vx[0]:.1f}")
+                print(f"  Initial Vy: {vy[0]:.1f}")
+                print(f"  Initial |V|: {np.sqrt(vx[0]**2 + vy[0]**2):.1f}")
+                
+                if len(vy) > 1:
+                    ay = np.diff(vy) / dt
+                    print(f"  Observed avg acceleration (gravity): {np.mean(ay):.1f}")
+        
         # Store trajectory in KB
         if "trajectories" not in self.kb:
             self.kb["trajectories"] = []
         self.kb["trajectories"].append(trajectory.copy())
+        print(f"\n[KB UPDATE] Now have {len(self.kb['trajectories'])} trajectories in knowledge base")
         
         self.learn_process_transitions()
         self.learned_transition_world_model = self._create_learned_transition_world_model()
-        print(f"\nLearned World Model: {self.learned_transition_world_model.hyperparams_values}")
+        
+        print("\n" + "-" * 60)
+        print("[LEARNED WORLD MODEL]")
+        print(f"  Gravity: {self.learned_transition_world_model.hyperparams_values.get(Params.gravity, 'N/A'):.2f}")
+        print(f"  Velocity: {self.learned_transition_world_model.hyperparams_values.get(Params.velocity, 'N/A'):.2f}")
+        print("=" * 60 + "\n")
 
     def solve(self):
         """
@@ -247,29 +414,119 @@ class PDDLAgent(BaselineAgent):
         4. Learn flight physics (gravity, velocity) - only during train phase
         5. Visualize and update world model
         """
+        print("\n" + "="*60)
+        print("[DEBUG] solve() STARTED")
+        print("="*60)
+        
+        print("[DEBUG] Step 1: Getting ground truth type...")
         ground_truth_type = GroundTruthType.ground_truth_screenshot
+        
+        print("[DEBUG] Step 2: Updating vision reader...")
         vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+        print("[DEBUG] Vision reader updated successfully")
 
+        print("[DEBUG] Step 3: Finding slingshot...")
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
+        print(f"[DEBUG] Slingshot found at: ({sling.X}, {sling.Y}), size: {sling.width}x{sling.height}")
         
-        # 1. Get angle (priority: protocol > determinism_test > override_angle > PDDL planner)
+        # 1. Get angle (priority: generalization_protocol > angle_protocol > determinism_test > override_angle > PDDL planner)
         should_learn = True  # Default: learn from shot
         current_phase = "train"  # Default phase
         
-        if self.use_angle_protocol and self.angle_protocol is not None:
-            # Use train/val/test protocol
-            angle, current_phase, should_learn = self.angle_protocol.get_next_shot()
+        print(f"[DEBUG] Step 4: Selecting angle method...")
+        print(f"[DEBUG]   use_generalization_protocol={self.use_generalization_protocol}")
+        print(f"[DEBUG]   use_angle_protocol={self.use_angle_protocol}")
+        print(f"[DEBUG]   determinism_test_mode={self.determinism_test_mode}")
+        print(f"[DEBUG]   override_angle={self.override_angle}")
+        
+        # Phy-Q Generalization Protocol (takes priority if enabled)
+        if self.use_generalization_protocol and self.generalization_protocol is not None:
+            # Get phase based on current level index
+            current_phase, should_learn = self.generalization_protocol.get_phase_for_level(self.current_level)
+            
+            if current_phase == "complete":
+                print("\n" + "="*60)
+                print("GENERALIZATION PROTOCOL COMPLETE!")
+                print("="*60)
+                
+                # Print final results summary
+                split = self.generalization_protocol.get_split()
+                train_wins = sum(1 for r in self.phyq_metrics.results 
+                                if r.won and r.level_path in split.train_levels)
+                train_total = len([r for r in self.phyq_metrics.results 
+                                  if r.level_path in split.train_levels])
+                test_wins = sum(1 for r in self.phyq_metrics.results 
+                               if r.won and r.level_path in split.test_levels)
+                test_total = len([r for r in self.phyq_metrics.results 
+                                 if r.level_path in split.test_levels])
+                
+                print(f"\n{'='*70}")
+                print(f"GENERALIZATION RESULTS ({split.generalization_type.value.upper()})")
+                print(f"{'='*70}")
+                print(f"Train Performance: {train_wins}/{train_total} "
+                      f"({100*train_wins/train_total:.1f}%)" if train_total > 0 else "N/A")
+                print(f"Test Performance:  {test_wins}/{test_total} "
+                      f"({100*test_wins/test_total:.1f}%)" if test_total > 0 else "N/A")
+                
+                if split.generalization_type.value == "broad":
+                    print(f"\nTrain templates: {sorted(split.train_templates)}")
+                    print(f"Test templates:  {sorted(split.test_templates)}")
+                
+                # Full Phy-Q report
+                self.phyq_metrics.print_report()
+                
+                # Save results
+                self.phyq_metrics.save("phyq_generalization_results.json")
+                print(f"\n[PHY-Q] Results saved to phyq_generalization_results.json")
+                
+                print("\n[GENERALIZATION] Exiting - protocol finished.")
+                import sys
+                sys.exit(0)
+            
+            # Print status
+            split = self.generalization_protocol.get_split()
+            n_train = len(split.train_levels)
+            n_test = len(split.test_levels)
+            level_in_phase = self.current_level if current_phase == "train" else self.current_level - n_train
+            phase_total = n_train if current_phase == "train" else n_test
+            
+            print(f"\n[GENERALIZATION] Phase: {current_phase.upper()} | "
+                  f"Level: {level_in_phase}/{phase_total} | Learning: {should_learn}")
+            
+            # Use PDDL planner for angle selection
+            print(f"[{current_phase.upper()}] Using PDDL planner")
+            print("[DEBUG] Calling get_action_to_perform()...")
+            actions = self.get_action_to_perform(self.world_model)[0]
+            _, angle = actions
+            print(f"[{current_phase.upper()}] PDDL selected angle: {angle}°")
+        
+        elif self.use_angle_protocol and self.angle_protocol is not None:
+            # Use train/val/test protocol for phase tracking, but PDDL for angle selection
+            _, current_phase, should_learn = self.angle_protocol.get_next_shot()
             
             if current_phase == "complete":
                 print("\n" + "="*60)
                 print("TRAINING PROTOCOL COMPLETE!")
                 print("="*60)
-                self.angle_protocol.print_final_results(kb=self.kb)
-                return  # Exit solve - protocol is done
+                self.angle_protocol.print_final_results(kb=self.kb, phyq_metrics=self.phyq_metrics)
+                
+                # Save Phy-Q results to file
+                self.phyq_metrics.save("phyq_results.json")
+                print(f"\n[PHY-Q] Results saved to phyq_results.json")
+                
+                print("\n[PROTOCOL] Exiting - training protocol finished.")
+                import sys
+                sys.exit(0)  # Exit program - protocol is done
             
             self.angle_protocol.print_status()
-            print(f"[{current_phase.upper()}] Angle: {angle}°, Learning: {should_learn}")
+            
+            # Use PDDL planner for angle selection in all phases
+            print(f"[{current_phase.upper()}] Using PDDL planner, Learning: {should_learn}")
+            print("[DEBUG] Calling get_action_to_perform()...")
+            actions = self.get_action_to_perform(self.world_model)[0]
+            _, angle = actions
+            print(f"[{current_phase.upper()}] PDDL selected angle: {angle}°")
         
         elif self.determinism_test_mode:
             angle = round(random.uniform(20.0, 80.0), 1)
@@ -281,13 +538,19 @@ class PDDLAgent(BaselineAgent):
         
         else:
             # Use PDDL planner
+            print("[DEBUG] Using PDDL planner to select angle...")
+            print("[DEBUG] Calling get_action_to_perform()...")
             actions = self.get_action_to_perform(self.world_model)[0]
             _, angle = actions
             print(f"\n[PDDL] Planner selected angle: {angle}°")
 
         # 2. Execute shot and record trajectory (always use full power)
-        release_point = self.tp.find_release_point_partial_power(sling, angle * np.pi / 180, v_portion=1.0)
+        print(f"[DEBUG] Step 5: Executing shot at angle {angle}°...")
+        release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
+        print(f"[DEBUG] Release point: ({release_point.X}, {release_point.Y})")
+        print("[DEBUG] Calling shoot_and_record_ground_truth()...")
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        print(f"[DEBUG] Shot executed, got {len(batch_gt) if batch_gt else 0} ground truth frames")
 
         # Extract trajectory and events
         groundtruth_trajectories, groundtruth_objects = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
@@ -314,19 +577,93 @@ class PDDLAgent(BaselineAgent):
             print(f"[EVENT DEBUG] First event at frame {event_indexes[0]}")
         
         # 3. Process collision effects (bounce physics)
-        # Always extract and record collision samples for algorithm comparison
-        # Only train models during train phase
-        collisions = event_indexes_by_event["ground_collision"]
-        self.learn_collision_effects(collisions, bird_observed_features, phase=current_phase, should_learn=should_learn)
-        if not should_learn:
-            print(f"[{current_phase.upper()}] Collision samples recorded (no training in evaluation mode)")
+        # DISABLED FOR DIRECT HIT MODE - collision learning from ground bounces
+        # corrupts the physics model. Only enable if you need bounce predictions.
+        ENABLE_COLLISION_LEARNING = True  # Set to True to re-enable bounce learning
         
-        # 3.5 Visualize General vs CART vs M5 comparison for collision learning
-        # if len(collisions) > 0 and "collision" in self.kb:
-        #     plot_loo_cv_comparison(self.kb, event_name="collision")
+        collisions = event_indexes_by_event["ground_collision"]
+        hits = event_indexes_by_event.get("hit", [])
+        block_collisions = event_indexes_by_event.get("block_collision", [])
+        
+        platform_collisions = event_indexes_by_event.get("platform_collision", [])
+        
+        print(f"\n[COLLISION DEBUG] Ground: {len(collisions)}, Hits: {len(hits)}, Blocks: {len(block_collisions)}, Platforms: {len(platform_collisions)}")
+        if block_collisions:
+            print(f"[COLLISION DEBUG] First block collision at frame {block_collisions[0]}")
+        if platform_collisions:
+            print(f"[COLLISION DEBUG] Platform collision detected at frames: {platform_collisions[:5]}{'...' if len(platform_collisions) > 5 else ''}")
+        
+        # Debug platform collision detection - visualize trajectory with all events
+        DEBUG_PLATFORM_COLLISION = False  # Set to True to enable visualization
+        if DEBUG_PLATFORM_COLLISION:
+            # Check for platforms in the scene
+            platform_names = [name for name in groundtruth_objects.keys() if "hill" in name.lower()]
+            if platform_names:
+                print(f"\n[PLATFORM DEBUG] Platforms in scene: {platform_names}")
+                for pname in platform_names:
+                    dims = groundtruth_objects.get(pname, [])
+                    print(f"[PLATFORM DEBUG] {pname} dimensions: {dims}")
+                
+                # Debug: manually check collision with detailed output
+                from agents.pddl.pddl_files.events.event_conditions import is_platform_collision
+                
+                # Build frames for collision check (same as in check_events)
+                max_time = max(len(traj) for traj in objects_features.values())
+                features_copy = {k: list(v) for k, v in objects_features.items()}
+                for obj, traj in features_copy.items():
+                    while len(traj) < max_time:
+                        traj.append(traj[-1])
+                frames = []
+                for frame_values in zip(*features_copy.values()):
+                    frame_dict = dict(zip(features_copy.keys(), frame_values))
+                    frames.append(frame_dict)
+                
+                # Check every 10th frame with debug output
+                print(f"\n[PLATFORM DEBUG] Checking {len(frames)} frames for collision...")
+                collision_found = False
+                for i in range(0, len(frames), 10):
+                    if is_platform_collision(frames, groundtruth_objects, i, debug=True):
+                        collision_found = True
+                        print(f"[PLATFORM DEBUG] Collision detected at frame {i}!")
+                
+                if not collision_found:
+                    # Check frame 0 to see bird/platform setup
+                    bird = frames[0].get("redBird_0", {})
+                    print(f"\n[PLATFORM DEBUG] Frame 0: Bird at ({bird.get('x', 'N/A')}, {bird.get('y', 'N/A')})")
+                    for pname in platform_names:
+                        if pname in frames[0]:
+                            plat = frames[0][pname]
+                            print(f"[PLATFORM DEBUG] Frame 0: {pname} at ({plat.get('x', 'N/A')}, {plat.get('y', 'N/A')})")
+                
+                # Show visualization
+                debug_all_events_full_trajectory(objects_features, groundtruth_objects)
+        
+        if ENABLE_COLLISION_LEARNING:
+            # Always record collision samples (for alpha validation), but only train during train phase
+            self.learn_collision_effects(collisions, bird_observed_features, phase=current_phase, should_learn=should_learn)
+        else:
+            print(f"[DIRECT HIT MODE] Collision learning DISABLED (prevents physics contamination)")
+            if not getattr(self, "_last_plan_uses_ground", False):
+                print(
+                    "[DIRECT HIT MODE] Skipping shot outcome log "
+                    "(PDDL plan does not use ground collision)"
+                )
+            elif len(hits) > 0:
+                print(f"[DIRECT HIT MODE] SUCCESS - Bird hit something! Frames: {hits}")
+            elif len(collisions) > 0:
+                print(
+                    f"[DIRECT HIT MODE] MISS - Bird hit ground without hitting target. "
+                    f"First collision at frame {collisions[0]}"
+                )
 
         # 4. Learn flight physics (gravity, velocity) - ONLY during train phase
         first_segment = parts[0]
+        
+        print(f"\n[SEGMENT 0 DEBUG] Length: {len(first_segment)} frames")
+        if len(first_segment) > 0:
+            print(f"[SEGMENT 0 DEBUG] Start: ({first_segment[0][0]:.1f}, {first_segment[0][1]:.1f})")
+            print(f"[SEGMENT 0 DEBUG] End: ({first_segment[-1][0]:.1f}, {first_segment[-1][1]:.1f})")
+        
         if should_learn:
             self.learn_flight_physics(first_segment)
         else:
@@ -335,23 +672,111 @@ class PDDLAgent(BaselineAgent):
         # 5. Visualize trajectory comparison
         # Trim 2 frames from end of first_segment for cleaner RMSE (avoid noisy impact transition)
         first_segment_trimmed = first_segment[:-2] if len(first_segment) > 5 else first_segment
-        
+
+        gravity = self.world_model.hyperparams_values[Params.gravity]
+        try:
+            n_vel = min(5, max(1, len(first_segment_trimmed) - 2))
+            n_pos = min(3, max(1, len(first_segment_trimmed)))
+            launch = estimate_launch_from_trajectory(
+                first_segment_trimmed, n_vel=n_vel, n_pos=n_pos,
+            )
+        except ValueError:
+            dt = 0.02
+            release = np.asarray(first_segment_trimmed[0], dtype=float)
+            if len(first_segment_trimmed) > 1:
+                launch = {
+                    "release": release,
+                    "vx": (first_segment_trimmed[1, 0] - first_segment_trimmed[0, 0]) / dt,
+                    "vy": (first_segment_trimmed[1, 1] - first_segment_trimmed[0, 1]) / dt,
+                    "v_meas": self.world_model.hyperparams_values[Params.velocity],
+                    "theta_deg": angle,
+                }
+                launch["v_meas"] = float(np.hypot(launch["vx"], launch["vy"]))
+                launch["theta_deg"] = float(np.degrees(np.arctan2(launch["vy"], launch["vx"])))
+            else:
+                v = self.world_model.hyperparams_values[Params.velocity]
+                rad = math.radians(angle)
+                launch = {
+                    "release": release,
+                    "vx": v * math.cos(rad),
+                    "vy": v * math.sin(rad),
+                    "v_meas": v,
+                    "theta_deg": angle,
+                }
+            print("[LAUNCH ESTIMATE] Short segment — using fallback velocity estimate")
+
+        release = launch["release"]
+
+        print(f"\n[LAUNCH ESTIMATE] release=({release[0]:.2f}, {release[1]:.2f}) "
+              f"v=({launch['vx']:.1f}, {launch['vy']:.1f}) |v|={launch['v_meas']:.1f} "
+              f"θ_meas={launch['theta_deg']:.1f}° (planner θ={angle:.1f}°)")
+
+        if should_learn:
+            v_old = self.world_model.hyperparams_values[Params.velocity]
+            v_new = 0.85 * v_old + 0.15 * launch["v_meas"]
+            self.world_model.hyperparams_values[Params.velocity] = v_new
+            print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_new:.2f} (full-power EMA)")
+
         limit = np.max(first_segment_trimmed, axis=0)[0]
-        estimated_trajectory = construct_trajectory(
-            first_segment_trimmed[0], angle, self.world_model, limit,
-            prt=False, integration_method='rk4', stop_at_ground=True
+        estimated_trajectory = construct_trajectory_from_velocity(
+            release, launch["vx"], launch["vy"], gravity, limit,
+            prt=False, integration_method='rk4', stop_at_ground=True,
         )
-        
-        # Use learned model if available, otherwise use current world model
+
         model_for_suggested = getattr(self, 'learned_transition_world_model', None) or self.world_model
-        suggested_trajectory = construct_trajectory(
-            first_segment_trimmed[0], angle, model_for_suggested, limit,
-            prt=False, integration_method='rk4', stop_at_ground=True
+        suggested_gravity = model_for_suggested.hyperparams_values[Params.gravity]
+        suggested_trajectory = construct_trajectory_from_velocity(
+            release, launch["vx"], launch["vy"], suggested_gravity, limit,
+            prt=False, integration_method='rk4', stop_at_ground=True,
         )
 
         current_rmse = calculate_rmse(first_segment_trimmed, estimated_trajectory, trim_start_percent=0, trim_end_percent=0, apply_bias_correction=False)
         self.rmse.append(current_rmse)
         self.suggested_rmse.append(calculate_rmse(first_segment_trimmed, suggested_trajectory))
+        
+        # === SEGMENT 0 TRAJECTORY VISUALIZATION ===
+        # Visualize observed vs estimated trajectory for segment 0 (flight physics)
+        world_model_params = {
+            'gravity': self.world_model.hyperparams_values.get(Params.gravity, 85),
+            'velocity': self.world_model.hyperparams_values.get(Params.velocity, 180)
+        }
+        
+        print(f"\n[SEGMENT 0 PHYSICS] Current World Model:")
+        print(f"  Gravity: {world_model_params['gravity']:.2f}")
+        print(f"  Velocity: {world_model_params['velocity']:.2f}")
+        print(f"  RMSE: {current_rmse:.2f}")
+        
+        # VISUALIZATION DISABLED - uncomment to enable
+        # try:
+        #     visualize_trajectory_segment0(
+        #         first_segment_trimmed, estimated_trajectory,
+        #         angle=angle, world_model_params=world_model_params,
+        #         title=f"Segment 0 - Attempt {len(self.rmse)} (angle={angle:.1f}°, RMSE={current_rmse:.2f})"
+        #     )
+        # except Exception as e:
+        #     print(f"[SEGMENT 0 VIZ] Visualization error (non-fatal): {e}")
+
+        # VISUALIZATION DISABLED - uncomment to enable
+        # Starting-point diagnostic: GT release vs PDDL ref / post-pa-twang (aligned) vs estimated
+        # try:
+        #     if len(first_segment_trimmed) > 0:
+        #         ref_pos = pddl_bird_position_before_pa_twang(
+        #             float(release[0]), float(release[1]), angle
+        #         )
+        #         pddl_after = (float(release[0]), float(release[1]))
+        #         print("\n[START OFFSET VIZ] Opening starting-point comparison (close window to continue)...")
+        #         visualize_starting_point_offset(
+        #             first_segment_trimmed,
+        #             estimated_trajectory,
+        #             pddl_ref_pos=ref_pos,
+        #             pddl_bird_pos=pddl_after,
+        #             angle=angle,
+        #             show_first_n_points=10,
+        #         )
+        #     else:
+        #         print("[START OFFSET VIZ] Skipped (no PDDL problem data or empty segment)")
+        # except Exception as e:
+        #     print(f"[START OFFSET VIZ] Visualization error (non-fatal): {e}")
         
         # Record result in angle protocol (if using)
         if self.use_angle_protocol and self.angle_protocol is not None:
@@ -384,9 +809,9 @@ class PDDLAgent(BaselineAgent):
             # Use the full observed trajectory's x-range as limit
             bird_traj_array = np.array(bird_observed_trajectory)
             impact_limit = np.max(bird_traj_array[:first_impact_idx + 21, 0]) if first_impact_idx + 21 < len(bird_traj_array) else np.max(bird_traj_array[:, 0])
-            extended_estimated = construct_trajectory(
-                bird_traj_array[0], angle, self.world_model, impact_limit,
-                prt=False, integration_method='rk4', stop_at_ground=False  # Don't stop at ground for impact comparison
+            extended_estimated = construct_trajectory_from_velocity(
+                release, launch["vx"], launch["vy"], gravity, impact_limit,
+                prt=False, integration_method='rk4', stop_at_ground=False,
             )
             
             impact_result = calculate_impact_rmse(
@@ -418,15 +843,15 @@ class PDDLAgent(BaselineAgent):
             self.impact_rmse.append(float('inf'))
             self.impact_trajectories.append(None)
         
-        # Show combined learning dashboard every 10 attempts
-        if len(self.full_trajectories) % 10 == 0:
-            visualize_learning_dashboard(
-                self.full_trajectories, 
-                self.rmse, 
-                self.suggested_rmse,
-                self.impact_rmse, 
-                self.impact_trajectories
-            )
+        # Show combined learning dashboard every 10 attempts (DISABLED)
+        # if len(self.full_trajectories) % 10 == 0:
+        #     visualize_learning_dashboard(
+        #         self.full_trajectories, 
+        #         self.rmse, 
+        #         self.suggested_rmse,
+        #         self.impact_rmse, 
+        #         self.impact_trajectories
+        #     )
 
         # 6. Update game state and world model
         game_result = self.ar.get_game_state() == GameState.WON
@@ -435,6 +860,31 @@ class PDDLAgent(BaselineAgent):
         self.games_played += 1
         if self.games_played > self.start_counting_from_game:
             self.game_results.append((self.current_level, "win" if game_result else "loss"))
+
+        # Record Phy-Q benchmark result
+        level_path = self.get_current_level_path()
+        score = self.ar.get_current_score() if game_result else 0
+        self.phyq_metrics.record(
+            level_path=level_path,
+            won=game_result,
+            attempts=1,
+            score=score
+        )
+        scenario = self.phyq_metrics.extract_scenario_from_path(level_path)
+        level_name = level_path.split('/')[-1] if '/' in level_path else level_path
+        scenario_str = scenario if scenario else "unknown"
+        print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
+              f"Result: {'WIN' if game_result else 'LOSS'} | Score: {score}")
+        
+        # Record to agent comparison CSV
+        if self.comparison_csv:
+            self.comparison_csv.write_result(
+                level_path=level_path,
+                agent="PDDLAgent",
+                won=game_result,
+                mode=current_phase,
+                score=score
+            )
 
         # Only update world model during training phase
         if should_learn and hasattr(self, 'learned_transition_world_model') and self.learned_transition_world_model is not None:
@@ -455,55 +905,354 @@ class PDDLAgent(BaselineAgent):
         if self.use_angle_protocol and self.angle_protocol is not None and current_phase == "validation":
             print("\n[INTERIM COMPARISON] Printing current model comparison after validation shot...")
             self.angle_protocol.print_collision_comparison(self.kb)
+            
+            # Run alpha validation if enabled
+            if self.validate_alpha_on_validation:
+                print("\n[ALPHA VALIDATION] Running alpha hyperparameter validation...")
+                self.angle_protocol.validate_alpha()
 
         time.sleep(3)
+
+    def get_current_level_path(self) -> str:
+        """
+        Get the current level path for Phy-Q metrics tracking.
+        
+        Uses the generalization protocol's level order if enabled,
+        otherwise uses the PhyQLevelMapper to convert current_level index to level path.
+        Falls back to a generic path if neither is configured.
+        
+        Returns:
+            Level path string (e.g., "./Levels/phy_q/scenario_03_rolling/train/rolling_t01_00001.xml")
+        """
+        # Generalization protocol takes priority
+        if self.use_generalization_protocol and self.generalization_protocol is not None:
+            level_path = self.generalization_protocol.get_level_path_for_index(self.current_level)
+            if level_path:
+                return level_path
+        
+        # Fall back to level mapper
+        if self.phyq_level_mapper and len(self.phyq_level_mapper) > 0:
+            level_path = self.phyq_level_mapper.get_level_path(self.current_level)
+            if level_path:
+                return level_path
+        
+        return f"level_{self.current_level}"
+
+    def _world_model_params(self, agent_world_model: WorldModel) -> dict:
+        return {
+            'gravity': agent_world_model.hyperparams_values.get(Params.gravity, 85),
+            'velocity': agent_world_model.hyperparams_values.get(Params.velocity, 180),
+        }
+
+    def _gather_problem_data(self, vision, sling, agent_world_model: WorldModel, ref_angle_guess: float):
+        # Debug: dump all object types detected by vision
+        if hasattr(vision, 'allObj') and vision.allObj:
+            print("\n[VISION DEBUG] All detected object types:")
+            if isinstance(vision.allObj, dict):
+                for key, val in vision.allObj.items():
+                    count = len(val) if val else 0
+                    print(f"  '{key}': {count} object(s)")
+            else:
+                print(f"  allObj type: {type(vision.allObj)}")
+        
+        print("[PDDL DEBUG] Getting birds...")
+        bird_objects = get_birds(
+            vision, sling, self.tp, agent_world_model, ref_angle_guess=ref_angle_guess
+        )
+        print(f"[PDDL DEBUG] Birds found: {len(bird_objects) if bird_objects else 0}")
+        print(f"[PDDL DEBUG] Bird ref computed with pa-twang guess angle: {ref_angle_guess:.1f}°")
+
+        print("[PDDL DEBUG] Getting pigs...")
+        pigs_objects = get_pigs(vision, sling, self.tp)
+        print(f"[PDDL DEBUG] Pigs found: {len(pigs_objects) if pigs_objects else 0}")
+
+        print("[PDDL DEBUG] Getting blocks...")
+        block_objects = get_blocks(vision, sling, self.tp)
+        print(f"[PDDL DEBUG] Blocks found: {len(block_objects) if block_objects else 0}")
+
+        print("[PDDL DEBUG] Getting platforms...")
+        platform_objects = get_platforms(vision, sling, self.tp)
+        print(f"[PDDL DEBUG] Platforms found: {len(platform_objects) if platform_objects else 0}")
+
+        problem_data = bird_objects | pigs_objects | block_objects | platform_objects
+        return problem_data, bird_objects, pigs_objects
+
+    def _calculate_fallback_angle(
+        self,
+        pigs_objects,
+        bird_objects,
+        world_model_params: dict,
+        ref_angle_guess: float,
+        problem_data: dict = None,
+    ) -> float:
+        if not pigs_objects:
+            print("[PDDL DEBUG] No pig found, using default: 45.0°")
+            return 45.0
+        pig = list(pigs_objects.values())[0]
+        bird = list(bird_objects.values())[0]
+        v = bird.get('v_bird', 180)
+        g = world_model_params.get('gravity', 85)
+        launch_x, launch_y = pddl_bird_position_after_pa_twang(
+            bird['x_bird'], bird['y_bird'], ref_angle_guess
+        )
+        try:
+            term = v ** 4 - g * (g * (pig['x_pig'] - launch_x) ** 2 + 2 * (pig['y_pig'] - launch_y) * v ** 2)
+            angle_low = angle_high = None
+            if term >= 0 and pig['x_pig'] > launch_x:
+                dx = pig['x_pig'] - launch_x
+                angle_low = np.degrees(np.arctan((v ** 2 - np.sqrt(term)) / (g * dx)))
+                angle_high = np.degrees(np.arctan((v ** 2 + np.sqrt(term)) / (g * dx)))
+            
+            if angle_low is not None and angle_high is not None:
+                print(f"[PDDL DEBUG] Calculated angles: low={angle_low:.1f}°, high={angle_high:.1f}°")
+                
+                # Check both angles for platform collision if we have problem_data
+                if problem_data is not None:
+                    # Test low arc
+                    sim_low = simulate_pddl_shot_plan(problem_data, angle_low, gravity=g)
+                    low_hits_platform = sim_low.get('platform_collision', False)
+                    low_kills_pig = sim_low.get('pig_killed_in_sim', False)
+                    
+                    # Test high arc
+                    sim_high = simulate_pddl_shot_plan(problem_data, angle_high, gravity=g)
+                    high_hits_platform = sim_high.get('platform_collision', False)
+                    high_kills_pig = sim_high.get('pig_killed_in_sim', False)
+                    
+                    print(f"[PDDL DEBUG] Low arc ({angle_low:.1f}°): platform_hit={low_hits_platform}, pig_killed={low_kills_pig}")
+                    print(f"[PDDL DEBUG] High arc ({angle_high:.1f}°): platform_hit={high_hits_platform}, pig_killed={high_kills_pig}")
+                    
+                    # Prefer angle that kills pig
+                    if low_kills_pig and not low_hits_platform:
+                        print(f"[PDDL DEBUG] Using LOW arc (kills pig): {angle_low:.1f}°")
+                        return angle_low
+                    if high_kills_pig and not high_hits_platform:
+                        print(f"[PDDL DEBUG] Using HIGH arc (kills pig): {angle_high:.1f}°")
+                        return angle_high
+                    
+                    # If neither kills pig cleanly, prefer one that doesn't hit platform
+                    if not low_hits_platform:
+                        print(f"[PDDL DEBUG] Using LOW arc (no platform hit): {angle_low:.1f}°")
+                        return angle_low
+                    if not high_hits_platform:
+                        print(f"[PDDL DEBUG] Using HIGH arc (no platform hit): {angle_high:.1f}°")
+                        return angle_high
+                    
+                    # Both hit platform - try high arc (better chance of clearing)
+                    print(f"[PDDL DEBUG] Both arcs hit platform, trying HIGH arc: {angle_high:.1f}°")
+                    return angle_high
+            
+            # Fallback to default ballistic (low arc)
+            fallback = ballistic_angle_to_target(
+                launch_x, launch_y, pig['x_pig'], pig['y_pig'], v, g,
+                min_angle=self.min_deg, max_angle=self.max_deg,
+            )
+            if fallback is not None:
+                print(f"[PDDL DEBUG] Launch→pig ballistic angle: {fallback:.1f}°")
+                return fallback
+            direct_angle = np.degrees(np.arctan2(pig['y_pig'] - launch_y, pig['x_pig'] - launch_x))
+            fallback_angle = max(self.min_deg, min(self.max_deg, direct_angle))
+            print(f"[PDDL DEBUG] Pig may be unreachable, using direct angle: {fallback_angle:.1f}°")
+            return fallback_angle
+        except Exception as e:
+            print(f"[PDDL DEBUG] Angle calculation failed ({e}), using default: 45.0°")
+            return 45.0
+
+    def _run_enhsp_planner(self, problem_data: dict, agent_world_model: WorldModel):
+        """Write problem/domain, run ENHSP. Returns (actions or None, planner_output)."""
+        domain_path = 'base_domain_modified.pddl'
+
+        print("[PDDL DEBUG] Writing problem file...")
+        print(
+            f"[PDDL DEBUG] Physics: gravity={agent_world_model.hyperparams_values[Params.gravity]:.2f}, "
+            f"velocity={agent_world_model.hyperparams_values[Params.velocity]:.2f}"
+        )
+        print(f"[PDDL DEBUG] Using angle range: min={self.min_deg}°, max={self.max_deg}° (start={self.max_deg}°)")
+        write_problem_file(
+            'agents/pddl/pddl_files/problem.pddl',
+            problem_data,
+            self.max_deg,
+            self.deg_step,
+            agent_world_model,
+            min_angle=self.min_deg,
+            max_angle=self.max_deg,
+        )
+        print("[PDDL DEBUG] Problem file written")
+
+        print("[PDDL DEBUG] Injecting base_domain.pddl (collision + learned physics)...")
+        inject_domain_file('agents/pddl/pddl_files/base_domain.pddl', agent_world_model)
+        print("[PDDL DEBUG] Domain file injected")
+        print(f"[PDDL DEBUG] Using domain: {domain_path}")
+
+        root_cwd = os.getcwd()
+        pddl_dir = os.path.join(root_cwd, 'agents', 'pddl', 'pddl_files')
+
+        print(f"[PDDL DEBUG] Current working directory: {root_cwd}")
+        os.chdir(pddl_dir)
+        print(f"[PDDL DEBUG] Changed to: {os.getcwd()}")
+
+        try:
+            print("[PDDL DEBUG] Running ENHSP planner (timeout=200s)...")
+            print(
+                f"[PDDL DEBUG] Command: java -jar enhsp-20.jar -o {domain_path} "
+                f"-f problem.pddl -sp solution.pddl -planner sat-pt"
+            )
+            if os.path.exists('solution.pddl'):
+                os.remove('solution.pddl')
+                print("[PDDL DEBUG] Deleted old solution file")
+
+            result = subprocess.run(
+                [
+                    'java', '-jar', 'enhsp-20.jar', '-o', domain_path,
+                    '-f', 'problem.pddl', '-sp', 'solution.pddl', '-planner', 'sat-pt',
+                ],
+                timeout=200,
+                capture_output=True,
+                text=True,
+            )
+            print("[PDDL DEBUG] ENHSP planner finished")
+            planner_output = (result.stdout or '') + (result.stderr or '')
+
+            if "unsolvable" in planner_output.lower():
+                print("[PDDL DEBUG] *** PLANNER REPORTED: Problem unsolvable ***")
+                print(f"[PDDL DEBUG] Planner output: {planner_output[:300]}")
+                return None, planner_output
+
+            if not os.path.exists('solution.pddl'):
+                print("[PDDL DEBUG] *** No solution file generated ***")
+                print(f"[PDDL DEBUG] Planner stdout: {result.stdout[:500] if result.stdout else 'empty'}")
+                print(f"[PDDL DEBUG] Planner stderr: {result.stderr[:500] if result.stderr else 'empty'}")
+                return None, planner_output
+
+            print("[PDDL DEBUG] Parsing solution...")
+            actions = parse_solution_to_actions('solution.pddl', self.max_deg, self.deg_step)
+            print(f"[PDDL DEBUG] Parsed actions: {actions}")
+            return actions, planner_output
+        except Exception as e:
+            print(f"[PDDL DEBUG] EXCEPTION: {type(e).__name__}: {e}")
+            return None, str(e)
+        finally:
+            os.chdir(root_cwd)
+            print(f"[PDDL DEBUG] Changed back to: {os.getcwd()}")
+
+    def _finalize_plan_metadata(self, problem_data: dict, angle: float, world_model_params: dict):
+        """Store plan flags and optionally run direct-hit analysis for ground-bounce plans."""
+        g = world_model_params['gravity']
+        # Run simulation with debug=True to see detailed collision checks
+        sim = simulate_pddl_shot_plan(problem_data, angle, gravity=g, debug=True)
+        self._last_planned_angle = angle
+        self._last_plan_uses_ground = sim['uses_ground_collision']
+        self._last_problem_data = problem_data
+
+        print(
+            f"[PDDL DEBUG] Plan sim: ground_touches={sim['ground_touches']}, "
+            f"pig_killed_in_sim={sim['pig_killed_in_sim']}, "
+            f"uses_ground_collision={sim['uses_ground_collision']}, "
+            f"platform_collision={sim.get('platform_collision', False)}"
+        )
+        if sim.get('platform_collision'):
+            print(f"[PDDL DEBUG] Platform hit: {sim.get('platform_hit_name')} at {sim.get('platform_hit_pos')}")
+
+        # Visualize what PDDL sees for this level (saves to file)
+        if getattr(self, 'visualize_pddl_input', False):
+            try:
+                # Create output directory if needed
+                viz_dir = getattr(self, 'pddl_viz_dir', 'pddl_level_viz')
+                if not os.path.exists(viz_dir):
+                    os.makedirs(viz_dir)
+                
+                # Generate filename with level info
+                level_idx = getattr(self, 'current_level', 0)
+                attempt_num = len(self.rmse) + 1
+                save_path = os.path.join(viz_dir, f"level_{level_idx:03d}_attempt_{attempt_num:02d}.png")
+                
+                # Build title with simulation result
+                sim_result = "HIT PIG" if sim['pig_killed_in_sim'] else ("HIT PLATFORM" if sim['platform_collision'] else "MISS")
+                title = (
+                    f"Level {level_idx} - PDDL Input View\n"
+                    f"Angle={angle:.1f}° | G={world_model_params['gravity']:.1f} | V={world_model_params['velocity']:.1f} | Sim: {sim_result}"
+                )
+                
+                visualize_level_setup(
+                    problem_data,
+                    world_model_params,
+                    title=title,
+                    save_path=save_path,
+                    show_plot=True,  # Pause to show visualization
+                    trajectory=sim.get('trajectory'),  # Pass trajectory for visualization
+                    angle=angle
+                )
+                print(f"[PDDL VIZ] Saved level visualization to: {save_path}")
+            except Exception as e:
+                import traceback
+                print(f"[PDDL VIZ] Visualization error (non-fatal): {e}")
+                traceback.print_exc()
 
     def get_action_to_perform(self, agent_world_model: WorldModel):
         """
         Formulate_image
         """
-        # GET Problem
-        initial_angle = self.min_deg
-        angle_rate = self.deg_step
-        ground_truth_type = GroundTruthType.ground_truth_screenshot
-        time.sleep(1)
-        vision = self._update_reader(ground_truth_type.value,self.if_check_gt)
+        print("\n[PDDL DEBUG] ========== get_action_to_perform() STARTED ==========")
 
+        ground_truth_type = GroundTruthType.ground_truth_screenshot
+
+        print("[PDDL DEBUG] Sleeping 1 second...")
+        time.sleep(1)
+
+        print("[PDDL DEBUG] Updating vision reader...")
+        vision = self._update_reader(ground_truth_type.value, self.if_check_gt)
+
+        print("[PDDL DEBUG] Finding slingshot...")
         sling = vision.find_slingshot_mbr()[0]
         sling.width, sling.height = sling.height, sling.width
+        print(f"[PDDL DEBUG] Slingshot: ({sling.X}, {sling.Y})")
 
-        bird_objects = get_birds(vision, sling, self.tp, self.world_model)
+        ref_guess = self._last_planned_angle if self._last_planned_angle is not None else self.max_deg
+        problem_data, bird_objects, pigs_objects = self._gather_problem_data(
+            vision, sling, agent_world_model, ref_angle_guess=ref_guess
+        )
+        print(f"[PDDL DEBUG] Total problem data keys: {list(problem_data.keys())}")
 
-        pigs_objects = get_pigs(vision, sling, self.tp)
+        world_model_params = self._world_model_params(agent_world_model)
 
-        block_objects = get_blocks(vision, sling, self.tp)
+        actions, planner_output = self._run_enhsp_planner(problem_data, agent_world_model)
+        if not actions:
+            print("[PDDL DEBUG] Falling back to calculated trajectory angle...")
+            fallback_angle = self._calculate_fallback_angle(
+                pigs_objects, bird_objects, world_model_params, ref_guess, problem_data
+            )
+            problem_data, bird_objects, pigs_objects = self._gather_problem_data(
+                vision, sling, agent_world_model, ref_angle_guess=fallback_angle
+            )
+            fallback_angle = self._calculate_fallback_angle(
+                pigs_objects, bird_objects, world_model_params, fallback_angle, problem_data
+            )
+            actions = [("shoot", fallback_angle)]
+            self._finalize_plan_metadata(problem_data, fallback_angle, world_model_params)
+            print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
+            return actions
 
-        platform_objects = get_platforms(vision, sling, self.tp)
+        _, angle = actions[0]
 
-        problem_data = bird_objects | pigs_objects | block_objects | platform_objects
+        # if abs(angle - ref_guess) > ANGLE_REPLAN_THRESHOLD_DEG:
+        #     print(
+        #         f"[PDDL DEBUG] Replanning: angle {angle:.1f}° differs from "
+        #         f"pa-twang guess {ref_guess:.1f}° — refreshing bird ref"
+        #     )
+        #     problem_data, bird_objects, pigs_objects = self._gather_problem_data(
+        #         vision, sling, agent_world_model, ref_angle_guess=angle
+        #     )
+        #     actions, _ = self._run_enhsp_planner(problem_data, agent_world_model)
+        #     if not actions:
+        #         print("[PDDL DEBUG] Replan failed; refreshing bird ref at first-pass angle")
+        #         problem_data, bird_objects, pigs_objects = self._gather_problem_data(
+        #             vision, sling, agent_world_model, ref_angle_guess=angle
+        #         )
+        #         actions = [("shoot", angle)]
+        #     else:
+        #         _, angle = actions[0]
 
-        solution_path = 'agents/pddl/pddl_files/solution.pddl'
-        write_problem_file('agents/pddl/pddl_files/problem.pddl', problem_data, 0, 0.2, agent_world_model)
-
-        if agent_world_model.kb != None:
-            inject_domain_file('agents/pddl/pddl_files/base_domain.pddl',agent_world_model)
-
-
-        domain_path = 'base_domain_modified.pddl' if agent_world_model.kb != None else 'domain.pddl'
-        os.chdir('agents/pddl/pddl_files/')
-        try:
-            subprocess.call(
-                ['java', '-jar', 'enhsp-20.jar', '-o', domain_path, '-f', 'problem.pddl', '-sp', 'solution.pddl',
-                 '-planner', 'sat'
-                             '-pt'
-                 # ,'-sjr','solution_path.json'
-                 ],timeout=200)
-            os.chdir('../../..')
-            actions = parse_solution_to_actions(solution_path, 0, 0.2)
-        except:
-            actions = [("shoot",45)]
-            os.chdir('../../..')
-
+        self._finalize_plan_metadata(problem_data, angle, world_model_params)
+        print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
         return actions
 
     def learn_process(self, observed_trajectory: np.ndarray):
@@ -688,11 +1437,27 @@ class PDDLAgent(BaselineAgent):
             
             # yddot(t) = constant (gravity doesn't change)
             # Average gravity (yddot) from all trajectories
+            # Filter outliers: expected gravity is around -90, filter values outside [-150, -30]
+            print(f"\n[GRAVITY LEARNING] Raw gravity values from {len(all_yddot_constants)} trajectories:")
+            for i, g in enumerate(all_yddot_constants):
+                print(f"  Trajectory {i}: gravity = {g:.2f}")
+            
             if len(all_yddot_constants) > 0:
-                yddot_constant = np.mean(all_yddot_constants)
-                print(f"  Averaged gravity from {len(all_yddot_constants)} trajectories: {yddot_constant:.4f}")
+                # Filter outliers - keep values within expected range
+                GRAVITY_MIN, GRAVITY_MAX = -150, -30
+                filtered_gravity = [g for g in all_yddot_constants if GRAVITY_MIN <= g <= GRAVITY_MAX]
+                
+                if len(filtered_gravity) > 0:
+                    yddot_constant = np.mean(filtered_gravity)
+                    print(f"[GRAVITY LEARNING] Filtered to {len(filtered_gravity)} values in range [{GRAVITY_MIN}, {GRAVITY_MAX}]")
+                    print(f"[GRAVITY LEARNING] Final averaged gravity: {yddot_constant:.4f}")
+                else:
+                    # All values are outliers, use default
+                    yddot_constant = -90.0
+                    print(f"[GRAVITY LEARNING] WARNING: All gravity values were outliers! Using default: {yddot_constant}")
             else:
-                yddot_constant = 0.0
+                yddot_constant = -90.0
+                print(f"[GRAVITY LEARNING] No trajectories available, using default gravity: {yddot_constant}")
             
             # Create a constant model for yddot
             class ConstantYddotModel:
