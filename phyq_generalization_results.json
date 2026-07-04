@@ -1,0 +1,304 @@
+{
+  "summary": {
+    "phyq_score": 0.0,
+    "total_levels": 3,
+    "total_wins": 0,
+    "total_losses": 3,
+    "overall_pass_rate": 0.0,
+    "local_generalization": {
+      "single_force": 0.0
+    },
+    "broad_generalization": {
+      "Force Scenarios": 0.0
+    },
+    "scenarios": {
+      "single_force": {
+        "scenario": "single_force",
+        "id": 1,
+        "category": 1,
+        "category_name": "Force Scenarios",
+        "description": "Some target objects can be destroyed with a single force",
+        "skill": "Force application",
+        "wins": 0,
+        "losses": 3,
+        "total": 3,
+        "pass_rate": 0.0,
+        "avg_attempts": 1.0,
+        "avg_score": 0.0
+      },
+      "multiple_forces": {
+        "scenario": "multiple_forces",
+        "id": 2,
+        "category": 1,
+        "category_name": "Force Scenarios",
+        "description": "Some target objects need multiple forces to destroy",
+        "skill": "Force application",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "rolling": {
+        "scenario": "rolling",
+        "id": 3,
+        "category": 2,
+        "category_name": "Motion Scenarios",
+        "description": "Circular objects can be rolled along a surface to a target",
+        "skill": "Motion prediction",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "falling": {
+        "scenario": "falling",
+        "id": 4,
+        "category": 2,
+        "category_name": "Motion Scenarios",
+        "description": "Objects can be fallen on to a target",
+        "skill": "Motion prediction",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "sliding": {
+        "scenario": "sliding",
+        "id": 5,
+        "category": 2,
+        "category_name": "Motion Scenarios",
+        "description": "Non-circular objects can be slid along a surface to a target",
+        "skill": "Motion prediction",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "bouncing": {
+        "scenario": "bouncing",
+        "id": 6,
+        "category": 2,
+        "category_name": "Motion Scenarios",
+        "description": "Objects can be bounced off a surface to reach a target",
+        "skill": "Motion prediction",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "relative_weight": {
+        "scenario": "relative_weight",
+        "id": 7,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Objects with correct weight need to be moved to reach a target",
+        "skill": "Property reasoning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "relative_height": {
+        "scenario": "relative_height",
+        "id": 8,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Objects with correct height need to be moved to reach a target",
+        "skill": "Property reasoning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "relative_width": {
+        "scenario": "relative_width",
+        "id": 9,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Objects with correct width or opening should be selected",
+        "skill": "Property reasoning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "shape_difference": {
+        "scenario": "shape_difference",
+        "id": 10,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Objects with correct shape need to be moved/destroyed",
+        "skill": "Property reasoning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "non_greedy": {
+        "scenario": "non_greedy",
+        "id": 11,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Actions need to be selected in the correct order based on physical consequences",
+        "skill": "Strategic planning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "structural_analysis": {
+        "scenario": "structural_analysis",
+        "id": 12,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "The correct target needs to be chosen to break the stability of a structure",
+        "skill": "Structural reasoning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "clearing_paths": {
+        "scenario": "clearing_paths",
+        "id": 13,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "A path needs to be created before the target can be reached",
+        "skill": "Sequential planning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "adequate_timing": {
+        "scenario": "adequate_timing",
+        "id": 14,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Correct actions need to be performed within time constraints",
+        "skill": "Temporal reasoning",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      },
+      "manoeuvring": {
+        "scenario": "manoeuvring",
+        "id": 15,
+        "category": 3,
+        "category_name": "Complex Reasoning",
+        "description": "Powers of objects need to be activated correctly to reach a target",
+        "skill": "Ability utilization",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0,
+        "avg_attempts": 0.0,
+        "avg_score": 0.0
+      }
+    },
+    "categories": {
+      "Force Scenarios": {
+        "category": 1,
+        "name": "Force Scenarios",
+        "scenarios": [
+          "single_force",
+          "multiple_forces"
+        ],
+        "wins": 0,
+        "losses": 3,
+        "total": 3,
+        "pass_rate": 0.0
+      },
+      "Motion Scenarios": {
+        "category": 2,
+        "name": "Motion Scenarios",
+        "scenarios": [
+          "rolling",
+          "falling",
+          "sliding",
+          "bouncing"
+        ],
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0
+      },
+      "Complex Reasoning": {
+        "category": 3,
+        "name": "Complex Reasoning",
+        "scenarios": [
+          "relative_weight",
+          "relative_height",
+          "relative_width",
+          "shape_difference",
+          "non_greedy",
+          "structural_analysis",
+          "clearing_paths",
+          "adequate_timing",
+          "manoeuvring"
+        ],
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "pass_rate": 0.0
+      }
+    }
+  },
+  "results": [
+    {
+      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t06_00068.xml",
+      "scenario": "single_force",
+      "template": 6,
+      "won": false,
+      "attempts": 1,
+      "score": 0,
+      "timestamp": "2026-06-20T15:29:27.626056"
+    },
+    {
+      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t06_00065.xml",
+      "scenario": "single_force",
+      "template": 6,
+      "won": false,
+      "attempts": 1,
+      "score": 0,
+      "timestamp": "2026-06-20T15:30:06.139375"
+    },
+    {
+      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t06_00076.xml",
+      "scenario": "single_force",
+      "template": 6,
+      "won": false,
+      "attempts": 1,
+      "score": 0,
+      "timestamp": "2026-06-20T15:30:43.000105"
+    }
+  ],
+  "timestamp": "2026-06-20T15:30:46.554843"
+}

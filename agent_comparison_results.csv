@@ -1,0 +1,452 @@
+level_name,variation,scenario,template,agent,mode,result
+single_force_t01_00001.xml,1,single_force,1,PDDLAgent,train,Win
+single_force_t01_00001.xml,1,single_force,1,Human,train,0.963
+single_force_t01_00001.xml,1,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00001.xml,1,single_force,1,Datalab,train,0.890
+single_force_t01_00001.xml,1,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00001.xml,1,single_force,1,Bambirds,train,0.580
+single_force_t01_00001.xml,1,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00001.xml,1,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00001.xml,1,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00001.xml,1,single_force,1,Relational-Image,train,0.050
+single_force_t01_00001.xml,1,single_force,1,Random Agent,train,0.085
+single_force_t01_00002.xml,2,single_force,1,PDDLAgent,train,Win
+single_force_t01_00002.xml,2,single_force,1,Human,train,0.963
+single_force_t01_00002.xml,2,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00002.xml,2,single_force,1,Datalab,train,0.890
+single_force_t01_00002.xml,2,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00002.xml,2,single_force,1,Bambirds,train,0.580
+single_force_t01_00002.xml,2,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00002.xml,2,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00002.xml,2,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00002.xml,2,single_force,1,Relational-Image,train,0.050
+single_force_t01_00002.xml,2,single_force,1,Random Agent,train,0.085
+single_force_t01_00003.xml,3,single_force,1,PDDLAgent,train,Win
+single_force_t01_00003.xml,3,single_force,1,Human,train,0.963
+single_force_t01_00003.xml,3,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00003.xml,3,single_force,1,Datalab,train,0.890
+single_force_t01_00003.xml,3,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00003.xml,3,single_force,1,Bambirds,train,0.580
+single_force_t01_00003.xml,3,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00003.xml,3,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00003.xml,3,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00003.xml,3,single_force,1,Relational-Image,train,0.050
+single_force_t01_00003.xml,3,single_force,1,Random Agent,train,0.085
+single_force_t01_00001.xml,1,single_force,1,PDDLAgent,train,Win
+single_force_t01_00001.xml,1,single_force,1,Human,train,0.963
+single_force_t01_00001.xml,1,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00001.xml,1,single_force,1,Datalab,train,0.890
+single_force_t01_00001.xml,1,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00001.xml,1,single_force,1,Bambirds,train,0.580
+single_force_t01_00001.xml,1,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00001.xml,1,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00001.xml,1,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00001.xml,1,single_force,1,Relational-Image,train,0.050
+single_force_t01_00001.xml,1,single_force,1,Random Agent,train,0.085
+single_force_t01_00002.xml,2,single_force,1,PDDLAgent,train,Win
+single_force_t01_00002.xml,2,single_force,1,Human,train,0.963
+single_force_t01_00002.xml,2,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00002.xml,2,single_force,1,Datalab,train,0.890
+single_force_t01_00002.xml,2,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00002.xml,2,single_force,1,Bambirds,train,0.580
+single_force_t01_00002.xml,2,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00002.xml,2,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00002.xml,2,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00002.xml,2,single_force,1,Relational-Image,train,0.050
+single_force_t01_00002.xml,2,single_force,1,Random Agent,train,0.085
+single_force_t01_00003.xml,3,single_force,1,PDDLAgent,train,Win
+single_force_t01_00003.xml,3,single_force,1,Human,train,0.963
+single_force_t01_00003.xml,3,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00003.xml,3,single_force,1,Datalab,train,0.890
+single_force_t01_00003.xml,3,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00003.xml,3,single_force,1,Bambirds,train,0.580
+single_force_t01_00003.xml,3,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00003.xml,3,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00003.xml,3,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00003.xml,3,single_force,1,Relational-Image,train,0.050
+single_force_t01_00003.xml,3,single_force,1,Random Agent,train,0.085
+single_force_t01_00001.xml,1,single_force,1,PDDLAgent,train,Win
+single_force_t01_00001.xml,1,single_force,1,Human,train,0.963
+single_force_t01_00001.xml,1,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00001.xml,1,single_force,1,Datalab,train,0.890
+single_force_t01_00001.xml,1,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00001.xml,1,single_force,1,Bambirds,train,0.580
+single_force_t01_00001.xml,1,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00001.xml,1,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00001.xml,1,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00001.xml,1,single_force,1,Relational-Image,train,0.050
+single_force_t01_00001.xml,1,single_force,1,Random Agent,train,0.085
+single_force_t01_00002.xml,2,single_force,1,PDDLAgent,train,Win
+single_force_t01_00002.xml,2,single_force,1,Human,train,0.963
+single_force_t01_00002.xml,2,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00002.xml,2,single_force,1,Datalab,train,0.890
+single_force_t01_00002.xml,2,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00002.xml,2,single_force,1,Bambirds,train,0.580
+single_force_t01_00002.xml,2,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00002.xml,2,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00002.xml,2,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00002.xml,2,single_force,1,Relational-Image,train,0.050
+single_force_t01_00002.xml,2,single_force,1,Random Agent,train,0.085
+single_force_t01_00003.xml,3,single_force,1,PDDLAgent,train,Win
+single_force_t01_00003.xml,3,single_force,1,Human,train,0.963
+single_force_t01_00003.xml,3,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00003.xml,3,single_force,1,Datalab,train,0.890
+single_force_t01_00003.xml,3,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00003.xml,3,single_force,1,Bambirds,train,0.580
+single_force_t01_00003.xml,3,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00003.xml,3,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00003.xml,3,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00003.xml,3,single_force,1,Relational-Image,train,0.050
+single_force_t01_00003.xml,3,single_force,1,Random Agent,train,0.085
+single_force_t01_00004.xml,4,single_force,1,PDDLAgent,train,Win
+single_force_t01_00004.xml,4,single_force,1,Human,train,0.963
+single_force_t01_00004.xml,4,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00004.xml,4,single_force,1,Datalab,train,0.890
+single_force_t01_00004.xml,4,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00004.xml,4,single_force,1,Bambirds,train,0.580
+single_force_t01_00004.xml,4,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00004.xml,4,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00004.xml,4,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00004.xml,4,single_force,1,Relational-Image,train,0.050
+single_force_t01_00004.xml,4,single_force,1,Random Agent,train,0.085
+single_force_t01_00005.xml,5,single_force,1,PDDLAgent,train,Win
+single_force_t01_00005.xml,5,single_force,1,Human,train,0.963
+single_force_t01_00005.xml,5,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00005.xml,5,single_force,1,Datalab,train,0.890
+single_force_t01_00005.xml,5,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00005.xml,5,single_force,1,Bambirds,train,0.580
+single_force_t01_00005.xml,5,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00005.xml,5,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00005.xml,5,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00005.xml,5,single_force,1,Relational-Image,train,0.050
+single_force_t01_00005.xml,5,single_force,1,Random Agent,train,0.085
+single_force_t01_00006.xml,6,single_force,1,PDDLAgent,train,Win
+single_force_t01_00006.xml,6,single_force,1,Human,train,0.963
+single_force_t01_00006.xml,6,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00006.xml,6,single_force,1,Datalab,train,0.890
+single_force_t01_00006.xml,6,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00006.xml,6,single_force,1,Bambirds,train,0.580
+single_force_t01_00006.xml,6,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00006.xml,6,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00006.xml,6,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00006.xml,6,single_force,1,Relational-Image,train,0.050
+single_force_t01_00006.xml,6,single_force,1,Random Agent,train,0.085
+single_force_t01_00007.xml,7,single_force,1,PDDLAgent,train,Win
+single_force_t01_00007.xml,7,single_force,1,Human,train,0.963
+single_force_t01_00007.xml,7,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00007.xml,7,single_force,1,Datalab,train,0.890
+single_force_t01_00007.xml,7,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00007.xml,7,single_force,1,Bambirds,train,0.580
+single_force_t01_00007.xml,7,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00007.xml,7,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00007.xml,7,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00007.xml,7,single_force,1,Relational-Image,train,0.050
+single_force_t01_00007.xml,7,single_force,1,Random Agent,train,0.085
+single_force_t01_00008.xml,8,single_force,1,PDDLAgent,train,Win
+single_force_t01_00008.xml,8,single_force,1,Human,train,0.963
+single_force_t01_00008.xml,8,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00008.xml,8,single_force,1,Datalab,train,0.890
+single_force_t01_00008.xml,8,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00008.xml,8,single_force,1,Bambirds,train,0.580
+single_force_t01_00008.xml,8,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00008.xml,8,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00008.xml,8,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00008.xml,8,single_force,1,Relational-Image,train,0.050
+single_force_t01_00008.xml,8,single_force,1,Random Agent,train,0.085
+single_force_t01_00009.xml,9,single_force,1,PDDLAgent,train,Win
+single_force_t01_00009.xml,9,single_force,1,Human,train,0.963
+single_force_t01_00009.xml,9,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00009.xml,9,single_force,1,Datalab,train,0.890
+single_force_t01_00009.xml,9,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00009.xml,9,single_force,1,Bambirds,train,0.580
+single_force_t01_00009.xml,9,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00009.xml,9,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00009.xml,9,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00009.xml,9,single_force,1,Relational-Image,train,0.050
+single_force_t01_00009.xml,9,single_force,1,Random Agent,train,0.085
+single_force_t01_00010.xml,10,single_force,1,PDDLAgent,train,Win
+single_force_t01_00010.xml,10,single_force,1,Human,train,0.963
+single_force_t01_00010.xml,10,single_force,1,Pig Shooter,train,0.873
+single_force_t01_00010.xml,10,single_force,1,Datalab,train,0.890
+single_force_t01_00010.xml,10,single_force,1,Eagle’s Wing,train,0.615
+single_force_t01_00010.xml,10,single_force,1,Bambirds,train,0.580
+single_force_t01_00010.xml,10,single_force,1,D-DDQN-Symbolic,train,0.300
+single_force_t01_00010.xml,10,single_force,1,D-DDQN-Image,train,0.225
+single_force_t01_00010.xml,10,single_force,1,Relational-Symbolic,train,0.375
+single_force_t01_00010.xml,10,single_force,1,Relational-Image,train,0.050
+single_force_t01_00010.xml,10,single_force,1,Random Agent,train,0.085
+single_force_t02_00001.xml,1,single_force,2,PDDLAgent,train,Win
+single_force_t02_00001.xml,1,single_force,2,Human,train,0.963
+single_force_t02_00001.xml,1,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00001.xml,1,single_force,2,Datalab,train,0.890
+single_force_t02_00001.xml,1,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00001.xml,1,single_force,2,Bambirds,train,0.580
+single_force_t02_00001.xml,1,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00001.xml,1,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00001.xml,1,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00001.xml,1,single_force,2,Relational-Image,train,0.050
+single_force_t02_00001.xml,1,single_force,2,Random Agent,train,0.085
+single_force_t02_00002.xml,2,single_force,2,PDDLAgent,train,Win
+single_force_t02_00002.xml,2,single_force,2,Human,train,0.963
+single_force_t02_00002.xml,2,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00002.xml,2,single_force,2,Datalab,train,0.890
+single_force_t02_00002.xml,2,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00002.xml,2,single_force,2,Bambirds,train,0.580
+single_force_t02_00002.xml,2,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00002.xml,2,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00002.xml,2,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00002.xml,2,single_force,2,Relational-Image,train,0.050
+single_force_t02_00002.xml,2,single_force,2,Random Agent,train,0.085
+single_force_t02_00003.xml,3,single_force,2,PDDLAgent,train,Win
+single_force_t02_00003.xml,3,single_force,2,Human,train,0.963
+single_force_t02_00003.xml,3,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00003.xml,3,single_force,2,Datalab,train,0.890
+single_force_t02_00003.xml,3,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00003.xml,3,single_force,2,Bambirds,train,0.580
+single_force_t02_00003.xml,3,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00003.xml,3,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00003.xml,3,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00003.xml,3,single_force,2,Relational-Image,train,0.050
+single_force_t02_00003.xml,3,single_force,2,Random Agent,train,0.085
+single_force_t02_00004.xml,4,single_force,2,PDDLAgent,train,Lose
+single_force_t02_00004.xml,4,single_force,2,Human,train,0.963
+single_force_t02_00004.xml,4,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00004.xml,4,single_force,2,Datalab,train,0.890
+single_force_t02_00004.xml,4,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00004.xml,4,single_force,2,Bambirds,train,0.580
+single_force_t02_00004.xml,4,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00004.xml,4,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00004.xml,4,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00004.xml,4,single_force,2,Relational-Image,train,0.050
+single_force_t02_00004.xml,4,single_force,2,Random Agent,train,0.085
+single_force_t02_00004.xml,4,single_force,2,PDDLAgent,train,Win
+single_force_t02_00004.xml,4,single_force,2,Human,train,0.963
+single_force_t02_00004.xml,4,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00004.xml,4,single_force,2,Datalab,train,0.890
+single_force_t02_00004.xml,4,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00004.xml,4,single_force,2,Bambirds,train,0.580
+single_force_t02_00004.xml,4,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00004.xml,4,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00004.xml,4,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00004.xml,4,single_force,2,Relational-Image,train,0.050
+single_force_t02_00004.xml,4,single_force,2,Random Agent,train,0.085
+single_force_t02_00006.xml,6,single_force,2,PDDLAgent,train,Win
+single_force_t02_00006.xml,6,single_force,2,Human,train,0.963
+single_force_t02_00006.xml,6,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00006.xml,6,single_force,2,Datalab,train,0.890
+single_force_t02_00006.xml,6,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00006.xml,6,single_force,2,Bambirds,train,0.580
+single_force_t02_00006.xml,6,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00006.xml,6,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00006.xml,6,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00006.xml,6,single_force,2,Relational-Image,train,0.050
+single_force_t02_00006.xml,6,single_force,2,Random Agent,train,0.085
+single_force_t02_00007.xml,7,single_force,2,PDDLAgent,train,Win
+single_force_t02_00007.xml,7,single_force,2,Human,train,0.963
+single_force_t02_00007.xml,7,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00007.xml,7,single_force,2,Datalab,train,0.890
+single_force_t02_00007.xml,7,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00007.xml,7,single_force,2,Bambirds,train,0.580
+single_force_t02_00007.xml,7,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00007.xml,7,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00007.xml,7,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00007.xml,7,single_force,2,Relational-Image,train,0.050
+single_force_t02_00007.xml,7,single_force,2,Random Agent,train,0.085
+single_force_t02_00008.xml,8,single_force,2,PDDLAgent,train,Win
+single_force_t02_00008.xml,8,single_force,2,Human,train,0.963
+single_force_t02_00008.xml,8,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00008.xml,8,single_force,2,Datalab,train,0.890
+single_force_t02_00008.xml,8,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00008.xml,8,single_force,2,Bambirds,train,0.580
+single_force_t02_00008.xml,8,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00008.xml,8,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00008.xml,8,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00008.xml,8,single_force,2,Relational-Image,train,0.050
+single_force_t02_00008.xml,8,single_force,2,Random Agent,train,0.085
+single_force_t02_00009.xml,9,single_force,2,PDDLAgent,train,Win
+single_force_t02_00009.xml,9,single_force,2,Human,train,0.963
+single_force_t02_00009.xml,9,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00009.xml,9,single_force,2,Datalab,train,0.890
+single_force_t02_00009.xml,9,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00009.xml,9,single_force,2,Bambirds,train,0.580
+single_force_t02_00009.xml,9,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00009.xml,9,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00009.xml,9,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00009.xml,9,single_force,2,Relational-Image,train,0.050
+single_force_t02_00009.xml,9,single_force,2,Random Agent,train,0.085
+single_force_t02_00010.xml,10,single_force,2,PDDLAgent,train,Win
+single_force_t02_00010.xml,10,single_force,2,Human,train,0.963
+single_force_t02_00010.xml,10,single_force,2,Pig Shooter,train,0.873
+single_force_t02_00010.xml,10,single_force,2,Datalab,train,0.890
+single_force_t02_00010.xml,10,single_force,2,Eagle’s Wing,train,0.615
+single_force_t02_00010.xml,10,single_force,2,Bambirds,train,0.580
+single_force_t02_00010.xml,10,single_force,2,D-DDQN-Symbolic,train,0.300
+single_force_t02_00010.xml,10,single_force,2,D-DDQN-Image,train,0.225
+single_force_t02_00010.xml,10,single_force,2,Relational-Symbolic,train,0.375
+single_force_t02_00010.xml,10,single_force,2,Relational-Image,train,0.050
+single_force_t02_00010.xml,10,single_force,2,Random Agent,train,0.085
+single_force_t04_00001.xml,1,single_force,4,PDDLAgent,train,Win
+single_force_t04_00001.xml,1,single_force,4,Human,train,0.963
+single_force_t04_00001.xml,1,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00001.xml,1,single_force,4,Datalab,train,0.890
+single_force_t04_00001.xml,1,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00001.xml,1,single_force,4,Bambirds,train,0.580
+single_force_t04_00001.xml,1,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00001.xml,1,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00001.xml,1,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00001.xml,1,single_force,4,Relational-Image,train,0.050
+single_force_t04_00001.xml,1,single_force,4,Random Agent,train,0.085
+single_force_t04_00002.xml,2,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00002.xml,2,single_force,4,Human,train,0.963
+single_force_t04_00002.xml,2,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00002.xml,2,single_force,4,Datalab,train,0.890
+single_force_t04_00002.xml,2,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00002.xml,2,single_force,4,Bambirds,train,0.580
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00002.xml,2,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00002.xml,2,single_force,4,Relational-Image,train,0.050
+single_force_t04_00002.xml,2,single_force,4,Random Agent,train,0.085
+single_force_t04_00002.xml,2,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00002.xml,2,single_force,4,Human,train,0.963
+single_force_t04_00002.xml,2,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00002.xml,2,single_force,4,Datalab,train,0.890
+single_force_t04_00002.xml,2,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00002.xml,2,single_force,4,Bambirds,train,0.580
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00002.xml,2,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00002.xml,2,single_force,4,Relational-Image,train,0.050
+single_force_t04_00002.xml,2,single_force,4,Random Agent,train,0.085
+single_force_t04_00002.xml,2,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00002.xml,2,single_force,4,Human,train,0.963
+single_force_t04_00002.xml,2,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00002.xml,2,single_force,4,Datalab,train,0.890
+single_force_t04_00002.xml,2,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00002.xml,2,single_force,4,Bambirds,train,0.580
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00002.xml,2,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00002.xml,2,single_force,4,Relational-Image,train,0.050
+single_force_t04_00002.xml,2,single_force,4,Random Agent,train,0.085
+single_force_t04_00002.xml,2,single_force,4,PDDLAgent,train,Win
+single_force_t04_00002.xml,2,single_force,4,Human,train,0.963
+single_force_t04_00002.xml,2,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00002.xml,2,single_force,4,Datalab,train,0.890
+single_force_t04_00002.xml,2,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00002.xml,2,single_force,4,Bambirds,train,0.580
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00002.xml,2,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00002.xml,2,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00002.xml,2,single_force,4,Relational-Image,train,0.050
+single_force_t04_00002.xml,2,single_force,4,Random Agent,train,0.085
+single_force_t04_00006.xml,6,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00006.xml,6,single_force,4,Human,train,0.963
+single_force_t04_00006.xml,6,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00006.xml,6,single_force,4,Datalab,train,0.890
+single_force_t04_00006.xml,6,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00006.xml,6,single_force,4,Bambirds,train,0.580
+single_force_t04_00006.xml,6,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00006.xml,6,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00006.xml,6,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00006.xml,6,single_force,4,Relational-Image,train,0.050
+single_force_t04_00006.xml,6,single_force,4,Random Agent,train,0.085
+single_force_t04_00006.xml,6,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00006.xml,6,single_force,4,Human,train,0.963
+single_force_t04_00006.xml,6,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00006.xml,6,single_force,4,Datalab,train,0.890
+single_force_t04_00006.xml,6,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00006.xml,6,single_force,4,Bambirds,train,0.580
+single_force_t04_00006.xml,6,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00006.xml,6,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00006.xml,6,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00006.xml,6,single_force,4,Relational-Image,train,0.050
+single_force_t04_00006.xml,6,single_force,4,Random Agent,train,0.085
+single_force_t04_00006.xml,6,single_force,4,PDDLAgent,train,Win
+single_force_t04_00006.xml,6,single_force,4,Human,train,0.963
+single_force_t04_00006.xml,6,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00006.xml,6,single_force,4,Datalab,train,0.890
+single_force_t04_00006.xml,6,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00006.xml,6,single_force,4,Bambirds,train,0.580
+single_force_t04_00006.xml,6,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00006.xml,6,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00006.xml,6,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00006.xml,6,single_force,4,Relational-Image,train,0.050
+single_force_t04_00006.xml,6,single_force,4,Random Agent,train,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,train,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,train,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,train,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,train,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,train,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,train,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,train,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,train,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,train,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,train,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,train,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,train,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,train,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,train,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,train,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,train,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,test,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,test,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,test,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,test,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,test,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,test,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,test,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,test,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,test,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,test,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,test,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,test,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,test,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,test,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,test,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,test,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,test,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,test,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,test,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,test,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,test,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,test,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,test,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,test,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,test,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,test,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,test,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,test,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,test,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,test,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,test,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,test,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,test,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,test,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,test,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,test,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,test,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,test,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,test,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,test,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,test,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,test,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,test,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,test,0.085
+single_force_t04_00009.xml,9,single_force,4,PDDLAgent,test,Lose
+single_force_t04_00009.xml,9,single_force,4,Human,test,0.963
+single_force_t04_00009.xml,9,single_force,4,Pig Shooter,test,0.873
+single_force_t04_00009.xml,9,single_force,4,Datalab,test,0.890
+single_force_t04_00009.xml,9,single_force,4,Eagle’s Wing,test,0.615
+single_force_t04_00009.xml,9,single_force,4,Bambirds,test,0.580
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Symbolic,test,0.300
+single_force_t04_00009.xml,9,single_force,4,D-DDQN-Image,test,0.225
+single_force_t04_00009.xml,9,single_force,4,Relational-Symbolic,test,0.375
+single_force_t04_00009.xml,9,single_force,4,Relational-Image,test,0.050
+single_force_t04_00009.xml,9,single_force,4,Random Agent,test,0.085

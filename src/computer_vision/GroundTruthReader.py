@@ -42,6 +42,7 @@ class GroundTruthReader:
                 'bird_red':'redBird',
                 'bird_white':'whiteBird',
                 'platform':'hill',
+                'Platform':'hill',  # Also map capital-P Platform to hill
                 'pig_basic_big' : 'pig',
                 'pig_basic_small' : 'pig',
                 'pig_basic_medium' : 'pig',
@@ -73,8 +74,9 @@ class GroundTruthReader:
         self.alljson = []
         json = json[0]['features']
         for j in json:
-            if j['properties']['label'] != 'Platform':
-                self.alljson.append(j)
+            # Include Platform objects (they were previously filtered out!)
+            # Platform objects are now mapped to 'hill' via type_transformer
+            self.alljson.append(j)
 
         self._parseJsonToGameObject()
 
@@ -117,8 +119,10 @@ class GroundTruthReader:
         obj_types = np.zeros(obj_total_num).astype(str)
 
         for j in self.alljson:
-            if j['properties']['label'] == "Slingshot" or j['properties']['label'] == "Ground" or j['properties']['label'] == "Trajectory":
-                obj_types[obj_num] = j['properties']['label']
+            label = j['properties']['label']
+            # Handle known labels directly (skip model prediction)
+            if label in ("Slingshot", "Ground", "Trajectory", "Platform"):
+                obj_types[obj_num] = label
 
             else:
                 colorMap = j['properties']['colormap']
@@ -142,9 +146,9 @@ class GroundTruthReader:
         obj_num = 0
         for j in self.alljson:
 
-            if j['properties']['label'] == "Slingshot":
-
-
+            label = j['properties']['label']
+            
+            if label == "Slingshot":
                 rect = self._getRect(j)
                 contours = j['geometry']['coordinates']
                 vertices = contours[0]
@@ -156,7 +160,21 @@ class GroundTruthReader:
                 except:
                     self.allObj[self.type_transformer["Slingshot"]] = [game_object]
 
-            elif j['properties']['label'] == "Ground" or j['properties']['label'] == "Trajectory":
+            elif label == "Platform":
+                # Handle Platform objects - map to 'hill' type
+                rect = self._getRect(j)
+                contours = j['geometry']['coordinates']
+                vertices = contours[0]
+                
+                game_object = GameObject(rect, GameObjectType(self.type_transformer["Platform"]), vertices)
+                
+                obj_type_key = self.type_transformer["Platform"]  # 'hill'
+                try:
+                    self.allObj[obj_type_key].append(game_object)
+                except:
+                    self.allObj[obj_type_key] = [game_object]
+
+            elif label == "Ground" or label == "Trajectory":
                 pass
 
             else:

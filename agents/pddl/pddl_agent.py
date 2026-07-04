@@ -70,7 +70,7 @@ class PDDLAgent(BaselineAgent):
                  generalization_seed: int = 42,
                  scenario_filter: str = None,  # Filter by scenario: e.g., "single_force"
                  levels_per_template: int = None,  # Limit levels per template
-                 visualize_pddl_input: bool = True,  # Show PDDL visualization
+                 visualize_pddl_input: bool = False,  # Show PDDL visualization
                  # Agent comparison CSV options
                  comparison_csv_path: str = "agent_comparison_results.csv",
                  human_baseline_path: str = "external/phy-q/playdata/broad_generalization_all_agents.csv"):
@@ -90,6 +90,9 @@ class PDDLAgent(BaselineAgent):
         # Enable level visualization - saves what PDDL sees for each level
         self.visualize_pddl_input = visualize_pddl_input  # Shows what agent sees and injects to PDDL
         self.pddl_viz_dir = "pddl_level_viz"  # Directory for visualization outputs
+        
+        # Multi-bird tracking: which bird index we're currently shooting
+        self.current_bird_shot = 0  # 0 = first bird, 1 = second bird, etc.
         
         if self.visualize_pddl_input:
             print(f"[PDDL VIZ] Visualization ENABLED - will show what agent sees for each level")
@@ -259,6 +262,10 @@ class PDDLAgent(BaselineAgent):
         self.start_counting_from_game = start_counting_from_game  # Skip first X games before counting
         self.games_played = 0  # Total games played counter
         self.game_results = []  # Array of (level, "win"/"loss")
+        
+        # Per-shot planner status tracking (for CSV reporting)
+        self._last_planner_unsolvable = False  # True if planner reported "unsolvable"
+        self._last_plan_source = "planner"  # "planner" or "fallback"
         
         # Initialize agent comparison CSV for tracking results across agents
         self.comparison_csv = AgentComparisonCSV(
@@ -556,13 +563,59 @@ class PDDLAgent(BaselineAgent):
         groundtruth_trajectories, groundtruth_objects = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
         event_indexes_by_event, objects_features = getSegmentsEvents(groundtruth_trajectories, groundtruth_objects)
 
-        bird_observed_trajectory = groundtruth_trajectories["redBird_0"]
-        bird_observed_features = objects_features["redBird_0"]
+        # === MULTI-BIRD SUPPORT ===
+        # Find the active bird - could be redBird_0, redBird_1, etc.
+        # The active bird is typically the one with the longest trajectory (actively flying)
+        bird_keys = [k for k in groundtruth_trajectories.keys() if k.startswith("redBird")]
+        
+        print(f"\n[MULTI-BIRD DEBUG] Birds detected in trajectory: {bird_keys}")
+        print(f"[MULTI-BIRD DEBUG] All objects tracked: {list(groundtruth_objects.keys())}")
+        
+        # Find the bird with the longest/most dynamic trajectory (the one we just shot)
+        active_bird_key = None
+        max_trajectory_length = 0
+        
+        for bird_key in bird_keys:
+            traj = groundtruth_trajectories.get(bird_key, [])
+            traj_len = len(traj) if isinstance(traj, (list, np.ndarray)) else 0
+            print(f"[MULTI-BIRD DEBUG] {bird_key}: {traj_len} frames")
+            
+            # Also check if the bird moved significantly (active bird)
+            if traj_len > 0:
+                traj_array = np.array(traj)
+                if len(traj_array) >= 2:
+                    # Calculate total displacement
+                    displacement = np.sqrt((traj_array[-1, 0] - traj_array[0, 0])**2 + 
+                                         (traj_array[-1, 1] - traj_array[0, 1])**2)
+                    print(f"[MULTI-BIRD DEBUG] {bird_key}: displacement = {displacement:.1f} pixels")
+                    
+                    # Prefer bird with significant movement AND longest trajectory
+                    if traj_len > max_trajectory_length and displacement > 10:
+                        max_trajectory_length = traj_len
+                        active_bird_key = bird_key
+        
+        # Fallback to redBird_0 if no moving bird found
+        if active_bird_key is None:
+            active_bird_key = "redBird_0" if "redBird_0" in groundtruth_trajectories else (bird_keys[0] if bird_keys else None)
+            print(f"[MULTI-BIRD DEBUG] No moving bird found, using fallback: {active_bird_key}")
+        else:
+            print(f"[MULTI-BIRD DEBUG] Active bird detected: {active_bird_key}")
+        
+        if active_bird_key is None or active_bird_key not in groundtruth_trajectories:
+            print(f"[MULTI-BIRD ERROR] No bird trajectory found! Keys available: {list(groundtruth_trajectories.keys())}")
+            # Create empty trajectory to avoid crash
+            bird_observed_trajectory = np.array([[0, 0]])
+            bird_observed_features = [{'x': 0, 'y': 0, 'v_x': 0, 'v_y': 0, 'a_x': 0, 'a_y': 0}]
+        else:
+            bird_observed_trajectory = groundtruth_trajectories[active_bird_key]
+            bird_observed_features = objects_features[active_bird_key]
+        
         event_indexes = sorted([val for values in event_indexes_by_event.values() for val in values])
         parts = np.split(bird_observed_trajectory, event_indexes)
         
         # Debug: Event detection info
-        print(f"\n[EVENT DEBUG] Trajectory length: {len(bird_observed_trajectory)} frames")
+        print(f"\n[EVENT DEBUG] Active bird: {active_bird_key}")
+        print(f"[EVENT DEBUG] Trajectory length: {len(bird_observed_trajectory)} frames")
         print(f"[EVENT DEBUG] Objects tracked: {list(groundtruth_objects.keys())}")
         print(f"[EVENT DEBUG] Events detected: {event_indexes_by_event}")
         if len(event_indexes) == 0:
@@ -854,37 +907,58 @@ class PDDLAgent(BaselineAgent):
         #     )
 
         # 6. Update game state and world model
-        game_result = self.ar.get_game_state() == GameState.WON
-        self.wins.append(game_result)
+        # Only record game results when level is FINISHED (WON or LOST)
+        # Not while still PLAYING (more birds available)
+        game_state = self.ar.get_game_state()
+        level_finished = game_state == GameState.WON or game_state == GameState.LOST
+        game_result = game_state == GameState.WON
         
-        self.games_played += 1
-        if self.games_played > self.start_counting_from_game:
-            self.game_results.append((self.current_level, "win" if game_result else "loss"))
+        # Track attempts per level (for multi-bird scenarios)
+        if not hasattr(self, '_current_level_attempts'):
+            self._current_level_attempts = 0
+        self._current_level_attempts += 1
+        
+        if level_finished:
+            # Level is complete - record the final result
+            self.wins.append(game_result)
+            self.games_played += 1
+            
+            if self.games_played > self.start_counting_from_game:
+                self.game_results.append((self.current_level, "win" if game_result else "loss"))
 
-        # Record Phy-Q benchmark result
-        level_path = self.get_current_level_path()
-        score = self.ar.get_current_score() if game_result else 0
-        self.phyq_metrics.record(
-            level_path=level_path,
-            won=game_result,
-            attempts=1,
-            score=score
-        )
-        scenario = self.phyq_metrics.extract_scenario_from_path(level_path)
-        level_name = level_path.split('/')[-1] if '/' in level_path else level_path
-        scenario_str = scenario if scenario else "unknown"
-        print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
-              f"Result: {'WIN' if game_result else 'LOSS'} | Score: {score}")
-        
-        # Record to agent comparison CSV
-        if self.comparison_csv:
-            self.comparison_csv.write_result(
+            # Record Phy-Q benchmark result
+            level_path = self.get_current_level_path()
+            score = self.ar.get_current_score() if game_result else 0
+            self.phyq_metrics.record(
                 level_path=level_path,
-                agent="PDDLAgent",
                 won=game_result,
-                mode=current_phase,
+                attempts=self._current_level_attempts,
                 score=score
             )
+            scenario = self.phyq_metrics.extract_scenario_from_path(level_path)
+            level_name = level_path.split('/')[-1] if '/' in level_path else level_path
+            scenario_str = scenario if scenario else "unknown"
+            print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
+                  f"Result: {'WIN' if game_result else 'LOSS'} | Score: {score} | "
+                  f"Birds used: {self._current_level_attempts}")
+            
+            # Record to agent comparison CSV
+            if self.comparison_csv:
+                self.comparison_csv.write_result(
+                    level_path=level_path,
+                    agent="PDDLAgent",
+                    won=game_result,
+                    mode=current_phase,
+                    score=score,
+                    plan_source=self._last_plan_source,
+                    unsolvable=self._last_planner_unsolvable
+                )
+            
+            # Reset attempt counter for next level
+            self._current_level_attempts = 0
+        else:
+            # Level still in progress (more birds available)
+            print(f"[MULTI-BIRD] Shot {self._current_level_attempts} complete, game still PLAYING - more birds available")
 
         # Only update world model during training phase
         if should_learn and hasattr(self, 'learned_transition_world_model') and self.learned_transition_world_model is not None:
@@ -1215,8 +1289,13 @@ class PDDLAgent(BaselineAgent):
         world_model_params = self._world_model_params(agent_world_model)
 
         actions, planner_output = self._run_enhsp_planner(problem_data, agent_world_model)
+        
+        # Track planner status for CSV reporting
+        self._last_planner_unsolvable = "unsolvable" in planner_output.lower() if planner_output else False
+        
         if not actions:
             print("[PDDL DEBUG] Falling back to calculated trajectory angle...")
+            self._last_plan_source = "fallback"
             fallback_angle = self._calculate_fallback_angle(
                 pigs_objects, bird_objects, world_model_params, ref_guess, problem_data
             )
@@ -1230,6 +1309,8 @@ class PDDLAgent(BaselineAgent):
             self._finalize_plan_metadata(problem_data, fallback_angle, world_model_params)
             print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
             return actions
+        
+        self._last_plan_source = "planner"
 
         _, angle = actions[0]
 

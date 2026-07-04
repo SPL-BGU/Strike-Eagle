@@ -1,0 +1,101 @@
+scenario,template,agent,pass_rate
+single_force,1,Human,0.963
+single_force,1,Pig Shooter,0.873
+single_force,1,Datalab,0.890
+single_force,1,Eagle’s Wing,0.615
+single_force,1,Bambirds,0.580
+single_force,1,D-DDQN-Symbolic,0.300
+single_force,1,D-DDQN-Image,0.225
+single_force,1,Relational-Symbolic,0.375
+single_force,1,Relational-Image,0.050
+single_force,1,Random Agent,0.085
+single_force,4,Human,0.963
+single_force,4,Pig Shooter,0.873
+single_force,4,Datalab,0.890
+single_force,4,Eagle’s Wing,0.615
+single_force,4,Bambirds,0.580
+single_force,4,D-DDQN-Symbolic,0.300
+single_force,4,D-DDQN-Image,0.225
+single_force,4,Relational-Symbolic,0.375
+single_force,4,Relational-Image,0.050
+single_force,4,Random Agent,0.085
+single_force,6,Human,0.963
+single_force,6,Pig Shooter,0.873
+single_force,6,Datalab,0.890
+single_force,6,Eagle’s Wing,0.615
+single_force,6,Bambirds,0.580
+single_force,6,D-DDQN-Symbolic,0.300
+single_force,6,D-DDQN-Image,0.225
+single_force,6,Relational-Symbolic,0.375
+single_force,6,Relational-Image,0.050
+single_force,6,Random Agent,0.085
+single_force,2,Human,0.963
+single_force,2,Pig Shooter,0.873
+single_force,2,Datalab,0.890
+single_force,2,Eagle’s Wing,0.615
+single_force,2,Bambirds,0.580
+single_force,2,D-DDQN-Symbolic,0.300
+single_force,2,D-DDQN-Image,0.225
+single_force,2,Relational-Symbolic,0.375
+single_force,2,Relational-Image,0.050
+single_force,2,Random Agent,0.085
+single_force,5,Human,0.963
+single_force,5,Pig Shooter,0.873
+single_force,5,Datalab,0.890
+single_force,5,Eagle’s Wing,0.615
+single_force,5,Bambirds,0.580
+single_force,5,D-DDQN-Symbolic,0.300
+single_force,5,D-DDQN-Image,0.225
+single_force,5,Relational-Symbolic,0.375
+single_force,5,Relational-Image,0.050
+single_force,5,Random Agent,0.085
+multiple_forces,2,Human,0.989
+multiple_forces,2,Pig Shooter,0.888
+multiple_forces,2,Datalab,0.950
+multiple_forces,2,Eagle’s Wing,0.900
+multiple_forces,2,Bambirds,0.755
+multiple_forces,2,D-DDQN-Symbolic,0.350
+multiple_forces,2,D-DDQN-Image,0.150
+multiple_forces,2,Relational-Symbolic,0.275
+multiple_forces,2,Relational-Image,0.150
+multiple_forces,2,Random Agent,0.134
+multiple_forces,6,Human,0.989
+multiple_forces,6,Pig Shooter,0.888
+multiple_forces,6,Datalab,0.950
+multiple_forces,6,Eagle’s Wing,0.900
+multiple_forces,6,Bambirds,0.755
+multiple_forces,6,D-DDQN-Symbolic,0.350
+multiple_forces,6,D-DDQN-Image,0.150
+multiple_forces,6,Relational-Symbolic,0.275
+multiple_forces,6,Relational-Image,0.150
+multiple_forces,6,Random Agent,0.134
+multiple_forces,1,Human,0.989
+multiple_forces,1,Pig Shooter,0.888
+multiple_forces,1,Datalab,0.950
+multiple_forces,1,Eagle’s Wing,0.900
+multiple_forces,1,Bambirds,0.755
+multiple_forces,1,D-DDQN-Symbolic,0.350
+multiple_forces,1,D-DDQN-Image,0.150
+multiple_forces,1,Relational-Symbolic,0.275
+multiple_forces,1,Relational-Image,0.150
+multiple_forces,1,Random Agent,0.134
+multiple_forces,5,Human,0.989
+multiple_forces,5,Pig Shooter,0.888
+multiple_forces,5,Datalab,0.950
+multiple_forces,5,Eagle’s Wing,0.900
+multiple_forces,5,Bambirds,0.755
+multiple_forces,5,D-DDQN-Symbolic,0.350
+multiple_forces,5,D-DDQN-Image,0.150
+multiple_forces,5,Relational-Symbolic,0.275
+multiple_forces,5,Relational-Image,0.150
+multiple_forces,5,Random Agent,0.134
+multiple_forces,4,Human,0.989
+multiple_forces,4,Pig Shooter,0.888
+multiple_forces,4,Datalab,0.950
+multiple_forces,4,Eagle’s Wing,0.900
+multiple_forces,4,Bambirds,0.755
+multiple_forces,4,D-DDQN-Symbolic,0.350
+multiple_forces,4,D-DDQN-Image,0.150
+multiple_forces,4,Relational-Symbolic,0.275
+multiple_forces,4,Relational-Image,0.150
+multiple_forces,4,Random Agent,0.134

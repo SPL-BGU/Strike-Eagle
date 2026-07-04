@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-16"?>
+<evaluation>
+  <novelty_detection_measurement step="1" measure_in_training="True" measure_in_testing="True" />
+  <trials>
+    <trial id="0" number_of_executions="1" checkpoint_time_limit="200" checkpoint_interaction_limit="200" notify_novelty="True">
+      <game_level_set mode="training" time_limit="2760" total_interaction_limit="60000" attempt_limit_per_level="20" allow_level_selection="True">
+        
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_big_wall_block_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_big_wall_block_0002.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_big_wall_block_0003.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_big_wall_block_0004.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_big_wall_block_0005.xml"/>
+        
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_pig_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_pig_0002.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_pig_0003.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_pig_0004.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/1_pig_0005.xml"/>
+
+		
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/2_pig_2_bird_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/2_pig_2_bird_0002.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/2_pig_2_bird_0003.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/2_pig_2_bird_0004.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/2_pig_2_bird_0005.xml"/>
+		
+		
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/360_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/360_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/360_0003.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/360_0004.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/360_0005.xml"/>
+
+		
+
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/380_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/380_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/380_0003.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/380_0004.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/380_0005.xml"/>
+		
+		
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/3824_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/3824_0001.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/3824_0003.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/3824_0004.xml"/>
+		<game_levels level_path="./9001_Data/StreamingAssets/Levels/personal_design/3824_0005.xml"/>
+		
+		</game_level_set>
+    </trial>
+  </trials>
+</evaluation>
