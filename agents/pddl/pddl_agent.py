@@ -73,7 +73,15 @@ class PDDLAgent(BaselineAgent):
                  visualize_pddl_input: bool = False,  # Show PDDL visualization
                  # Agent comparison CSV options
                  comparison_csv_path: str = "agent_comparison_results.csv",
-                 human_baseline_path: str = "external/phy-q/playdata/broad_generalization_all_agents.csv"):
+                 human_baseline_path: str = "external/phy-q/playdata/broad_generalization_all_agents.csv",
+                 # Debug mag comparison mode
+                 debug_mag_comparison: bool = True,
+                 mag_comparison_angle: float = 60.0,  # Fixed angle in degrees
+                 mag_comparison_start: float = 5.0,   # Starting mag value
+                 mag_comparison_decrement: float = 0.1,
+                 # Force -> velocity learning mode
+                 force_learning_mode: bool = False,
+                 force_learning_min_samples: int = 5):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
@@ -103,7 +111,25 @@ class PDDLAgent(BaselineAgent):
         self.override_angle = None  # Set to a value (e.g., 45) to override PDDL planner angle
         self.debug_collision = False  # Set to True to visualize collision detection
         
+        # Debug mag comparison mode - tests how different mag values affect trajectory
+        self.debug_mag_comparison = debug_mag_comparison
+        self.mag_comparison_angle = mag_comparison_angle
+        self.mag_comparison_start = mag_comparison_start
+        self.mag_comparison_decrement = mag_comparison_decrement
+        self.mag_comparison_results = []  # Store results
+        self.mag_comparison_current_mag = mag_comparison_start
+        self.mag_comparison_baseline_trajectory = None  # First trajectory (mag=5.0) for comparison
+        self.mag_comparison_done = False
+        
+        # Force -> velocity learning state
+        self.force_learning_mode = force_learning_mode
+        self.force_learning_min_samples = force_learning_min_samples
+        self.kb_force = []        # list of (force, v_meas) tuples
+        self.force_lr_model = None
+        self.force_lr_r2 = None
+        
         # Angle selection mode (priority order):
+        # 0. debug_mag_comparison=True: Fixed angle, varying mag
         # 1. use_angle_protocol=True: Use train/val/test protocol
         # 2. determinism_test_mode=True: Random angles [20, 80]
         # 3. override_angle set: Use fixed angle
@@ -442,10 +468,20 @@ class PDDLAgent(BaselineAgent):
         current_phase = "train"  # Default phase
         
         print(f"[DEBUG] Step 4: Selecting angle method...")
+        print(f"[DEBUG]   debug_mag_comparison={self.debug_mag_comparison}")
+        print(f"[DEBUG]   force_learning_mode={self.force_learning_mode}")
         print(f"[DEBUG]   use_generalization_protocol={self.use_generalization_protocol}")
         print(f"[DEBUG]   use_angle_protocol={self.use_angle_protocol}")
         print(f"[DEBUG]   determinism_test_mode={self.determinism_test_mode}")
         print(f"[DEBUG]   override_angle={self.override_angle}")
+        
+        # Force learning mode (highest priority)
+        if self.force_learning_mode:
+            return self._solve_force_learning(sling)
+        
+        # Debug mag comparison mode (second priority)
+        if self.debug_mag_comparison:
+            return self._solve_mag_comparison(sling)
         
         # Phy-Q Generalization Protocol (takes priority if enabled)
         if self.use_generalization_protocol and self.generalization_protocol is not None:
@@ -986,6 +1022,277 @@ class PDDLAgent(BaselineAgent):
                 self.angle_protocol.validate_alpha()
 
         time.sleep(3)
+
+    def _solve_force_learning(self, sling):
+        """
+        Force -> velocity learning mode.
+
+        Each call:
+          1. Pick a random angle in [20, 80] degrees
+          2. Pick a random force in [0.2, 1.0]
+          3. Shoot and record trajectory
+          4. Estimate initial velocity from trajectory
+          5. Append (force, v_meas) to kb_force
+          6. If enough samples, fit LinearRegression v = a*force + b and print R²
+        """
+        from math import radians
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import r2_score
+        import numpy as np
+
+        n = len(self.kb_force) + 1
+        angle = round(random.uniform(20.0, 80.0), 1)
+        force = round(random.uniform(0.2, 1.0), 3)
+
+        print("\n" + "="*60)
+        print(f"[FORCE LEARN] Shot {n} | angle={angle}° | force={force:.3f}")
+        print("="*60)
+
+        # Build release point using multiplier=1 (height * 1 * force)
+        # This gives pullbacks of 7.6-38px (spans the velocity threshold zone)
+        from src.utils.point2D import Point2D
+        theta = radians(angle)
+        ref = self.tp.get_reference_point(sling)
+        mag = sling.height * 0.5 * force
+        release_point = Point2D(
+            int(ref.X - mag * np.cos(theta)),
+            int(ref.Y + mag * np.sin(theta))
+        )
+
+        pullback = ((release_point.X - ref.X)**2 + (release_point.Y - ref.Y)**2) ** 0.5
+        print(f"  Release point: ({release_point.X}, {release_point.Y})")
+        print(f"  Effective pullback: {pullback:.1f} px (height×1×force = {sling.height}×1×{force:.3f} = {mag:.1f})")
+
+        # Shoot
+        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        print(f"  Got {len(batch_gt) if batch_gt else 0} ground truth frames")
+
+        # Extract trajectory
+        groundtruth_trajectories, _ = extract_real_trajectory(batch_gt, angle, self.model, self.target_class)
+
+        # Find active bird trajectory
+        bird_keys = [k for k in groundtruth_trajectories.keys() if k.startswith("redBird")]
+        first_segment = np.array([])
+        for bk in bird_keys:
+            traj = groundtruth_trajectories.get(bk, [])
+            if len(traj) > len(first_segment):
+                first_segment = np.array(traj)
+
+        if len(first_segment) < 3:
+            print(f"  [FORCE LEARN] WARNING: trajectory too short ({len(first_segment)} pts), skipping")
+            time.sleep(1)
+            return self.ar.get_game_state()
+
+        # Estimate initial velocity from trajectory
+        try:
+            n_vel = min(5, max(1, len(first_segment) - 2))
+            n_pos = min(3, max(1, len(first_segment)))
+            launch = estimate_launch_from_trajectory(first_segment, n_vel=n_vel, n_pos=n_pos)
+            v_meas = launch["v_meas"]
+        except Exception as e:
+            print(f"  [FORCE LEARN] WARNING: velocity estimation failed ({e}), skipping")
+            time.sleep(1)
+            return self.ar.get_game_state()
+
+        print(f"  v_meas={v_meas:.2f}")
+
+        # Record into KB
+        self.kb_force.append((force, v_meas))
+
+        # Fit model if enough samples
+        if len(self.kb_force) >= self.force_learning_min_samples:
+            from agents.pddl.optimizer import get_poly_rank
+            forces_1d = np.array([f for f, _ in self.kb_force])
+            forces_2d = forces_1d.reshape(-1, 1)
+            velocities = np.array([v for _, v in self.kb_force])
+
+            # --- Model A: Linear Regression ---
+            model_lr = LinearRegression()
+            model_lr.fit(forces_2d, velocities)
+            v_pred_lr = model_lr.predict(forces_2d)
+            r2_lr = r2_score(velocities, v_pred_lr)
+            self.force_lr_model = model_lr
+            self.force_lr_r2 = r2_lr
+
+            a = model_lr.coef_[0]
+            b = model_lr.intercept_
+            sign = "+" if b >= 0 else "-"
+
+            # --- Model B: Best-degree Polynomial (get_poly_rank) ---
+            rank, poly = get_poly_rank(forces_1d, velocities, max_rank=5, threshold=1.0)
+            v_pred_poly = poly(forces_1d)
+            r2_poly = r2_score(velocities, v_pred_poly)
+
+            # --- Side-by-side comparison ---
+            n = len(self.kb_force)
+            print(f"\n  {'='*50}")
+            print(f"  [FORCE LEARN] Model comparison (n={n})")
+            print(f"  {'='*50}")
+            print(f"  [A] Linear:  v = {a:.2f} * force {sign} {abs(b):.2f}  |  R² = {r2_lr:.4f}")
+            print(f"  [B] Poly d={rank}: {poly}  |  R² = {r2_poly:.4f}")
+            winner = "A (Linear)" if r2_lr >= r2_poly else f"B (Poly d={rank})"
+            print(f"  --> Better fit: {winner}")
+            print(f"  {'='*50}")
+
+            # Show all data points
+            print(f"  [FORCE LEARN] KB: ", end="")
+            print(", ".join(f"({f:.2f},{v:.1f})" for f, v in self.kb_force))
+        else:
+            print(f"  [FORCE LEARN] Collecting samples ({len(self.kb_force)}/{self.force_learning_min_samples} needed for model)")
+
+        time.sleep(1)
+        return self.ar.get_game_state()
+
+    def _solve_mag_comparison(self, sling):
+        """
+        Debug mode: Test how different mag values affect trajectory.
+        
+        Shoots at a fixed angle with decreasing mag values to find the
+        threshold where trajectory changes.
+        """
+        import json
+        
+        if self.mag_comparison_done:
+            print("\n" + "="*60)
+            print("[MAG COMPARISON] Test complete! Exiting...")
+            print("="*60)
+            
+            # Save results
+            with open('mag_comparison_results.json', 'w') as f:
+                json.dump(self.mag_comparison_results, f, indent=2)
+            print(f"Results saved to mag_comparison_results.json")
+            
+            import sys
+            sys.exit(0)
+        
+        angle = self.mag_comparison_angle
+        current_mag = self.mag_comparison_current_mag
+        
+        print("\n" + "="*60)
+        print(f"[MAG COMPARISON] Testing mag = {current_mag:.2f}")
+        print(f"[MAG COMPARISON] Fixed angle = {angle}°")
+        print("="*60)
+        
+        # Calculate release point with current mag
+        # Using the same formula as find_release_point but with variable mag
+        theta = angle * np.pi / 180
+        ref = self.tp.get_reference_point(sling)
+        
+        # The release point formula: ref - mag * direction
+        # find_release_point uses: mag = sling.height * 5
+        # We use: mag = sling.height * current_mag (to test different values)
+        effective_mag = sling.height * current_mag
+        
+        from src.utils.point2D import Point2D
+        release_x = int(ref.X - effective_mag * np.cos(theta))
+        release_y = int(ref.Y + effective_mag * np.sin(theta))
+        release_point = Point2D(release_x, release_y)
+        
+        print(f"  Sling height: {sling.height}")
+        print(f"  Reference point: ({ref.X}, {ref.Y})")
+        print(f"  Release point: ({release_point.X}, {release_point.Y})")
+        print(f"  Effective pullback: {effective_mag:.1f} pixels")
+        print(f"  mag_multiplier * height = {current_mag:.2f} * {sling.height} = {effective_mag:.1f}")
+        
+        # Shoot and record trajectory
+        batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
+        print(f"  Got {len(batch_gt) if batch_gt else 0} ground truth frames")
+        
+        # Extract trajectory
+        groundtruth_trajectories, groundtruth_objects = extract_real_trajectory(
+            batch_gt, angle, self.model, self.target_class
+        )
+        
+        # Find the active bird trajectory
+        bird_keys = [k for k in groundtruth_trajectories.keys() if k.startswith("redBird")]
+        trajectory = []
+        
+        for bird_key in bird_keys:
+            traj = groundtruth_trajectories.get(bird_key, [])
+            if len(traj) > len(trajectory):
+                trajectory = traj
+        
+        trajectory = np.array(trajectory) if len(trajectory) > 0 else np.array([])
+        
+        print(f"  Trajectory points: {len(trajectory)}")
+        if len(trajectory) > 0:
+            print(f"  Start: ({trajectory[0][0]:.1f}, {trajectory[0][1]:.1f})")
+            if len(trajectory) > 5:
+                print(f"  Point 5: ({trajectory[5][0]:.1f}, {trajectory[5][1]:.1f})")
+            if len(trajectory) > 10:
+                print(f"  Point 10: ({trajectory[10][0]:.1f}, {trajectory[10][1]:.1f})")
+        
+        # Store result
+        result = {
+            'iteration': len(self.mag_comparison_results) + 1,
+            'mag_multiplier': current_mag,
+            'effective_mag': effective_mag,
+            'sling_height': sling.height,
+            'release_point': (release_point.X, release_point.Y),
+            'trajectory_points': len(trajectory),
+            'first_10_points': trajectory[:10].tolist() if len(trajectory) > 0 else []
+        }
+        self.mag_comparison_results.append(result)
+        
+        # Compare with BASELINE trajectory (first shot at mag=5.0)
+        if self.mag_comparison_baseline_trajectory is None and len(trajectory) > 0:
+            # First iteration - save as baseline
+            self.mag_comparison_baseline_trajectory = trajectory.copy()
+            print(f"\n  [BASELINE] Saved as reference trajectory")
+        elif self.mag_comparison_baseline_trajectory is not None and len(trajectory) > 0:
+            baseline_traj = self.mag_comparison_baseline_trajectory
+            
+            # Compare first N points
+            compare_n = min(20, len(trajectory), len(baseline_traj))
+            
+            if compare_n >= 5:
+                total_diff = 0
+                for i in range(compare_n):
+                    diff = np.sqrt(
+                        (trajectory[i][0] - baseline_traj[i][0])**2 + 
+                        (trajectory[i][1] - baseline_traj[i][1])**2
+                    )
+                    total_diff += diff
+                
+                avg_diff = total_diff / compare_n
+                result['avg_diff_from_baseline'] = avg_diff
+                
+                print(f"\n  Comparison with BASELINE (mag={self.mag_comparison_start:.2f}):")
+                print(f"    Average point difference: {avg_diff:.2f} pixels")
+                
+                # Trajectory changed significantly (threshold: 5 pixels average)
+                if avg_diff > 5.0:
+                    print(f"\n" + "*"*60)
+                    print(f"*** TRAJECTORY CHANGED at mag = {current_mag:.2f} ***")
+                    print(f"*** Baseline mag = {self.mag_comparison_start:.2f} ***")
+                    print(f"*** Avg difference from baseline = {avg_diff:.2f} pixels ***")
+                    print(f"*"*60)
+                    
+                    result['trajectory_changed'] = True
+                    self.mag_comparison_done = True
+                else:
+                    print(f"    Trajectory SIMILAR to baseline (threshold: 5.0 pixels)")
+                    result['trajectory_changed'] = False
+        
+        # Decrement mag for next iteration
+        self.mag_comparison_current_mag -= self.mag_comparison_decrement
+        
+        # Check if we've gone too low
+        if self.mag_comparison_current_mag < 0.1:
+            print("\n[MAG COMPARISON] Reached minimum mag (0.1), stopping test")
+            self.mag_comparison_done = True
+        
+        # Print summary so far
+        print(f"\n[MAG COMPARISON] Results so far ({len(self.mag_comparison_results)} iterations):")
+        print(f"  Comparing against BASELINE (mag={self.mag_comparison_start:.2f})")
+        for r in self.mag_comparison_results:
+            changed = "CHANGED" if r.get('trajectory_changed', False) else "same"
+            diff = f", diff_from_baseline={r.get('avg_diff_from_baseline', 0):.2f}px" if 'avg_diff_from_baseline' in r else " [BASELINE]"
+            print(f"  mag={r['mag_multiplier']:.2f} | pullback={r['effective_mag']:.1f}px | {changed}{diff}")
+        
+        # Return to let the game state handler restart the level
+        time.sleep(2)
+        return self.ar.get_game_state()
 
     def get_current_level_path(self) -> str:
         """

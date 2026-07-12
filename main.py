@@ -21,7 +21,13 @@ class AgentThread(threading.Thread):
                  scenario_filter: str = None,
                  phyq_config_path: str = "ScienceBirds/win6.6/win/config_phyq_sample.xml",
                  levels_per_template: int = None,
-                 visualize_pddl: bool = True):
+                 visualize_pddl: bool = True,
+                 debug_mag_comparison: bool = True,
+                 mag_comparison_angle: float = 60.0,
+                 mag_comparison_start: float = 5.0,
+                 mag_comparison_decrement: float = 0.1,
+                 force_learning_mode: bool = False,
+                 force_learning_min_samples: int = 5):
         """
         Constructor function
         Parameters
@@ -48,6 +54,14 @@ class AgentThread(threading.Thread):
             Limit the number of levels per template
         visualize_pddl : bool
             Show PDDL visualization of what the agent sees
+        debug_mag_comparison : bool
+            Enable mag comparison debug mode
+        mag_comparison_angle : float
+            Fixed angle for mag comparison test (degrees)
+        mag_comparison_start : float
+            Starting mag multiplier value
+        mag_comparison_decrement : float
+            Mag decrement per iteration
         """
         self.agent_ind = agent_ind
         self.agent_configs = agent_configs
@@ -61,6 +75,12 @@ class AgentThread(threading.Thread):
         self.phyq_config_path = phyq_config_path
         self.levels_per_template = levels_per_template
         self.visualize_pddl = visualize_pddl
+        self.debug_mag_comparison = debug_mag_comparison
+        self.mag_comparison_angle = mag_comparison_angle
+        self.mag_comparison_start = mag_comparison_start
+        self.mag_comparison_decrement = mag_comparison_decrement
+        self.force_learning_mode = force_learning_mode
+        self.force_learning_min_samples = force_learning_min_samples
         threading.Thread.__init__(self)
 
     def run(self):
@@ -76,7 +96,7 @@ class AgentThread(threading.Thread):
         agent = PDDLAgent(
             self.agent_ind, 
             self.agent_configs,
-            use_angle_protocol=not self.use_generalization_protocol,  # Disable if using generalization
+            use_angle_protocol=not self.use_generalization_protocol and not self.debug_mag_comparison,  # Disable if using generalization or mag debug
             validate_alpha_on_validation=False,
             debug_collision=False,
             phyq_config_path=self.phyq_config_path,
@@ -89,7 +109,15 @@ class AgentThread(threading.Thread):
             generalization_test_templates=self.generalization_test_templates,
             scenario_filter=self.scenario_filter,
             levels_per_template=self.levels_per_template,
-            visualize_pddl_input=self.visualize_pddl
+            visualize_pddl_input=self.visualize_pddl,
+            # Debug mag comparison mode
+            debug_mag_comparison=self.debug_mag_comparison,
+            mag_comparison_angle=self.mag_comparison_angle,
+            mag_comparison_start=self.mag_comparison_start,
+            mag_comparison_decrement=self.mag_comparison_decrement,
+            # Force -> velocity learning mode
+            force_learning_mode=self.force_learning_mode,
+            force_learning_min_samples=self.force_learning_min_samples
         )
         agent.run()
 
@@ -104,7 +132,13 @@ def main(agent_configs,
          scenario_filter: str = None,
          phyq_config_path: str = "ScienceBirds/win6.6/win/config_phyq_sample.xml",
          levels_per_template: int = None,
-         visualize_pddl: bool = True):
+         visualize_pddl: bool = True,
+         debug_mag_comparison: bool = False,
+         mag_comparison_angle: float = 60.0,
+         mag_comparison_start: float = 5.0,
+         mag_comparison_decrement: float = 0.1,
+         force_learning_mode: bool = False,
+         force_learning_min_samples: int = 5):
     """
     Main function to start the agent.
     
@@ -132,6 +166,14 @@ def main(agent_configs,
         Limit the number of levels per template
     visualize_pddl : bool
         Show PDDL visualization of what the agent sees
+    debug_mag_comparison : bool
+        Enable mag comparison debug mode
+    mag_comparison_angle : float
+        Fixed angle for mag comparison test (degrees)
+    mag_comparison_start : float
+        Starting mag multiplier value
+    mag_comparison_decrement : float
+        Mag decrement per iteration
     """
     for x in range(1):
         print('naive agents %s running' % str(x))
@@ -147,7 +189,13 @@ def main(agent_configs,
             scenario_filter=scenario_filter,
             phyq_config_path=phyq_config_path,
             levels_per_template=levels_per_template,
-            visualize_pddl=visualize_pddl
+            visualize_pddl=visualize_pddl,
+            debug_mag_comparison=debug_mag_comparison,
+            mag_comparison_angle=mag_comparison_angle,
+            mag_comparison_start=mag_comparison_start,
+            mag_comparison_decrement=mag_comparison_decrement,
+            force_learning_mode=force_learning_mode,
+            force_learning_min_samples=force_learning_min_samples
         )
         agent.start()
         time.sleep(5)
@@ -274,6 +322,24 @@ Examples:
     parser.add_argument("--no-visualize", action="store_true",
                         help="Disable PDDL visualization")
     
+    # Debug mag comparison mode
+    parser.add_argument("--debug-mag", action="store_true", default=False,
+                        help="Enable mag comparison debug mode: test how different mag values affect trajectory")
+    parser.add_argument("--no-debug-mag", action="store_true",
+                        help="Disable mag comparison debug mode")
+    parser.add_argument("--mag-angle", type=float, default=60.0,
+                        help="Fixed angle for mag comparison test (default: 60 degrees)")
+    parser.add_argument("--mag-start", type=float, default=5.0,
+                        help="Starting mag multiplier value (default: 5.0)")
+    parser.add_argument("--mag-decrement", type=float, default=0.1,
+                        help="Mag decrement per iteration (default: 0.1)")
+    
+    # Force -> velocity learning mode
+    parser.add_argument("--force-learning", action="store_true", default=True,
+                        help="Enable force->velocity learning mode: random angle+force, fit v=f(force) model")
+    parser.add_argument("--force-min-samples", type=int, default=5,
+                        help="Min samples before fitting force model (default: 5)")
+    
     args = parser.parse_args()
     
     # Determine if generalization protocol should be used
@@ -284,6 +350,9 @@ Examples:
     
     # Handle visualization flag (--no-visualize overrides default)
     visualize_pddl = args.visualize and not args.no_visualize
+    
+    # Handle debug mag flag (--no-debug-mag overrides default)
+    debug_mag = args.debug_mag and not args.no_debug_mag
     
     main(
         args,
@@ -296,5 +365,11 @@ Examples:
         scenario_filter=args.scenario,
         phyq_config_path=args.config,
         levels_per_template=args.levels_per_template,
-        visualize_pddl=visualize_pddl
+        visualize_pddl=visualize_pddl,
+        debug_mag_comparison=debug_mag,
+        mag_comparison_angle=args.mag_angle,
+        mag_comparison_start=args.mag_start,
+        mag_comparison_decrement=args.mag_decrement,
+        force_learning_mode=args.force_learning,
+        force_learning_min_samples=args.force_min_samples
     )

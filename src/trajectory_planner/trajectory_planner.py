@@ -224,7 +224,7 @@ class SimpleTrajectoryPlanner:
          * @return  the release point on screen
          *
         """
-        mag = self.get_scene_scale(sling) * self.STRETCH * v_portion
+        mag = sling.height * 5 * v_portion  # consistent with find_release_point at v_portion=1.0
         ref = self.get_reference_point(sling)
         release = Point2D((int)(ref.X - mag * cos(theta)), (int)(ref.Y + mag * sin(theta)))
 
