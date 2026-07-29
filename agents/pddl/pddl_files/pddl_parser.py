@@ -10,6 +10,16 @@ from agents.pddl.pddl_files.events.learn_events import m5_collision_leaves_for_p
 # Print [COLLISION-INJECT] lines during domain injection.
 COLLISION_INJECT_DEBUG = True
 
+# Force search constants (joint angle × force PDDL planning)
+FORCE_MIN = 0.2
+FORCE_MAX = 1.0
+FORCE_RATE = 0.05
+MAG_MULT = 0.5          # keeps force→velocity in linear regime (force_velocity_curve_05.png)
+FORCE_V_SCALE = MAG_MULT / 5.0   # = 0.1; converts force fraction to find_release_point_partial_power v_portion
+
+# Shrink effective pig hit radius so PDDL requires a deeper hit (avoids top-graze false kills).
+PIG_HIT_EPSILON = 4.0
+
 
 def _collision_inject_log(msg: str) -> None:
     if COLLISION_INJECT_DEBUG:
@@ -110,7 +120,7 @@ problem_template = Template("""(define (problem sample_problem)
 
 # Angle bias correction (in degrees) - compensates for slingshot mechanics
 # Positive bias means the actual shot goes less steep than commanded
-ANGLE_BIAS_DEGREES = 0  # Based on empirical measurements
+ANGLE_BIAS_DEGREES = 6.0  # Empirical slingshot offset: actual launch angle ≈ PDDL_angle - 6°
 DEG_TO_RAD = 0.01745329252
 
 
@@ -161,7 +171,13 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         f"(= (gravity) {world_model.hyperparams_values[Params.gravity]})",
         f"(= (active_bird) 0)",
         f"(= (ground_y_damper) 0.1)",
-        f"(= (ground_x_damper) 0.5)"
+        f"(= (ground_x_damper) 0.5)",
+        # Force search fluents — v_bird_multiplier sweeps FORCE_MAX→FORCE_MIN at FORCE_RATE
+        # Starting at max means planner prefers full-force shots and only falls back to partial.
+        f"(= (v_bird_multiplier) {FORCE_MAX})",
+        f"(= (force_rate) {FORCE_RATE})",
+        f"(= (min_force) {FORCE_MIN})",
+        f"(= (max_force) {FORCE_MAX})",
     ]
     for object, object_data in problem_data.items():
         objects.append(f"{object} - {object.split('_')[0]}")
@@ -296,21 +312,35 @@ def inject_learned_transitions(path: str, world_model: WorldModel):
 
 
 def action_filter(line):
-    return 'pa-twang' in line
+    return 'pa-twang' in line or 'set_force' in line
 
 
-def parse_action(line, init_angle, angel_rate):
-    """init_angle = starting slingshot angle (max_angle); angle decreases by angel_rate per plan time unit."""
+def parse_action(line, init_angle, angel_rate, force_min=FORCE_MIN, force_rate=FORCE_RATE):
+    """Parse a solution line into a (type, value) action tuple.
+
+    - pa-twang at time n  → ('shoot', angle)   where angle = init_angle - n * angel_rate
+    - set_force at time n → ('set_force', force) where force = force_max - n * force_rate
+      (force starts at FORCE_MAX and decreases, so planner picks full force first)
+    """
     n = float(line.split(':')[0])
+    if 'set_force' in line:
+        force = FORCE_MAX - n * force_rate
+        force = max(force_min, min(FORCE_MAX, force))
+        return 'set_force', round(force, 4)
     return 'shoot', init_angle - n * angel_rate
 
 
-def parse_solution_to_actions(solution_path: str, init_angle, angel_rate):
+def parse_solution_to_actions(solution_path: str, init_angle, angel_rate,
+                               force_min=FORCE_MIN, force_rate=FORCE_RATE):
+    """Parse ENHSP solution into a list of (type, value) action tuples.
+
+    Returns a list that may contain both ('set_force', force) and ('shoot', angle).
+    """
     with open(solution_path) as solution_file:
         lines = solution_file.readlines()
-        actions = list(filter(action_filter, lines))
-        actions = list(map(lambda l: parse_action(l, init_angle, angel_rate), actions))
-        return actions
+    relevant = [l for l in lines if action_filter(l)]
+    actions = [parse_action(l, init_angle, angel_rate, force_min, force_rate) for l in relevant]
+    return actions
 
 
 # Replan bird ref when planned angle differs from the guess used for pa-twang inverse.
@@ -321,6 +351,7 @@ def simulate_pddl_shot_plan(
     problem_data: dict,
     angle_deg: float,
     gravity: float = None,
+    force: float = 1.0,
     dt: float = 0.01,
     max_steps: int = 10000,
     debug: bool = False,
@@ -333,6 +364,12 @@ def simulate_pddl_shot_plan(
     Also checks platform collisions using expanded margins (2.5/3.0 multipliers) matching PDDL domain.
     
     Now also returns the full trajectory for visualization.
+
+    The `force` parameter mirrors the PDDL domain's v_bird_multiplier used in pa-twang:
+      vx = v_bird * v_bird_multiplier * cosine
+      vy = v_bird * v_bird_multiplier * sinus
+    Pass the planned force fraction (0.2-1.0) so the simulation matches the domain exactly.
+    Defaults to 1.0 (full force) for backward compatibility.
     """
     bird_key = next((k for k in problem_data if k.startswith("bird_")), None)
     pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
@@ -351,8 +388,9 @@ def simulate_pddl_shot_plan(
     launch_x, launch_y = pddl_bird_position_after_pa_twang(ref_x, ref_y, angle_deg)
     x, y = launch_x, launch_y
     _, cosine, sinus = _initial_angle_trig(angle_deg)
-    vx = v * cosine
-    vy = v * sinus
+    # Mirror pa-twang in base_domain.pddl: vx/vy = v_bird * v_bird_multiplier * cos/sin
+    vx = v * force * cosine
+    vy = v * force * sinus
 
     pig = problem_data.get(pig_key) if pig_key else None
     pr = float(pig.get("pig_radius", 3.5)) if pig else 3.5
@@ -393,7 +431,8 @@ def simulate_pddl_shot_plan(
         if pig is not None and not pig_killed:
             dx = x - px
             dy = y - py
-            if (dx * dx + dy * dy) <= (br + pr) ** 2:
+            effective_r = max(0.0, br + pr - PIG_HIT_EPSILON)
+            if effective_r > 0 and (dx * dx + dy * dy) <= effective_r ** 2:
                 pig_killed = True
                 if debug:
                     print(f"[SIM DEBUG] Step {step}: PIG HIT at ({x:.1f}, {y:.1f})")

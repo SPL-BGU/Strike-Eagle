@@ -2,7 +2,6 @@ import math
 
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
-from agents.pddl.pddl_files.pddl_parser import pddl_bird_position_before_pa_twang
 from src.computer_vision.GroundTruthReader import GroundTruthReader
 from src.computer_vision.game_object import GameObjectType
 
@@ -24,23 +23,20 @@ def get_birds(vision, sling, tp, agent_world_model: WorldModel, ref_angle_guess:
         for bird in birds:
             center_x = bird.X + bird.width / 2
             center_y_pddl = 640 - (bird.Y + bird.height / 2)
-            # Match game release point (trajectory planner), then invert pa-twang for PDDL init
-            release = tp.find_release_point_partial_power(
-                sling, math.radians(ref_angle_guess), 1.0
-            )
-            launch_x = float(release.X)
-            launch_y_pddl = 640 - float(release.Y)
-            ref_x, ref_y = pddl_bird_position_before_pa_twang(
-                launch_x, launch_y_pddl, ref_angle_guess
-            )
+            # Bird init position = sling reference point in PDDL coords.
+            # pa-twang then kicks it by (-16*cos, -12*sin) to the actual launch position,
+            # which matches the observed trajectory start (~sling center).
+            ref_x = float(ref.X)
+            ref_y = float(640 - ref.Y)
 
             print(f"\n[BIRD DEBUG] bird_{bird_id}:")
             print(f"  Screen X: {bird.X}, Y: {bird.Y}")
             print(f"  Width: {bird.width}, Height: {bird.height}")
             print(f"  Center PDDL: ({center_x:.1f}, {center_y_pddl:.1f})")
-            print(f"  Launch PDDL @ {ref_angle_guess:.1f}°: ({launch_x:.1f}, {launch_y_pddl:.1f})")
-            print(f"  PDDL ref (before pa-twang): ({ref_x:.1f}, {ref_y:.1f})")
-            print(f"  Sling ref (legacy): ({ref.X}, {640 - ref.Y})")
+            print(f"  PDDL init (sling ref): ({ref_x:.1f}, {ref_y:.1f})")
+            print(f"  After pa-twang @ {ref_angle_guess:.1f}°: "
+                  f"({ref_x - 16*math.cos(math.radians(ref_angle_guess)):.1f}, "
+                  f"{ref_y - 12*math.sin(math.radians(ref_angle_guess)):.1f})")
 
             problem_data[f"bird_{bird_id}"] = {
                 "x_bird": ref_x,

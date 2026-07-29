@@ -3433,6 +3433,276 @@ def plot_multi_feature_ablation(kb, event_name="collision", save_path=None):
     plt.show()
 
 
+def visualize_expected_vs_actual_hit(
+        problem_data: dict,
+        planned_trajectory: list,
+        actual_trajectory,
+        actual_impact_idx: int = None,
+        angle: float = None,
+        world_model_params: dict = None,
+        title: str = "Expected vs Actual Hit",
+        save_path: str = None,
+        show_plot: bool = True,
+):
+    """
+    Overlay the PDDL-planned trajectory with the observed in-game trajectory
+    and mark where the bird was *expected* to hit versus where it *actually* hit.
+
+    Coordinate convention
+    ---------------------
+    Both planned_trajectory and actual_trajectory are in **PDDL** space
+    (y_pddl = 640 - y_screen, i.e. y increases upward).
+    actual_trajectory is the raw groundtruth_trajectories array which is
+    already in PDDL coordinates — no additional flipping is applied here.
+
+    actual_impact_idx: frame index into actual_trajectory where the impact occurred.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle, Rectangle
+    import matplotlib.transforms as transforms
+    import numpy as np
+
+    GROUND_LEVEL_PDDL = 350     # y-value of the ground in PDDL coords
+    ZOOM_PAD = 80               # padding around hit points for zoomed panel
+
+    # ── Helper: draw scene objects onto an axes ──────────────────────────────
+    def _draw_scene(ax_obj, pigs, blocks, platforms, birds):
+        block_colors = {'wood': 'peru', 'ice': 'lightblue', 'stone': 'gray', 'TNT': 'orangered'}
+
+        ax_obj.axhline(y=GROUND_LEVEL_PDDL, color='saddlebrown', linewidth=2,
+                       linestyle='-', label=f'Ground (y={GROUND_LEVEL_PDDL})')
+        ax_obj.fill_between([-100, 900], [0, 0], [GROUND_LEVEL_PDDL, GROUND_LEVEL_PDDL],
+                            color='saddlebrown', alpha=0.12)
+
+        for name, data in platforms.items():
+            x = data.get('x_platform', 0);  y = data.get('y_platform', 0)
+            w = data.get('platform_width', 20);  h = data.get('platform_height', 10)
+            rect = Rectangle((x - w/2, y - h/2), w, h, color='saddlebrown',
+                             alpha=0.9, edgecolor='black', linewidth=2,
+                             label='Platform' if name == 'platform_0' else '')
+            ax_obj.add_patch(rect)
+
+        for name, data in blocks.items():
+            x = data.get('x_block', 0);  y = data.get('y_block', 0)
+            w = data.get('block_width', 10);  h = data.get('block_height', 10)
+            btype = data.get('_block_type', data.get('block_type', 'wood'))
+            bang  = data.get('_block_angle', data.get('block_angle', 0))
+            color = block_colors.get(btype, 'peru')
+            rect = Rectangle((-w/2, -h/2), w, h, color=color, alpha=0.8,
+                             edgecolor='black', linewidth=1)
+            t = transforms.Affine2D().rotate_deg(bang).translate(x, y) + ax_obj.transData
+            rect.set_transform(t)
+            ax_obj.add_patch(rect)
+
+        for name, data in pigs.items():
+            px = data.get('x_pig', 0);  py = data.get('y_pig', 0)
+            r  = max(data.get('pig_radius', 12), 10)
+            circle = Circle((px, py), r, color='limegreen', alpha=0.85,
+                            label='Pig' if name == 'pig_0' else '', zorder=5)
+            ax_obj.add_patch(circle)
+            ax_obj.annotate(f'{name}\n({px:.0f},{py:.0f})',
+                            (px, py + r + 6), fontsize=7, ha='center',
+                            color='darkgreen', fontweight='bold', zorder=6)
+
+        for name, data in birds.items():
+            bx = data.get('x_bird', 0);  by = data.get('y_bird', 0)
+            r  = max(data.get('bird_radius', 10), 8)
+            circle = Circle((bx, by), r, color='crimson', alpha=0.8,
+                            label='Bird (sling)' if name == 'bird_0' else '', zorder=5)
+            ax_obj.add_patch(circle)
+
+    # ── Parse scene ─────────────────────────────────────────────────────────
+    birds     = {k: v for k, v in problem_data.items() if k.startswith('bird_')}
+    pigs      = {k: v for k, v in problem_data.items() if k.startswith('pig_')}
+    blocks    = {k: v for k, v in problem_data.items() if k.startswith('block_')}
+    platforms = {k: v for k, v in problem_data.items() if k.startswith('platform_')}
+
+    # ── Compute trajectory arrays (both already in PDDL coords) ─────────────
+    # Planned trajectory
+    expected_hit = None
+    plan_x, plan_y = [], []
+    if planned_trajectory and len(planned_trajectory) > 1:
+        plan_x = [p[0] for p in planned_trajectory]
+        plan_y = [p[1] for p in planned_trajectory]
+        expected_hit = (plan_x[-1], plan_y[-1])
+
+    # Actual trajectory — already in PDDL space, no Y flip needed
+    actual_hit = None
+    act_x, act_y = np.array([]), np.array([])
+    if actual_trajectory is not None and len(actual_trajectory) > 1:
+        actual_arr = np.asarray(actual_trajectory)
+        act_x = actual_arr[:, 0]
+        act_y = actual_arr[:, 1]   # PDDL coords — no conversion
+        if actual_impact_idx is not None and actual_impact_idx < len(actual_arr):
+            actual_hit = (act_x[actual_impact_idx], act_y[actual_impact_idx])
+
+    # ── Miss gap ─────────────────────────────────────────────────────────────
+    gap_dist = None
+    if expected_hit and actual_hit:
+        gap_dist = np.sqrt((expected_hit[0] - actual_hit[0])**2 +
+                           (expected_hit[1] - actual_hit[1])**2)
+
+    # ── Figure: left = overview, right = zoomed hit zone ────────────────────
+    fig, (ax_ov, ax_zm) = plt.subplots(1, 2, figsize=(20, 9),
+                                        gridspec_kw={'width_ratios': [3, 2]})
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+
+    for ax_obj in (ax_ov, ax_zm):
+        _draw_scene(ax_obj, pigs, blocks, platforms, birds)
+
+    # ── Overview panel ───────────────────────────────────────────────────────
+    def _plot_trajectories(ax_obj, lw=2.5, ms=4):
+        if plan_x:
+            ax_obj.plot(plan_x, plan_y, '-', color='darkorange', linewidth=lw,
+                        alpha=0.9, label=f'Planned (angle={angle:.1f}°)' if angle else 'Planned', zorder=7)
+            ax_obj.scatter(plan_x[0], plan_y[0], s=100, color='darkorange', marker='^',
+                           edgecolors='black', linewidths=1.5, zorder=15)
+        if len(act_x):
+            ax_obj.plot(act_x, act_y, '-', color='royalblue', linewidth=lw,
+                        alpha=0.9, label='Actual', zorder=8)
+            ax_obj.scatter(act_x[0], act_y[0], s=100, color='royalblue', marker='^',
+                           edgecolors='black', linewidths=1.5, zorder=15)
+        if expected_hit:
+            ax_obj.scatter(*expected_hit, s=280, color='red', marker='X',
+                           edgecolors='black', linewidths=2, zorder=16,
+                           label='Expected hit')
+        if actual_hit:
+            ax_obj.scatter(*actual_hit, s=320, color='gold', marker='D',
+                           edgecolors='black', linewidths=2, zorder=16,
+                           label='Actual hit')
+        if expected_hit and actual_hit and gap_dist is not None:
+            ex, ey = expected_hit;  ahx, ahy = actual_hit
+            ax_obj.plot([ex, ahx], [ey, ahy], '--', color='magenta', linewidth=2,
+                        alpha=0.85, zorder=14)
+
+    _plot_trajectories(ax_ov)
+
+    if expected_hit:
+        ax_ov.annotate(f'Expected\n({expected_hit[0]:.0f}, {expected_hit[1]:.0f})',
+                       (expected_hit[0], expected_hit[1] + 16),
+                       fontsize=8, ha='center', color='red', fontweight='bold', zorder=17)
+    if actual_hit:
+        ax_ov.annotate(f'Actual\n({actual_hit[0]:.0f}, {actual_hit[1]:.0f})',
+                       (actual_hit[0], actual_hit[1] - 28),
+                       fontsize=8, ha='center', color='navy', fontweight='bold', zorder=17)
+    if gap_dist is not None:
+        ex, ey = expected_hit;  ahx, ahy = actual_hit
+        mid_x, mid_y = (ex + ahx) / 2, (ey + ahy) / 2
+        ax_ov.annotate(f'Gap: {gap_dist:.0f} px',
+                       (mid_x + 10, mid_y), fontsize=9, ha='left',
+                       color='magenta', fontweight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85))
+
+    ax_ov.set_xlim(-60, 850)
+    ax_ov.set_ylim(0, 560)
+    ax_ov.set_aspect('equal')
+    ax_ov.set_xlabel('X (PDDL pixels)', fontsize=11)
+    ax_ov.set_ylabel('Y (PDDL pixels, up = positive)', fontsize=11)
+    ax_ov.set_title('Overview', fontsize=12)
+    ax_ov.grid(True, alpha=0.25)
+    ax_ov.legend(loc='upper right', fontsize=9)
+
+    if world_model_params:
+        info = (f"g = {world_model_params.get('gravity', 'N/A'):.2f}\n"
+                f"v = {world_model_params.get('velocity', 'N/A'):.2f}")
+        ax_ov.text(0.01, 0.99, info, transform=ax_ov.transAxes, fontsize=9,
+                   verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+
+    # ── Zoomed panel — centred on the hit zone ───────────────────────────────
+    _plot_trajectories(ax_zm, lw=2.0)
+
+    # Determine zoom window: bounding box of all relevant points
+    zoom_pts_x, zoom_pts_y = [], []
+    if expected_hit:
+        zoom_pts_x.append(expected_hit[0]);  zoom_pts_y.append(expected_hit[1])
+    if actual_hit:
+        zoom_pts_x.append(actual_hit[0]);    zoom_pts_y.append(actual_hit[1])
+    # Also include last ~30 frames of each trajectory
+    if plan_x:
+        zoom_pts_x.extend(plan_x[-30:]);  zoom_pts_y.extend(plan_y[-30:])
+    if len(act_x) and actual_impact_idx is not None:
+        start = max(0, actual_impact_idx - 30)
+        zoom_pts_x.extend(act_x[start:actual_impact_idx + 5])
+        zoom_pts_y.extend(act_y[start:actual_impact_idx + 5])
+    # Include all pig positions
+    for pdata in pigs.values():
+        zoom_pts_x.append(pdata.get('x_pig', 0))
+        zoom_pts_y.append(pdata.get('y_pig', 0))
+
+    if zoom_pts_x:
+        zx_min = min(zoom_pts_x) - ZOOM_PAD
+        zx_max = max(zoom_pts_x) + ZOOM_PAD
+        zy_min = min(zoom_pts_y) - ZOOM_PAD
+        zy_max = max(zoom_pts_y) + ZOOM_PAD
+    else:
+        zx_min, zx_max, zy_min, zy_max = 200, 600, 300, 550
+
+    ax_zm.set_xlim(zx_min, zx_max)
+    ax_zm.set_ylim(zy_min, zy_max)
+    ax_zm.set_aspect('equal')
+    ax_zm.set_xlabel('X (PDDL pixels)', fontsize=11)
+    ax_zm.set_ylabel('Y (PDDL pixels)', fontsize=11)
+    ax_zm.set_title('Zoomed — Hit Zone', fontsize=12)
+    ax_zm.grid(True, alpha=0.3)
+
+    # Detailed annotations on zoomed panel
+    if expected_hit:
+        ax_zm.annotate(f'Expected\n({expected_hit[0]:.0f}, {expected_hit[1]:.0f})',
+                       (expected_hit[0], expected_hit[1] + 10),
+                       fontsize=9, ha='center', color='red', fontweight='bold', zorder=17,
+                       bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.85))
+    if actual_hit:
+        ax_zm.annotate(f'Actual\n({actual_hit[0]:.0f}, {actual_hit[1]:.0f})',
+                       (actual_hit[0], actual_hit[1] - 22),
+                       fontsize=9, ha='center', color='navy', fontweight='bold', zorder=17,
+                       bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.85))
+    if gap_dist is not None:
+        ex, ey = expected_hit;  ahx, ahy = actual_hit
+        mid_x, mid_y = (ex + ahx) / 2, (ey + ahy) / 2
+        ax_zm.annotate(f'Gap: {gap_dist:.0f} px',
+                       (mid_x + 6, mid_y + 6), fontsize=10, ha='left',
+                       color='magenta', fontweight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9))
+
+    # Per-pig hit/miss status (zoomed)
+    if expected_hit and actual_hit:
+        for pname, pdata in pigs.items():
+            ppx = pdata.get('x_pig', 0);  ppy = pdata.get('y_pig', 0)
+            pr  = max(pdata.get('pig_radius', 12), 10)
+            d_exp = np.sqrt((expected_hit[0]-ppx)**2 + (expected_hit[1]-ppy)**2)
+            d_act = np.sqrt((actual_hit[0]-ppx)**2  + (actual_hit[1]-ppy)**2)
+            lines = [f'd_exp={d_exp:.0f}px', f'd_act={d_act:.0f}px']
+            hit_exp = d_exp <= pr * 1.5
+            hit_act = d_act <= pr * 1.5
+            if hit_exp:  lines.append('Exp HIT ✓')
+            if hit_act:  lines.append('Act HIT ✓')
+            color = 'green' if (hit_exp or hit_act) else 'red'
+            ax_zm.annotate('\n'.join(lines),
+                           (ppx, ppy - pr - 20), fontsize=8, ha='center',
+                           color=color, fontweight='bold', zorder=19)
+
+    # Draw a reference box on the overview showing the zoom region
+    from matplotlib.patches import Rectangle as Rect
+    zoom_rect = Rect((zx_min, zy_min), zx_max - zx_min, zy_max - zy_min,
+                     linewidth=2, edgecolor='purple', facecolor='none',
+                     linestyle='--', zorder=20)
+    ax_ov.add_patch(zoom_rect)
+    ax_ov.annotate('zoom →', (zx_max, (zy_min + zy_max) / 2),
+                   fontsize=8, color='purple', va='center')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[HIT VIZ] Saved to: {save_path}")
+
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def visualize_level_setup(problem_data: dict, world_model_params: dict = None, 
                           title: str = "Level Setup - Object Detection", save_path: str = None,
                           show_plot: bool = True, trajectory: list = None, angle: float = None):
@@ -3723,9 +3993,10 @@ def visualize_trajectory_segment0(observed_trajectory: np.ndarray, estimated_tra
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"[SEGMENT0 VIZ] Saved to: {save_path}")
-    
-    print("\n[SEGMENT0 VIZ] Visualization open - close the window to continue...")
-    plt.show(block=True)
+        plt.close(fig)
+    else:
+        print("\n[SEGMENT0 VIZ] Visualization open - close the window to continue...")
+        plt.show(block=True)
     
     return fig
 

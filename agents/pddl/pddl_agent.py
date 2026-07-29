@@ -22,7 +22,8 @@ from agents.pddl.trajectory_parser import (
 from agents.pddl.visualiator import (visualize_compare, plot_loo_cv_comparison, visualize_learning_dashboard,
                                      visualize_level_setup, visualize_trajectory_segment0,
                                      visualize_starting_point_offset, log_direct_hit_analysis,
-                                     debug_all_events_full_trajectory)
+                                     debug_all_events_full_trajectory,
+                                     visualize_expected_vs_actual_hit)
 from agents.pddl.angle_protocol import AngleTrainingProtocol
 from agents.pddl.phyq_metrics import PhyQMetrics, PhyQLevelMapper
 from agents.pddl.comparison_csv import AgentComparisonCSV
@@ -41,13 +42,31 @@ from agents.pddl.pddl_files.pddl_parser import (
     pddl_bird_position_before_pa_twang,
     pddl_bird_position_after_pa_twang,
     ANGLE_REPLAN_THRESHOLD_DEG,
+    ANGLE_BIAS_DEGREES,
     simulate_pddl_shot_plan,
     ballistic_angle_to_target,
+    FORCE_MIN, FORCE_MAX, FORCE_RATE, FORCE_V_SCALE,
 )
 from src.client.agent_client import GameState
 from agents.pddl.metrics import calculate_rmse, calculate_impact_rmse
 
 from numpy.polynomial import Polynomial
+
+
+def _extract_force_angle(actions, default_force=1.0):
+    """Extract (force, angle) from an actions list returned by get_action_to_perform.
+
+    The list may contain ('set_force', force) and/or ('shoot', angle) tuples.
+    Falls back to default_force when no set_force action is present.
+    """
+    force = default_force
+    angle = None
+    for action_type, value in actions:
+        if action_type == 'set_force':
+            force = value
+        elif action_type == 'shoot':
+            angle = value
+    return force, angle
 
 
 class PDDLAgent(BaselineAgent):
@@ -70,7 +89,7 @@ class PDDLAgent(BaselineAgent):
                  generalization_seed: int = 42,
                  scenario_filter: str = None,  # Filter by scenario: e.g., "single_force"
                  levels_per_template: int = None,  # Limit levels per template
-                 visualize_pddl_input: bool = False,  # Show PDDL visualization
+                 visualize_pddl_input: bool = True,  # Show PDDL visualization on level loss
                  # Agent comparison CSV options
                  comparison_csv_path: str = "agent_comparison_results.csv",
                  human_baseline_path: str = "external/phy-q/playdata/broad_generalization_all_agents.csv",
@@ -95,15 +114,16 @@ class PDDLAgent(BaselineAgent):
         self.sim_speed = 20
         self.visualize = False
         
-        # Enable level visualization - saves what PDDL sees for each level
-        self.visualize_pddl_input = visualize_pddl_input  # Shows what agent sees and injects to PDDL
-        self.pddl_viz_dir = "pddl_level_viz"  # Directory for visualization outputs
+        # Enable level visualization - shown only when a level is lost
+        self.visualize_pddl_input = visualize_pddl_input
+        self.pddl_viz_dir = "pddl_level_viz"
+        self._pending_level_viz = None
         
         # Multi-bird tracking: which bird index we're currently shooting
         self.current_bird_shot = 0  # 0 = first bird, 1 = second bird, etc.
         
         if self.visualize_pddl_input:
-            print(f"[PDDL VIZ] Visualization ENABLED - will show what agent sees for each level")
+            print("[PDDL VIZ] Visualization ENABLED - will display only when a level is LOST")
         self.ground_truth_type = GroundTruthType.ground_truth_screenshot
         self.learn = True
         
@@ -375,7 +395,7 @@ class PDDLAgent(BaselineAgent):
             # Only use first collision per trajectory
             break
     
-    def learn_flight_physics(self, trajectory):
+    def learn_flight_physics(self, trajectory, force_scale: float = 1.0):
         """
         Learn flight physics (gravity, velocity) from observed trajectory.
         
@@ -386,6 +406,10 @@ class PDDLAgent(BaselineAgent):
         -----------
         trajectory : np.ndarray
             The observed trajectory (first segment, before any collision)
+        force_scale : float
+            The planned_force fraction (0.2–1.0) used for the shot.
+            In the linear regime v_meas ≈ v_full * force, so dividing by force_scale
+            recovers the force=1.0 baseline velocity stored in the world model.
         
         Updates:
         --------
@@ -428,7 +452,10 @@ class PDDLAgent(BaselineAgent):
         print(f"\n[KB UPDATE] Now have {len(self.kb['trajectories'])} trajectories in knowledge base")
         
         self.learn_process_transitions()
-        self.learned_transition_world_model = self._create_learned_transition_world_model()
+        current_v_bird = self.world_model.hyperparams_values.get(Params.velocity)
+        self.learned_transition_world_model = self._create_learned_transition_world_model(
+            force_scale=force_scale, current_v_bird=current_v_bird
+        )
         
         print("\n" + "-" * 60)
         print("[LEARNED WORLD MODEL]")
@@ -483,6 +510,9 @@ class PDDLAgent(BaselineAgent):
         if self.debug_mag_comparison:
             return self._solve_mag_comparison(sling)
         
+        # Default force for non-PDDL branches (determinism test, override angle, etc.)
+        planned_force = FORCE_MAX
+
         # Phy-Q Generalization Protocol (takes priority if enabled)
         if self.use_generalization_protocol and self.generalization_protocol is not None:
             # Get phase based on current level index
@@ -540,9 +570,9 @@ class PDDLAgent(BaselineAgent):
             # Use PDDL planner for angle selection
             print(f"[{current_phase.upper()}] Using PDDL planner")
             print("[DEBUG] Calling get_action_to_perform()...")
-            actions = self.get_action_to_perform(self.world_model)[0]
-            _, angle = actions
-            print(f"[{current_phase.upper()}] PDDL selected angle: {angle}°")
+            actions = self.get_action_to_perform(self.world_model)
+            planned_force, angle = _extract_force_angle(actions)
+            print(f"[{current_phase.upper()}] PDDL selected angle: {angle}°, force: {planned_force}")
         
         elif self.use_angle_protocol and self.angle_protocol is not None:
             # Use train/val/test protocol for phase tracking, but PDDL for angle selection
@@ -567,9 +597,9 @@ class PDDLAgent(BaselineAgent):
             # Use PDDL planner for angle selection in all phases
             print(f"[{current_phase.upper()}] Using PDDL planner, Learning: {should_learn}")
             print("[DEBUG] Calling get_action_to_perform()...")
-            actions = self.get_action_to_perform(self.world_model)[0]
-            _, angle = actions
-            print(f"[{current_phase.upper()}] PDDL selected angle: {angle}°")
+            actions = self.get_action_to_perform(self.world_model)
+            planned_force, angle = _extract_force_angle(actions)
+            print(f"[{current_phase.upper()}] PDDL selected angle: {angle}°, force: {planned_force}")
         
         elif self.determinism_test_mode:
             angle = round(random.uniform(20.0, 80.0), 1)
@@ -583,13 +613,18 @@ class PDDLAgent(BaselineAgent):
             # Use PDDL planner
             print("[DEBUG] Using PDDL planner to select angle...")
             print("[DEBUG] Calling get_action_to_perform()...")
-            actions = self.get_action_to_perform(self.world_model)[0]
-            _, angle = actions
-            print(f"\n[PDDL] Planner selected angle: {angle}°")
+            actions = self.get_action_to_perform(self.world_model)
+            planned_force, angle = _extract_force_angle(actions)
+            print(f"\n[PDDL] Planner selected angle: {angle}°, force: {planned_force}")
 
-        # 2. Execute shot and record trajectory (always use full power)
-        print(f"[DEBUG] Step 5: Executing shot at angle {angle}°...")
-        release_point = self.tp.find_release_point(sling, angle * np.pi / 180)
+        # 2. Execute shot using planned force (mag = height * 0.5 * force, linear regime)
+        # PDDL flight physics use (angle - angle_bias); match that in the slingshot pull.
+        flight_angle_deg = angle - ANGLE_BIAS_DEGREES
+        print(f"[DEBUG] Step 5: Executing shot — PDDL dial={angle:.1f}°, "
+              f"flight θ={flight_angle_deg:.1f}° (bias={ANGLE_BIAS_DEGREES}°), force={planned_force:.3f}...")
+        release_point = self.tp.find_release_point_partial_power(
+            sling, math.radians(flight_angle_deg), v_portion=planned_force * FORCE_V_SCALE
+        )
         print(f"[DEBUG] Release point: ({release_point.X}, {release_point.Y})")
         print("[DEBUG] Calling shoot_and_record_ground_truth()...")
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
@@ -754,7 +789,7 @@ class PDDLAgent(BaselineAgent):
             print(f"[SEGMENT 0 DEBUG] End: ({first_segment[-1][0]:.1f}, {first_segment[-1][1]:.1f})")
         
         if should_learn:
-            self.learn_flight_physics(first_segment)
+            self.learn_flight_physics(first_segment, force_scale=planned_force)
         else:
             print(f"[{current_phase.upper()}] Skipping flight physics learning (evaluation mode)")
 
@@ -798,13 +833,22 @@ class PDDLAgent(BaselineAgent):
 
         print(f"\n[LAUNCH ESTIMATE] release=({release[0]:.2f}, {release[1]:.2f}) "
               f"v=({launch['vx']:.1f}, {launch['vy']:.1f}) |v|={launch['v_meas']:.1f} "
-              f"θ_meas={launch['theta_deg']:.1f}° (planner θ={angle:.1f}°)")
+              f"θ_meas={launch['theta_deg']:.1f}° (planner dial={angle:.1f}°, flight θ={angle - ANGLE_BIAS_DEGREES:.1f}°)")
 
         if should_learn:
             v_old = self.world_model.hyperparams_values[Params.velocity]
-            v_new = 0.85 * v_old + 0.15 * launch["v_meas"]
-            self.world_model.hyperparams_values[Params.velocity] = v_new
-            print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_new:.2f} (full-power EMA)")
+            # Only update v_bird EMA from near-full-force shots.
+            # Partial-force shots cannot reliably back-calculate v_full because the
+            # game's force→velocity curve has a non-zero intercept (v ≈ a*f + b),
+            # so v_meas/force overshoots and corrupts the calibration.
+            if planned_force >= 0.95:
+                v_new = 0.85 * v_old + 0.15 * launch["v_meas"]
+                self.world_model.hyperparams_values[Params.velocity] = v_new
+                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_new:.2f} "
+                      f"(EMA updated, v_meas={launch['v_meas']:.2f}, force={planned_force:.3f})")
+            else:
+                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
+                      f"(EMA skipped, partial force={planned_force:.3f}, v_meas={launch['v_meas']:.2f})")
 
         limit = np.max(first_segment_trimmed, axis=0)[0]
         estimated_trajectory = construct_trajectory_from_velocity(
@@ -835,12 +879,14 @@ class PDDLAgent(BaselineAgent):
         print(f"  Velocity: {world_model_params['velocity']:.2f}")
         print(f"  RMSE: {current_rmse:.2f}")
         
-        # VISUALIZATION DISABLED - uncomment to enable
+        # Display expected-vs-actual trajectory comparison after every level (blocks until window closed)
         # try:
+        #     level_idx = getattr(self, 'current_level', 0)
+        #     attempt_num = len(self.rmse)
         #     visualize_trajectory_segment0(
         #         first_segment_trimmed, estimated_trajectory,
         #         angle=angle, world_model_params=world_model_params,
-        #         title=f"Segment 0 - Attempt {len(self.rmse)} (angle={angle:.1f}°, RMSE={current_rmse:.2f})"
+        #         title=f"Level {level_idx} Attempt {attempt_num} - Expected vs Actual (angle={angle:.1f}°, RMSE={current_rmse:.2f})"
         #     )
         # except Exception as e:
         #     print(f"[SEGMENT 0 VIZ] Visualization error (non-fatal): {e}")
@@ -931,7 +977,7 @@ class PDDLAgent(BaselineAgent):
             print(f"[IMPACT DEBUG] No events detected, setting RMSE=inf")
             self.impact_rmse.append(float('inf'))
             self.impact_trajectories.append(None)
-        
+
         # Show combined learning dashboard every 10 attempts (DISABLED)
         # if len(self.full_trajectories) % 10 == 0:
         #     visualize_learning_dashboard(
@@ -992,6 +1038,11 @@ class PDDLAgent(BaselineAgent):
             
             # Reset attempt counter for next level
             self._current_level_attempts = 0
+
+            if game_state == GameState.LOST:
+                self._show_pddl_visualizations_on_loss(
+                    angle, bird_observed_trajectory, event_indexes, world_model_params
+                )
         else:
             # Level still in progress (more birds available)
             print(f"[MULTI-BIRD] Shot {self._current_level_attempts} complete, game still PLAYING - more birds available")
@@ -1505,7 +1556,10 @@ class PDDLAgent(BaselineAgent):
                 return None, planner_output
 
             print("[PDDL DEBUG] Parsing solution...")
-            actions = parse_solution_to_actions('solution.pddl', self.max_deg, self.deg_step)
+            actions = parse_solution_to_actions(
+                'solution.pddl', self.max_deg, self.deg_step,
+                force_min=FORCE_MIN, force_rate=FORCE_RATE,
+            )
             print(f"[PDDL DEBUG] Parsed actions: {actions}")
             return actions, planner_output
         except Exception as e:
@@ -1515,14 +1569,74 @@ class PDDLAgent(BaselineAgent):
             os.chdir(root_cwd)
             print(f"[PDDL DEBUG] Changed back to: {os.getcwd()}")
 
-    def _finalize_plan_metadata(self, problem_data: dict, angle: float, world_model_params: dict):
+    def _show_pddl_visualizations_on_loss(
+            self, angle, bird_observed_trajectory, event_indexes, world_model_params):
+        """Display PDDL debug plots only when the level was lost."""
+        if not getattr(self, 'visualize_pddl_input', False):
+            return
+
+        viz_dir = getattr(self, 'pddl_viz_dir', 'pddl_level_viz')
+        if not os.path.exists(viz_dir):
+            os.makedirs(viz_dir)
+
+        pending = getattr(self, '_pending_level_viz', None)
+        if pending:
+            try:
+                visualize_level_setup(
+                    pending['problem_data'],
+                    pending['world_model_params'],
+                    title=pending['title'],
+                    save_path=pending['save_path'],
+                    show_plot=True,
+                    trajectory=pending.get('trajectory'),
+                    angle=pending.get('angle'),
+                )
+                print(f"[PDDL VIZ] Saved level visualization to: {pending['save_path']}")
+            except Exception as e:
+                import traceback
+                print(f"[PDDL VIZ] Visualization error (non-fatal): {e}")
+                traceback.print_exc()
+            self._pending_level_viz = None
+
+        try:
+            planned_sim_traj = getattr(self, '_last_sim_trajectory', [])
+            last_problem = getattr(self, '_last_problem_data', {})
+            impact_idx_for_viz = event_indexes[0] if len(event_indexes) > 0 else None
+            level_idx = getattr(self, 'current_level', 0)
+            attempt_num = len(self.impact_rmse)
+            hit_save = os.path.join(
+                viz_dir, f"level_{level_idx:03d}_attempt_{attempt_num:02d}_hit.png"
+            )
+            hit_title = (
+                f"Level {level_idx} Attempt {attempt_num} — Expected vs Actual Hit\n"
+                f"Angle={angle:.1f}°  |  Impact frame: {impact_idx_for_viz}"
+            )
+            visualize_expected_vs_actual_hit(
+                problem_data=last_problem,
+                planned_trajectory=planned_sim_traj,
+                actual_trajectory=bird_observed_trajectory,
+                actual_impact_idx=impact_idx_for_viz,
+                angle=angle,
+                world_model_params=world_model_params,
+                title=hit_title,
+                save_path=hit_save,
+                show_plot=True,
+            )
+        except Exception as e:
+            import traceback
+            print(f"[HIT VIZ] Visualization error (non-fatal): {e}")
+            traceback.print_exc()
+
+    def _finalize_plan_metadata(self, problem_data: dict, angle: float, world_model_params: dict,
+                               force: float = 1.0):
         """Store plan flags and optionally run direct-hit analysis for ground-bounce plans."""
         g = world_model_params['gravity']
         # Run simulation with debug=True to see detailed collision checks
-        sim = simulate_pddl_shot_plan(problem_data, angle, gravity=g, debug=True)
+        sim = simulate_pddl_shot_plan(problem_data, angle, gravity=g, force=force, debug=True)
         self._last_planned_angle = angle
         self._last_plan_uses_ground = sim['uses_ground_collision']
         self._last_problem_data = problem_data
+        self._last_sim_trajectory = sim.get('trajectory', [])
 
         print(
             f"[PDDL DEBUG] Plan sim: ground_touches={sim['ground_touches']}, "
@@ -1533,40 +1647,29 @@ class PDDLAgent(BaselineAgent):
         if sim.get('platform_collision'):
             print(f"[PDDL DEBUG] Platform hit: {sim.get('platform_hit_name')} at {sim.get('platform_hit_pos')}")
 
-        # Visualize what PDDL sees for this level (saves to file)
+        # Defer level visualization until we know the level was lost
         if getattr(self, 'visualize_pddl_input', False):
-            try:
-                # Create output directory if needed
-                viz_dir = getattr(self, 'pddl_viz_dir', 'pddl_level_viz')
-                if not os.path.exists(viz_dir):
-                    os.makedirs(viz_dir)
-                
-                # Generate filename with level info
-                level_idx = getattr(self, 'current_level', 0)
-                attempt_num = len(self.rmse) + 1
-                save_path = os.path.join(viz_dir, f"level_{level_idx:03d}_attempt_{attempt_num:02d}.png")
-                
-                # Build title with simulation result
-                sim_result = "HIT PIG" if sim['pig_killed_in_sim'] else ("HIT PLATFORM" if sim['platform_collision'] else "MISS")
-                title = (
+            level_idx = getattr(self, 'current_level', 0)
+            attempt_num = len(self.rmse) + 1
+            viz_dir = getattr(self, 'pddl_viz_dir', 'pddl_level_viz')
+            sim_result = (
+                "HIT PIG" if sim['pig_killed_in_sim']
+                else ("HIT PLATFORM" if sim['platform_collision'] else "MISS")
+            )
+            self._pending_level_viz = {
+                'problem_data': problem_data,
+                'world_model_params': world_model_params,
+                'title': (
                     f"Level {level_idx} - PDDL Input View\n"
-                    f"Angle={angle:.1f}° | G={world_model_params['gravity']:.1f} | V={world_model_params['velocity']:.1f} | Sim: {sim_result}"
-                )
-                
-                visualize_level_setup(
-                    problem_data,
-                    world_model_params,
-                    title=title,
-                    save_path=save_path,
-                    show_plot=True,  # Pause to show visualization
-                    trajectory=sim.get('trajectory'),  # Pass trajectory for visualization
-                    angle=angle
-                )
-                print(f"[PDDL VIZ] Saved level visualization to: {save_path}")
-            except Exception as e:
-                import traceback
-                print(f"[PDDL VIZ] Visualization error (non-fatal): {e}")
-                traceback.print_exc()
+                    f"Angle={angle:.1f}° | G={world_model_params['gravity']:.1f} | "
+                    f"V={world_model_params['velocity']:.1f} | Sim: {sim_result}"
+                ),
+                'save_path': os.path.join(
+                    viz_dir, f"level_{level_idx:03d}_attempt_{attempt_num:02d}.png"
+                ),
+                'trajectory': sim.get('trajectory'),
+                'angle': angle,
+            }
 
     def get_action_to_perform(self, agent_world_model: WorldModel):
         """
@@ -1619,7 +1722,7 @@ class PDDLAgent(BaselineAgent):
         
         self._last_plan_source = "planner"
 
-        _, angle = actions[0]
+        planned_force, angle = _extract_force_angle(actions)
 
         # if abs(angle - ref_guess) > ANGLE_REPLAN_THRESHOLD_DEG:
         #     print(
@@ -1639,7 +1742,7 @@ class PDDLAgent(BaselineAgent):
         #     else:
         #         _, angle = actions[0]
 
-        self._finalize_plan_metadata(problem_data, angle, world_model_params)
+        self._finalize_plan_metadata(problem_data, angle, world_model_params, force=planned_force)
         print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
         return actions
 
@@ -1731,11 +1834,26 @@ class PDDLAgent(BaselineAgent):
                                                           x_values=x_values, y_values=y_values)
             
             # Extract gravity (yddot constant) from this trajectory
+            # Quality gate: skip trajectories that are too short or nearly flat (unreliable 2nd derivative)
+            MIN_TRAJ_FRAMES = 40
+            MIN_Y_EXCURSION_PX = 40  # require meaningful vertical motion for reliable gravity estimate
+            y_excursion = float(np.max(traj[:, 1]) - np.min(traj[:, 1]))
+            traj_quality_ok = len(traj) >= MIN_TRAJ_FRAMES and y_excursion >= MIN_Y_EXCURSION_PX
             try:
-                yddot_constant = poly_y.deriv(2)(0)  # Second derivative at t=0
-            except:
-                yddot_constant = np.mean(yddot) if len(yddot) > 0 else 0.0
-            all_yddot_constants.append(yddot_constant)
+                if rank_y <= 2:
+                    # Degree ≤ 2: 2nd derivative is a constant everywhere
+                    yddot_traj = poly_y.deriv(2)(0)
+                else:
+                    # Degree 3+: evaluate 2nd derivative at EVERY time step and take the mean.
+                    # poly_y.deriv(2)(0) only gives 2*c2 which is unreliable when the cubic
+                    # coefficient is large (noise-driven on short/flat trajectories).
+                    yddot_traj = float(np.mean([poly_y.deriv(2)(t) for t in function_range]))
+            except Exception:
+                yddot_traj = float(np.mean(yddot)) if len(yddot) > 0 else 0.0
+            if traj_quality_ok:
+                all_yddot_constants.append(yddot_traj)
+            else:
+                print(f"  [GRAVITY] Traj {traj_idx}: SKIP (frames={len(traj)}, y_excursion={y_excursion:.1f}px < thresholds {MIN_TRAJ_FRAMES}/{MIN_Y_EXCURSION_PX})")
             
             # ========================================================================
             # STEP 3: Extract state transition pairs from this trajectory
@@ -1831,21 +1949,24 @@ class PDDLAgent(BaselineAgent):
                 print(f"  Trajectory {i}: gravity = {g:.2f}")
             
             if len(all_yddot_constants) > 0:
-                # Filter outliers - keep values within expected range
-                GRAVITY_MIN, GRAVITY_MAX = -150, -30
+                # Filter outliers: expected gravity is ~-86 to -90 for this engine.
+                # Use a tighter range that still allows natural variation but excludes
+                # wildly wrong estimates from noisy/degenerate polynomial fits.
+                GRAVITY_MIN, GRAVITY_MAX = -112, -65
                 filtered_gravity = [g for g in all_yddot_constants if GRAVITY_MIN <= g <= GRAVITY_MAX]
                 
                 if len(filtered_gravity) > 0:
-                    yddot_constant = np.mean(filtered_gravity)
+                    # Use median for robustness against remaining outliers
+                    yddot_constant = float(np.median(filtered_gravity))
                     print(f"[GRAVITY LEARNING] Filtered to {len(filtered_gravity)} values in range [{GRAVITY_MIN}, {GRAVITY_MAX}]")
-                    print(f"[GRAVITY LEARNING] Final averaged gravity: {yddot_constant:.4f}")
+                    print(f"[GRAVITY LEARNING] Final median gravity: {yddot_constant:.4f}")
                 else:
                     # All values are outliers, use default
                     yddot_constant = -90.0
                     print(f"[GRAVITY LEARNING] WARNING: All gravity values were outliers! Using default: {yddot_constant}")
             else:
                 yddot_constant = -90.0
-                print(f"[GRAVITY LEARNING] No trajectories available, using default gravity: {yddot_constant}")
+                print(f"[GRAVITY LEARNING] No qualifying trajectories, using default gravity: {yddot_constant}")
             
             # Create a constant model for yddot
             class ConstantYddotModel:
@@ -1941,25 +2062,37 @@ class PDDLAgent(BaselineAgent):
             print(f"Error in learn_process_transitions step 3: {e}")
             print("Some transition functions may not have been learned.")
     
-    def _create_learned_transition_world_model(self):
+    def _create_learned_transition_world_model(self, force_scale: float = 1.0, current_v_bird: float = None):
         """
         Create a new WorldModel from learned transitions.
-        Only extracts yddot (gravity) and v (velocity from vx and vy).
+        Updates gravity from every shot (force-independent), but only updates
+        velocity from near-full-force shots (force_scale >= 0.95) because the
+        game's force→velocity curve has a non-zero intercept.  Dividing partial-
+        force v_meas by force overshoots and corrupts the calibration.
+
+        Parameters:
+        -----------
+        force_scale : float
+            planned_force fraction (0.2–1.0) used for the shot.
+        current_v_bird : float, optional
+            The current world-model velocity to use as fallback when force_scale < 0.95.
         
         Returns:
         --------
         WorldModel
-            A new WorldModel instance with gravity and velocity from learned transitions
+            A new WorldModel instance with updated gravity and (conditionally) velocity.
         """
         initial_values = {}
         
-        # Get gravity from yddot (constant value)
+        # Gravity is force-independent — always update it
         if self.learned_transitions.get("yddot") is not None:
             yddot_model = self.learned_transitions["yddot"].get("model")
             if hasattr(yddot_model, 'constant_value'):
                 initial_values[Params.gravity] = abs(yddot_model.constant_value)
         
-        # Calculate velocity from xdot and ydot initial values
+        # Velocity: only trust the measurement from near-full-force shots.
+        # At force < 0.95 the v_meas/force ratio overshoots due to the game's
+        # non-proportional (offset) force→velocity relationship.
         vx = None
         vy = None
         if self.learned_transitions.get("xdot") is not None and "initial_value" in self.learned_transitions["xdot"]:
@@ -1968,7 +2101,19 @@ class PDDLAgent(BaselineAgent):
             vy = self.learned_transitions["ydot"]["initial_value"]
         
         if vx is not None and vy is not None:
-            initial_values[Params.velocity] = math.sqrt(vx**2 + vy**2)
+            v_partial = math.sqrt(vx**2 + vy**2)
+            if force_scale >= 0.95:
+                # At full (or near-full) force the measured speed IS v_full — no division needed
+                initial_values[Params.velocity] = v_partial
+                print(f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, v_full={v_partial:.2f} (full-force, direct)")
+            else:
+                # Keep the existing v_bird; only gravity was reliably learned this shot
+                if current_v_bird is not None:
+                    initial_values[Params.velocity] = current_v_bird
+                    print(f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, v_full=kept {current_v_bird:.2f} (partial-force, no update)")
+                else:
+                    initial_values[Params.velocity] = v_partial
+                    print(f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, v_full={v_partial:.2f} (partial-force fallback)")
         
         return WorldModel(initial_values)
     

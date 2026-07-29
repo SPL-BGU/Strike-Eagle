@@ -205,12 +205,8 @@ class SimpleTrajectoryPlanner:
         """
 
         mag = sling.height * 5
-        #print('mag ', mag)
         ref = self.get_reference_point(sling)
-        #print('ref ', ref)
-        #print('cos theta ',cos(theta))
-#        print('sin theta ',sin(theta))
-        release = Point2D(int(ref.X - mag * cos(theta)), int(ref.Y + mag * sin(theta)))
+        release = Point2D(round(ref.X - mag * cos(theta)), round(ref.Y + mag * sin(theta)))
 
         return release
 
@@ -226,7 +222,9 @@ class SimpleTrajectoryPlanner:
         """
         mag = sling.height * 5 * v_portion  # consistent with find_release_point at v_portion=1.0
         ref = self.get_reference_point(sling)
-        release = Point2D((int)(ref.X - mag * cos(theta)), (int)(ref.Y + mag * sin(theta)))
+        # round() instead of int() halves truncation error; critical for small pullbacks
+        # where 1px error is a large fraction of the total displacement and causes ~3° angle loss
+        release = Point2D(round(ref.X - mag * cos(theta)), round(ref.Y + mag * sin(theta)))
 
         return release
 
@@ -242,7 +240,7 @@ class SimpleTrajectoryPlanner:
     def get_reference_point(self, sling):
         """find the reference point given the sling"""
 
-        p = Point2D(int(sling.X + self.X_OFFSET * sling.width), int(sling.Y + self.Y_OFFSET * sling.width))
+        p = Point2D(round(sling.X + self.X_OFFSET * sling.width), round(sling.Y + self.Y_OFFSET * sling.width))
         return p
 
     def predictTrajectory(self, slingshot, launch_point):

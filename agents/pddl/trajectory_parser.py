@@ -219,7 +219,11 @@ def estimate_launch_from_trajectory(
     Estimate release position and initial velocity from the first frames of a GT segment.
 
     Position: mean of the first n_pos points (after skip).
-    Velocity: linear regression of x(t), y(t) over frames skip .. skip+n_vel.
+    Velocity:
+      - vx: linear regression of x(t) (horizontal velocity is constant, no drag).
+      - vy: quadratic fit of y(t) = vy0*t + a*t² + c when n_vel >= 2, else linear.
+            The quadratic fit recovers the true initial vy at t=0, correcting for the
+            gravity-induced deceleration that a linear fit would average away.
     """
     traj = np.asarray(trajectory, dtype=float)
     if traj.ndim != 2 or traj.shape[1] < 2:
@@ -236,8 +240,17 @@ def estimate_launch_from_trajectory(
     t = np.arange(skip, skip + n_vel + 1, dtype=float) * frame_rate
     xs = traj[skip: skip + n_vel + 1, 0]
     ys = traj[skip: skip + n_vel + 1, 1]
+
     vx = float(np.polyfit(t, xs, 1)[0])
-    vy = float(np.polyfit(t, ys, 1)[0])
+
+    # Quadratic fit for y: y(t) = a*t² + b*t + c  →  b is vy at t=0.
+    # Requires ≥ 3 points (n_vel ≥ 2). Fall back to linear for very short segments.
+    if n_vel >= 2:
+        y_coeffs = np.polyfit(t, ys, 2)  # [a, b, c], highest-degree first
+        vy = float(y_coeffs[1])
+    else:
+        vy = float(np.polyfit(t, ys, 1)[0])
+
     v_meas = float(np.hypot(vx, vy))
     theta_deg = float(np.degrees(np.arctan2(vy, vx)))
 

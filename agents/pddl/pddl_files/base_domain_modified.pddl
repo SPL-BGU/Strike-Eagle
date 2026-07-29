@@ -1,7 +1,7 @@
 (define (domain angry_birds_scaled)
     (:requirements :typing :disjunctive-preconditions :fluents :time :negative-preconditions :conditional-effects)
     (:types bird pig block platform external_agent)
-    (:predicates (bird_released ?b - bird) (pig_dead ?p - pig) (angle_adjusted) (block_explosive ?bl - block) (pig_killed) (agent_dead ?ea - external_agent) (bird_tapped ?b - bird))
+    (:predicates (bird_released ?b - bird) (pig_dead ?p - pig) (angle_adjusted) (block_explosive ?bl - block) (pig_killed) (agent_dead ?ea - external_agent) (bird_tapped ?b - bird) (force_locked))
 
     (:functions (x_bird ?b - bird) (y_bird ?b - bird) (v_bird ?b - bird) (vx_bird ?b - bird) (vy_bird ?b - bird)  (m_bird ?b - bird) (bird_id ?b - bird) (bounce_count ?b - bird)
                 (bird_type ?b - bird) ;; BIRD TYPES: RED=0, YELLOW=1, BLACK2, WHITE=3, BLUE=4 ;;
@@ -12,7 +12,7 @@
                 (base_life_wood_multiplier) (base_life_ice_multiplier) (base_life_stone_multiplier) (base_life_tnt_multiplier)
                 (base_mass_wood_multiplier) (base_mass_ice_multiplier) (base_mass_stone_multiplier) (base_mass_tnt_multiplier)
                 (meta_wood_multiplier) (meta_stone_multiplier) (meta_ice_multiplier) (meta_platform_size) ; TODO add: meta_block_size tnt_explosion_size bird_explosion_size
-                (v_bird_multiplier)
+                (v_bird_multiplier) (min_force) (max_force) (force_rate)
                 (x_pig ?p - pig) (y_pig ?p - pig) (pig_radius ?p - pig) (m_pig ?p - pig)
                 (pig_life ?p - pig) (fall_damage) (explosion_damage)
                 (x_platform ?pl - platform) (y_platform ?pl - platform) (platform_width ?pl - platform) (platform_height ?pl - platform)
@@ -93,6 +93,30 @@
         )
     )
 
+    (:process decreasing_force
+        :parameters (?b - bird)
+        :precondition (and
+            (= (active_bird) (bird_id ?b))
+            (not (bird_released ?b))
+            (not (force_locked))
+            (<= (v_bird_multiplier) (max_force))
+            (>= (v_bird_multiplier) (min_force))
+        )
+        :effect (and
+            (decrease (v_bird_multiplier) (* #t (force_rate)))
+        )
+    )
+
+    (:action set_force
+        :parameters (?b - bird)
+        :precondition (and
+            (= (active_bird) (bird_id ?b))
+            (not (bird_released ?b))
+            (not (force_locked))
+        )
+        :effect (force_locked)
+    )
+
     (:process flying
         :parameters (?b - bird)
         :precondition (and
@@ -114,10 +138,11 @@
             (= (active_bird) (bird_id ?b))
             (not (bird_released ?b))
             (not (angle_adjusted))
+            (force_locked)
         )
         :effect (and
-            (assign (vx_bird ?b) (* (v_bird ?b) (cosine) ) ); this is a cos(angle) estimation
-            (assign (vy_bird ?b) (* (v_bird ?b) (sinus) ) )
+            (assign (vx_bird ?b) (* (* (v_bird ?b) (v_bird_multiplier)) (cosine) ) )
+            (assign (vy_bird ?b) (* (* (v_bird ?b) (v_bird_multiplier)) (sinus) ) )
             (decrease (x_bird ?b) (* 16 (cosine))) ;; define this values
             (decrease (y_bird ?b) (* 12 (sinus))) ;; define this values
 
@@ -138,9 +163,9 @@
 
         )
         :effect (and
-            (assign (y_bird ?b) (+ 1.9534 (* 0.0055 (vx_bird ?b))))
-            (assign (vx_bird ?b) (+ -12.8490 (* 0.7757 (vx_bird ?b))))
-            (assign (vy_bird ?b) (+ 53.6253 (* -0.2208 (vx_bird ?b))))
+            (assign (y_bird ?b) (+ 1.4336 (+ (* 0.0044 (x_bird ?b)) (* 0.0028 (vy_bird ?b)))))
+            (assign (vx_bird ?b) (+ -39.8080 (+ (* 0.0132 (x_bird ?b)) (* 0.6349 (vx_bird ?b)))))
+            (assign (vy_bird ?b) (+ -0.1710 (+ (* -0.0301 (x_bird ?b)) (+ (* 0.1417 (vx_bird ?b)) (* -0.2897 (vy_bird ?b))))))
             (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
         )
     )
@@ -170,13 +195,19 @@
             (> (v_bird ?b) 0)
             (>=
                 (*
-                    (+
-                        (bird_radius ?b)
-                        (pig_radius ?p)
+                    (-
+                        (+
+                            (bird_radius ?b)
+                            (pig_radius ?p)
+                        )
+                        4.0
                     )
-                    (+
-                        (bird_radius ?b)
-                        (pig_radius ?p)
+                    (-
+                        (+
+                            (bird_radius ?b)
+                            (pig_radius ?p)
+                        )
+                        4.0
                     )
                 )
                 (+
