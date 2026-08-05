@@ -130,6 +130,19 @@ class PDDLAgent(BaselineAgent):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
+
+        # Training-level retry state:
+        # On a LOST training level, reload the same level (via load_level in the
+        # main loop) until we WIN or hit max_train_attempts. Test levels are still
+        # 1-trial-per-level.
+        self.max_train_attempts = 8
+        self._current_level_retry_index = 0  # number of prior LOSSes on the current level
+        self._retry_current_level = False    # flag consumed by BaselineAgent.run() on LOST
+        self._reload_in_progress = False     # suppresses transient menu-state handlers
+        self._reload_target_level = None     # level number to load when reload_in_progress
+        self._reload_attempts = 0            # safety cap for jump-back attempts
+        self._last_seen_level_for_retry = None  # detect level changes and reset the counter
+
         self.scenario_filter = scenario_filter
         self.min_deg = min_deg
         self.max_deg = max_deg
@@ -1401,26 +1414,36 @@ class PDDLAgent(BaselineAgent):
         self._current_level_attempts += 1
         
         if level_finished:
-            # Level is complete - record the final result
-            self.wins.append(game_result)
-            self.games_played += 1
-            
-            if self.games_played > self.start_counting_from_game:
-                self.game_results.append((self.current_level, "win" if game_result else "loss"))
-
-            # Record Phy-Q benchmark result
+            # Common metadata for both retry and finalize paths
             level_path = self.get_current_level_path()
             score = self.ar.get_current_score() if game_result else 0
-            self.phyq_metrics.record(
-                level_path=level_path,
-                won=game_result,
-                attempts=self._current_level_attempts,
-                score=score
-            )
             scenario = self.phyq_metrics.extract_scenario_from_path(level_path)
             level_name = level_path.split('/')[-1] if '/' in level_path else level_path
             scenario_str = scenario if scenario else "unknown"
 
+            # Determine phase: only training levels get retried.
+            is_train_level = False
+            if self.use_generalization_protocol and self.generalization_protocol is not None:
+                phase_for_level, _ = self.generalization_protocol.get_phase_for_level(self.current_level)
+                is_train_level = (phase_for_level == "train")
+
+            # Compute the attempt number for THIS finished play of the level.
+            # _current_level_retry_index counts prior LOSSes on this level.
+            this_attempt_number = self._current_level_retry_index + 1
+
+            # Decide: retry same level, or finalize (record + advance)?
+            should_retry_level = (
+                (not game_result)
+                and is_train_level
+                and this_attempt_number < self.max_train_attempts
+            )
+            abandoned = (
+                (not game_result)
+                and is_train_level
+                and this_attempt_number >= self.max_train_attempts
+            )
+
+            # Per-attempt sim-vs-game telemetry runs regardless of retry decision.
             self._log_sim_vs_game_comparison(
                 event_indexes_by_event,
                 exec_angle=exec_angle,
@@ -1432,23 +1455,66 @@ class PDDLAgent(BaselineAgent):
                 phase="outcome",
             )
 
-            print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
-                  f"Result: {'WIN' if game_result else 'LOSS'} | Score: {score} | "
-                  f"Birds used: {self._current_level_attempts}")
-            
-            # Record to agent comparison CSV
-            if self.comparison_csv:
-                self.comparison_csv.write_result(
+            if should_retry_level:
+                # Bump retry counter and signal main loop to restart the same level.
+                self._current_level_retry_index = this_attempt_number
+                self._retry_current_level = True
+
+                print(f"[TRAIN-RETRY] Level {self.current_level} ({level_name}) LOST on "
+                      f"attempt {this_attempt_number}/{self.max_train_attempts} - "
+                      f"restarting same level.")
+                print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
+                      f"Result: LOSS (retry {this_attempt_number}/{self.max_train_attempts}) | "
+                      f"Birds used: {self._current_level_attempts}")
+            else:
+                # Finalize: record wins / game_results / phyq_metrics / CSV once per level.
+                attempts_used = this_attempt_number  # win-attempt count, or max on abandon
+
+                self.wins.append(game_result)
+                self.games_played += 1
+
+                if self.games_played > self.start_counting_from_game:
+                    self.game_results.append(
+                        (self.current_level, "win" if game_result else "loss")
+                    )
+
+                self.phyq_metrics.record(
                     level_path=level_path,
-                    agent="PDDLAgent",
                     won=game_result,
-                    mode=current_phase,
+                    attempts=self._current_level_attempts,
                     score=score,
-                    plan_source=self._last_plan_source,
-                    unsolvable=self._last_planner_unsolvable
                 )
-            
-            # Reset attempt counter for next level
+
+                if abandoned:
+                    result_label = "ABANDONED"
+                elif game_result:
+                    result_label = "WIN"
+                else:
+                    result_label = "LOSS"
+
+                print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
+                      f"Result: {result_label} | Score: {score} | "
+                      f"Birds used: {self._current_level_attempts} | "
+                      f"Attempts used: {attempts_used}")
+
+                if self.comparison_csv:
+                    self.comparison_csv.write_result(
+                        level_path=level_path,
+                        agent="PDDLAgent",
+                        won=game_result,
+                        mode=current_phase,
+                        score=score,
+                        plan_source=self._last_plan_source,
+                        unsolvable=self._last_planner_unsolvable,
+                        attempts_used=attempts_used,
+                        abandoned=abandoned,
+                    )
+
+                # Reset per-level retry state for the next level.
+                self._current_level_retry_index = 0
+                self._retry_current_level = False
+
+            # Reset per-attempt shot counter regardless of retry vs. finalize.
             self._current_level_attempts = 0
 
             if game_state == GameState.LOST:

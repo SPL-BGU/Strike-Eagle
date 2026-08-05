@@ -95,7 +95,11 @@ class AgentComparisonCSV:
         )
     """
     
-    PDDL_HEADERS = ["level_index", "level_name", "scenario", "template", "variation", "mode", "result", "score", "plan_source", "unsolvable"]
+    PDDL_HEADERS = [
+        "level_index", "level_name", "scenario", "template", "variation",
+        "mode", "result", "score", "plan_source", "unsolvable",
+        "attempts_used", "abandoned",
+    ]
     BASELINE_HEADERS = ["scenario", "template", "agent", "pass_rate"]
     
     def __init__(
@@ -381,7 +385,9 @@ class AgentComparisonCSV:
         mode: str = "unknown",
         score: int = 0,
         plan_source: str = "planner",
-        unsolvable: bool = False
+        unsolvable: bool = False,
+        attempts_used: int = 1,
+        abandoned: bool = False,
     ) -> None:
         """
         Write level results to TWO CSV files:
@@ -396,6 +402,10 @@ class AgentComparisonCSV:
             score: Score achieved (only meaningful if won)
             plan_source: "planner" if PDDL planner succeeded, "fallback" if fallback was used
             unsolvable: True if the PDDL planner reported the problem as unsolvable
+            attempts_used: Number of level attempts consumed (1 for test / first-try win,
+                up to max_train_attempts for training levels that required retries).
+            abandoned: True if the level was abandoned after hitting the training retry cap
+                without a win.
         """
         level_name = self.extract_level_name(level_path)
         scenario = self.extract_scenario(level_path) or "unknown"
@@ -429,7 +439,9 @@ class AgentComparisonCSV:
                 result,
                 score if won else 0,
                 plan_source,
-                unsolvable
+                unsolvable,
+                attempts_used,
+                abandoned,
             ])
         
         # 2. Write baseline comparisons to baseline_comparison.csv (unique entries only)
@@ -453,7 +465,10 @@ class AgentComparisonCSV:
         human_rate = self.agent_baselines.get("Human", {}).get(scenario)
         human_str = f"{human_rate:.3f}" if human_rate else "N/A"
         unsolvable_str = "UNSOLVABLE" if unsolvable else ""
-        print(f"[CSV] #{self.level_index} {level_name} | {result} | Score: {score} | Plan: {plan_source} | {unsolvable_str} | Mode: {mode}")
+        abandoned_str = "ABANDONED" if abandoned else ""
+        print(f"[CSV] #{self.level_index} {level_name} | {result} | Score: {score} | "
+              f"Plan: {plan_source} | {unsolvable_str} | Mode: {mode} | "
+              f"Attempts: {attempts_used} {abandoned_str}")
     
     def get_summary(self) -> Dict:
         """

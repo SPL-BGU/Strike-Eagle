@@ -231,17 +231,33 @@ class BaselineAgent(Thread):
                 self.repeated_gt_counter = 0
                 self.check_current_level_score()
 
-                # Move to next level immediately (1 trial per level - no retries)
-                self.current_level = self.ar.load_next_available_level()
+                if getattr(self, "_retry_current_level", False):
+                    # LOST state does not accept load_level/restart_level (both
+                    # hang until the "you lost" popup is dismissed). Only
+                    # load_next_available_level responds from LOST. Fortunately
+                    # the game engine treats an unsolved LOST level as "still
+                    # available" and reloads the SAME level file even though
+                    # the returned level number may advance internally.
+                    # We rely on that: call load_next_available_level to escape
+                    # LOST but do NOT overwrite self.current_level, so the
+                    # PDDL agent keeps planning for the same target level.
+                    self._retry_current_level = False
+                    target = self.current_level
+                    print(f"[MAIN LOOP DEBUG] LOST -> retry needed for level {target}; "
+                          f"calling load_next_available_level (game reloads same level from LOST)...")
+                    next_level = self.ar.load_next_available_level()
+                    print(f"[MAIN LOOP DEBUG] load_next_available_level returned {next_level}; "
+                          f"keeping current_level={target}")
+                else:
+                    # Move to next level (default / test behavior - 1 trial per level).
+                    self.current_level = self.ar.load_next_available_level()
                 # SKIPPED: get_novelty_info() blocks
                 # self.novelty_existence = self.ar.get_novelty_info()
-
-                # Reset trajectory planner for next level
                 self.tp = SimpleTrajectoryPlanner()
 
             elif state == GameState.LEVEL_SELECTION:
                 self.logger.info(
-                    "unexpected level selection page, go to the last current level : " + self.current_level)
+                    "unexpected level selection page, go to the last current level : " + str(self.current_level))
                 self.current_level = self.ar.load_next_available_level()
                 # SKIPPED: get_novelty_info() blocks
                 # self.novelty_existence = self.ar.get_novelty_info()
