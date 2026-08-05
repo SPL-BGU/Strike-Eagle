@@ -42,15 +42,35 @@ from agents.pddl.pddl_files.pddl_parser import (
     pddl_bird_position_before_pa_twang,
     pddl_bird_position_after_pa_twang,
     ANGLE_REPLAN_THRESHOLD_DEG,
-    ANGLE_BIAS_DEGREES,
+    AngleCalibrator,
     simulate_pddl_shot_plan,
     ballistic_angle_to_target,
+    align_dial_to_planner_grid,
+    extend_platforms_in_problem_data,
     FORCE_MIN, FORCE_MAX, FORCE_RATE, FORCE_V_SCALE,
+    pddl_force_to_v_portion, launch_speed_at_force, pullback_pixels,
+    ANGLE_BIAS_DEGREES, MAG_MULT,
+    iter_force_grid,
+    GAME_PULL_MIN, GAME_PULL_MAX,
+    ANGLE_EXECUTION_SLACK_DEG, GAP_CLEARANCE_ANGLE_NUDGE_DEG,
+    PLATFORM_EXECUTION_SLACK_DEG,
 )
 from src.client.agent_client import GameState
 from agents.pddl.metrics import calculate_rmse, calculate_impact_rmse
 
 from numpy.polynomial import Polynomial
+
+# Coarse step for planner-failure fallback grid (ENHSP dial grid stays at deg_step).
+FALLBACK_GRID_DEG_STEP = 1.0
+# Local angle band when prefer_sim_plan compares ENHSP vs nearby sim-scored shots.
+PLAN_PICK_LOCAL_HALF_WIDTH_DEG = 4.0
+PLAN_PICK_LOCAL_STEP_DEG = 0.25
+# Fast plan-pick: coarser local refine + skip full grid when local kill exists.
+PLAN_PICK_FAST_LOCAL_STEP_DEG = 0.5
+PLAN_PICK_FULL_SEARCH_DEG_STEP = 1.0
+PLAN_PICK_NEAR_SEARCH_HALF_WIDTH_DEG = 15.0
+# Wall-clock cap for plan-pick forward sim only (ENHSP keeps its own timeout). 0 = no cap.
+PLAN_PICK_SEARCH_TIMEOUT_SEC = 60.0
 
 
 def _extract_force_angle(actions, default_force=1.0):
@@ -89,7 +109,7 @@ class PDDLAgent(BaselineAgent):
                  generalization_seed: int = 42,
                  scenario_filter: str = None,  # Filter by scenario: e.g., "single_force"
                  levels_per_template: int = None,  # Limit levels per template
-                 visualize_pddl_input: bool = True,  # Show PDDL visualization on level loss
+                 visualize_pddl_input: bool = False,  # Show PDDL visualization on level loss
                  # Agent comparison CSV options
                  comparison_csv_path: str = "agent_comparison_results.csv",
                  human_baseline_path: str = "external/phy-q/playdata/broad_generalization_all_agents.csv",
@@ -100,14 +120,23 @@ class PDDLAgent(BaselineAgent):
                  mag_comparison_decrement: float = 0.1,
                  # Force -> velocity learning mode
                  force_learning_mode: bool = False,
-                 force_learning_min_samples: int = 5):
+                 force_learning_min_samples: int = 5,
+                 disable_sim_override: bool = False,
+                 planner_only: bool = True,
+                 disable_forward_sim: bool = False,
+                 prefer_sim_plan: bool = False,
+                 plan_pick_fast: bool = True,
+                 plan_pick_timeout_sec: float = PLAN_PICK_SEARCH_TIMEOUT_SEC):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
+        self.scenario_filter = scenario_filter
         self.min_deg = min_deg
         self.max_deg = max_deg
         self.deg_step = deg_step
+        self.angle_calibrator = AngleCalibrator()
         self._last_planned_angle = None
+        self._last_planned_force = 1.0
         self._last_plan_uses_ground = False
 
         # Override sim speed from 20
@@ -144,10 +173,56 @@ class PDDLAgent(BaselineAgent):
         # Force -> velocity learning state
         self.force_learning_mode = force_learning_mode
         self.force_learning_min_samples = force_learning_min_samples
+        self.planner_only = planner_only
+        self.disable_sim_override = disable_sim_override
+        self.disable_forward_sim = disable_forward_sim
+        self.prefer_sim_plan = prefer_sim_plan
+        self.plan_pick_fast = plan_pick_fast
+        self.plan_pick_timeout_sec = max(0.0, float(plan_pick_timeout_sec))
+        self._plan_pick_deadline = None
+        self._plan_pick_timeout_logged = False
+        if self.prefer_sim_plan and self.disable_forward_sim:
+            print(
+                "[PDDL] WARNING: prefer_sim_plan requires forward sim — enabling forward sim"
+            )
+            self.disable_forward_sim = False
+        if self.disable_forward_sim:
+            print(
+                "[PDDL] Forward sim disabled — no fallback grid, refine, or plan simulation"
+            )
+        if self.prefer_sim_plan:
+            mode = "fast (local refine; full grid only if needed)" if self.plan_pick_fast else "thorough (full sim grid)"
+            timeout_note = (
+                f", sim search cap={self.plan_pick_timeout_sec:.0f}s"
+                if self.plan_pick_timeout_sec > 0 else ", sim search uncapped"
+            )
+            print(
+                f"[PDDL] Prefer-sim-plan [{mode}{timeout_note}] — after ENHSP, pick best "
+                "forward-sim score among planner / local refine / sim search"
+            )
+        elif self.planner_only:
+            if self.disable_forward_sim:
+                print(
+                    "[PDDL] Planner-only mode — ENHSP plans used as-is; "
+                    "forward sim disabled"
+                )
+            else:
+                print(
+                    "[PDDL] Planner-only mode — ENHSP plan preferred; "
+                    "forward sim runs for validation (sim gate and sim override disabled)"
+                )
+        elif self.disable_sim_override:
+            print(
+                "[PDDL] Sim override DISABLED — ENHSP plans kept when sim-acceptable; "
+                "sim gate replaces rejected plans"
+            )
+        else:
+            print("[PDDL] Sim override ENABLED — forward sim may reject ENHSP plans and run sim-search refinement")
         self.kb_force = []        # list of (force, v_meas) tuples
         self.force_lr_model = None
         self.force_lr_r2 = None
-        
+        self._force_kb_max_samples = 40
+
         # Angle selection mode (priority order):
         # 0. debug_mag_comparison=True: Fixed angle, varying mag
         # 1. use_angle_protocol=True: Use train/val/test protocol
@@ -240,6 +315,10 @@ class PDDLAgent(BaselineAgent):
                     )
             
             self.generalization_protocol.print_summary()
+
+            if self.scenario_filter is None and getattr(self.generalization_protocol, 'scenario_filter', None):
+                self.scenario_filter = self.generalization_protocol.scenario_filter
+                print(f"[GENERALIZATION] Scenario filter from protocol: {self.scenario_filter}")
             
             # Update level mapper to use generalization protocol's level order
             self._generalization_level_order = self.generalization_protocol.get_all_levels_ordered()
@@ -275,6 +354,14 @@ class PDDLAgent(BaselineAgent):
                     },
                 },
                 "learning_history": []  # Track learning progress over games
+            },
+            "platform_collision": {
+                "states": [],
+                "variables": {
+                    "v_x": {"value": [], "model": None},
+                    "v_y": {"value": [], "model": None},
+                    "y": {"value": [], "model": None},
+                },
             },
             "trajectories": []  # Store all past trajectories (first segment only, unlimited)
         }
@@ -317,6 +404,169 @@ class PDDLAgent(BaselineAgent):
         self.comparison_csv = AgentComparisonCSV(
             output_path=comparison_csv_path,
             human_baseline_path=human_baseline_path
+        )
+
+    # Minimum segment quality for trusting flight-physics velocity updates.
+    MIN_FLIGHT_SEGMENT_FRAMES = 40
+    MIN_FLIGHT_Y_EXCURSION_PX = 40
+    VELOCITY_SANITY_MIN = 120.0
+    VELOCITY_SANITY_MAX = 250.0
+    VELOCITY_MAX_DELTA = 35.0
+
+    @classmethod
+    def _flight_segment_quality_ok(cls, trajectory, min_frames=None, min_y_excursion=None):
+        """Return (ok, reason) for using a pre-collision segment in velocity learning."""
+        min_frames = min_frames if min_frames is not None else cls.MIN_FLIGHT_SEGMENT_FRAMES
+        min_y_excursion = min_y_excursion if min_y_excursion is not None else cls.MIN_FLIGHT_Y_EXCURSION_PX
+        if trajectory is None or len(trajectory) < min_frames:
+            n = len(trajectory) if trajectory is not None else 0
+            return False, f"frames={n} < {min_frames}"
+        traj = np.asarray(trajectory)
+        y_excursion = float(np.max(traj[:, 1]) - np.min(traj[:, 1]))
+        if y_excursion < min_y_excursion:
+            return False, f"y_excursion={y_excursion:.1f}px < {min_y_excursion}px"
+        return True, None
+
+    @classmethod
+    def _velocity_update_acceptable(cls, v_candidate, current_v_bird):
+        """Reject velocity estimates that are physically implausible or jump too far."""
+        if v_candidate < cls.VELOCITY_SANITY_MIN or v_candidate > cls.VELOCITY_SANITY_MAX:
+            return False, f"|v|={v_candidate:.1f} outside [{cls.VELOCITY_SANITY_MIN}, {cls.VELOCITY_SANITY_MAX}]"
+        if current_v_bird is not None and abs(v_candidate - current_v_bird) > cls.VELOCITY_MAX_DELTA:
+            return False, f"delta={v_candidate - current_v_bird:+.1f} exceeds ±{cls.VELOCITY_MAX_DELTA}"
+        return True, None
+
+    def _speed_at_force(self, v_full: float, force: float) -> float:
+        """Launch speed hook shared by forward sim (matches domain when no LR model)."""
+        return launch_speed_at_force(v_full, force, force_lr_model=self.force_lr_model)
+
+    def _log_execution_mapping(
+        self,
+        planned_dial: float,
+        exec_dial: float,
+        planned_force: float,
+        sling,
+    ) -> None:
+        """Log PDDL dial → game pull → expected speed (ENHSP ↔ execution contract)."""
+        v_bird = self.world_model.hyperparams_values.get(Params.velocity, 180)
+        pddl_flight = self.angle_calibrator.pddl_flight_angle(exec_dial)
+        raw_pull = self.angle_calibrator.raw_game_pull_for_pddl_dial(exec_dial)
+        game_pull = self.angle_calibrator.game_pull_for_pddl_dial(exec_dial)
+        v_portion = pddl_force_to_v_portion(planned_force)
+        expected_v = self._speed_at_force(v_bird, planned_force)
+        domain_v = float(v_bird) * float(planned_force)
+        pull_clamped = abs(raw_pull - game_pull) > 1e-6
+        sling_h = float(getattr(sling, "height", 0) or 0)
+        print(
+            f"\n[EXEC MAP] === ENHSP dial → game execution ===\n"
+            f"[EXEC MAP] PDDL dial: planned={planned_dial:.1f}° exec={exec_dial:.1f}° "
+            f"(flight θ = dial − {ANGLE_BIAS_DEGREES:.0f}° → {pddl_flight:.1f}°)\n"
+            f"[EXEC MAP] Game pull: target={raw_pull:.1f}° "
+            f"{'CLAMPED→ ' + f'{game_pull:.1f}°' if pull_clamped else f'used={game_pull:.1f}°'} "
+            f"(allowed [{GAME_PULL_MIN:.0f}°, {GAME_PULL_MAX:.0f}°])\n"
+            f"[EXEC MAP] Force: PDDL={planned_force:.3f} → v_portion={v_portion:.3f} "
+            f"pullback≈{pullback_pixels(sling_h, planned_force):.1f}px "
+            f"(mag = height×{MAG_MULT}×force)\n"
+            f"[EXEC MAP] Speed: domain v_bird×force={domain_v:.1f} | "
+            f"expected |v|={expected_v:.1f}"
+            + (
+                f" (learned LR, n={len(self.kb_force)})"
+                if self.force_lr_model is not None else " (linear, no LR yet)"
+            )
+        )
+        if pull_clamped:
+            print(
+                f"[EXEC MAP] WARNING: dial {exec_dial:.1f}° requires pull {raw_pull:.1f}° "
+                f"outside [{GAME_PULL_MIN}, {GAME_PULL_MAX}] — flight angle will NOT match ENHSP"
+            )
+
+    def _simulate_shot(
+        self,
+        problem_data: dict,
+        angle: float,
+        world_model_params: dict,
+        force: float = 1.0,
+        debug: bool = False,
+    ) -> dict:
+        return simulate_pddl_shot_plan(
+            problem_data,
+            angle,
+            gravity=world_model_params["gravity"],
+            force=force,
+            debug=debug,
+            platform_kb=self.kb.get("platform_collision"),
+            speed_at_force=self._speed_at_force,
+            force_lr_model=self.force_lr_model,
+        )
+
+    def _execution_slack_deg(self, problem_data: dict) -> float:
+        """Launch-angle slack for robustness checks (wider on platform levels)."""
+        if self._level_has_platforms(problem_data):
+            return max(ANGLE_EXECUTION_SLACK_DEG, PLATFORM_EXECUTION_SLACK_DEG)
+        return ANGLE_EXECUTION_SLACK_DEG
+
+    def _simulate_planned_shot(
+        self,
+        problem_data: dict,
+        planned_angle: float,
+        world_model_params: dict,
+        force: float = 1.0,
+        debug: bool = False,
+        probe_sim: dict = None,
+    ):
+        """
+        Forward sim matching in-game execution: probe at planned dial, then sim at
+        exec dial (planned + gap nudge when clearing platforms).
+
+        Returns (exec_sim, planned_angle, exec_angle, gap_nudge, probe_sim).
+        """
+        planned_angle = self._clamp_planner_dial(planned_angle, problem_data)
+        force = round(float(force), 4)
+        if probe_sim is None:
+            probe_sim = self._simulate_shot(
+                problem_data, planned_angle, world_model_params, force=force, debug=False,
+            )
+        gap_nudge = self._gap_clearance_execution_nudge(problem_data, probe_sim)
+        exec_angle = max(self.min_deg, min(self.max_deg, planned_angle + gap_nudge))
+        if abs(exec_angle - planned_angle) < 1e-6 and not debug:
+            exec_sim = probe_sim
+        else:
+            exec_sim = self._simulate_shot(
+                problem_data, exec_angle, world_model_params, force=force, debug=debug,
+            )
+        return exec_sim, planned_angle, exec_angle, gap_nudge, probe_sim
+
+    def _record_force_sample(self, force: float, v_meas: float) -> None:
+        """Append a (force, v_meas) pair and refit LR model when enough samples exist."""
+        force = round(float(force), 3)
+        v_meas = float(v_meas)
+        if force < FORCE_MIN or force > FORCE_MAX or v_meas <= 0:
+            return
+        self.kb_force.append((force, v_meas))
+        if len(self.kb_force) > self._force_kb_max_samples:
+            self.kb_force = self.kb_force[-self._force_kb_max_samples:]
+        self._fit_force_model()
+
+    def _fit_force_model(self) -> None:
+        if len(self.kb_force) < self.force_learning_min_samples:
+            return
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import r2_score
+        import numpy as np
+
+        forces_1d = np.array([f for f, _ in self.kb_force])
+        forces_2d = forces_1d.reshape(-1, 1)
+        velocities = np.array([v for _, v in self.kb_force])
+        model_lr = LinearRegression()
+        model_lr.fit(forces_2d, velocities)
+        self.force_lr_model = model_lr
+        self.force_lr_r2 = r2_score(velocities, model_lr.predict(forces_2d))
+        a = model_lr.coef_[0]
+        b = model_lr.intercept_
+        sign = "+" if b >= 0 else "-"
+        print(
+            f"[FORCE MODEL] v = {a:.2f}*force {sign} {abs(b):.2f} "
+            f"(n={len(self.kb_force)}, R²={self.force_lr_r2:.3f})"
         )
 
     def learn_collision_effects(self, collisions, bird_observed_features, phase: str = "train", should_learn: bool = True):
@@ -394,6 +644,72 @@ class PDDLAgent(BaselineAgent):
             
             # Only use first collision per trajectory
             break
+
+    def learn_platform_effects(
+        self,
+        platform_collisions,
+        bird_observed_features,
+        hit_frames=None,
+        phase: str = "train",
+        should_learn: bool = True,
+    ):
+        """
+        Learn post-contact bird state after platform (hill) collisions.
+
+        Mirrors learn_collision_effects but uses platform-specific filters suited to
+        sliding hill contact rather than ground bounces.
+        """
+        FRAME_RATE = 0.02
+        VELOCITY_FRAMES = 3
+        POST_OFFSET = 2
+        MIN_PLATFORM_SPEED = 25.0
+
+        first_hit = hit_frames[0] if hit_frames else None
+
+        for collision_index in platform_collisions:
+            if first_hit is not None and collision_index >= first_hit:
+                continue
+            if collision_index < VELOCITY_FRAMES:
+                continue
+            if collision_index + POST_OFFSET + VELOCITY_FRAMES >= len(bird_observed_features):
+                continue
+
+            pre_features = bird_observed_features[collision_index]
+            prev_features = bird_observed_features[collision_index - VELOCITY_FRAMES]
+            post_start = collision_index + POST_OFFSET
+            post_end = post_start + VELOCITY_FRAMES
+            post_features_start = bird_observed_features[post_start]
+            post_features_end = bird_observed_features[post_end]
+
+            pre_state = pre_features.copy()
+            pre_dt = VELOCITY_FRAMES * FRAME_RATE
+            pre_state["v_x"] = (pre_features["x"] - prev_features["x"]) / pre_dt
+            pre_state["v_y"] = (pre_features["y"] - prev_features["y"]) / pre_dt
+
+            post_state = post_features_start.copy()
+            post_dt = VELOCITY_FRAMES * FRAME_RATE
+            post_state["v_x"] = (post_features_end["x"] - post_features_start["x"]) / post_dt
+            post_state["v_y"] = (post_features_end["y"] - post_features_start["y"]) / post_dt
+
+            pre_speed = math.hypot(pre_state["v_x"], pre_state["v_y"])
+            if pre_speed < MIN_PLATFORM_SPEED:
+                continue
+
+            post_speed = math.hypot(post_state["v_x"], post_state["v_y"])
+            print(
+                f"[PLATFORM LEARN] frame={collision_index} pre_speed={pre_speed:.1f} "
+                f"post_speed={post_speed:.1f} pre=({pre_state['x']:.1f},{pre_state['y']:.1f}) "
+                f"post_v=({post_state['v_x']:.1f},{post_state['v_y']:.1f})"
+            )
+
+            if should_learn:
+                update_model_effects(
+                    "platform_collision", self.kb, pre_state, post_state, debug=False
+                )
+                n = len(self.kb["platform_collision"]["states"])
+                print(f"[PLATFORM LEARN] KB samples: {n}")
+
+            break
     
     def learn_flight_physics(self, trajectory, force_scale: float = 1.0):
         """
@@ -453,8 +769,13 @@ class PDDLAgent(BaselineAgent):
         
         self.learn_process_transitions()
         current_v_bird = self.world_model.hyperparams_values.get(Params.velocity)
+        segment_ok, segment_reason = self._flight_segment_quality_ok(trajectory)
+        if not segment_ok:
+            print(f"  [VELOCITY] Segment quality FAIL: {segment_reason} — will not update v_bird from this shot")
         self.learned_transition_world_model = self._create_learned_transition_world_model(
-            force_scale=force_scale, current_v_bird=current_v_bird
+            force_scale=force_scale,
+            current_v_bird=current_v_bird,
+            segment_quality_ok=segment_ok,
         )
         
         print("\n" + "-" * 60)
@@ -617,13 +938,32 @@ class PDDLAgent(BaselineAgent):
             planned_force, angle = _extract_force_angle(actions)
             print(f"\n[PDDL] Planner selected angle: {angle}°, force: {planned_force}")
 
-        # 2. Execute shot using planned force (mag = height * 0.5 * force, linear regime)
-        # PDDL flight physics use (angle - angle_bias); match that in the slingshot pull.
-        flight_angle_deg = angle - ANGLE_BIAS_DEGREES
-        print(f"[DEBUG] Step 5: Executing shot — PDDL dial={angle:.1f}°, "
-              f"flight θ={flight_angle_deg:.1f}° (bias={ANGLE_BIAS_DEGREES}°), force={planned_force:.3f}...")
+        # 2. Execute shot — map PDDL dial to slingshot pull via nonlinear angle calibration.
+        exec_angle = angle
+        last_sim = getattr(self, "_last_probe_sim", None) or getattr(self, "_last_sim_result", None) or {}
+        gap_nudge = 0.0
+        if not self.disable_sim_override and not self.disable_forward_sim:
+            gap_nudge = self._gap_clearance_execution_nudge(
+                getattr(self, "_last_problem_data", {}), last_sim
+            )
+        if gap_nudge != 0.0:
+            exec_angle = max(self.min_deg, min(self.max_deg, angle + gap_nudge))
+            print(
+                f"[PDDL] Gap-clearance nudge: dial {angle:.1f}° → {exec_angle:.1f}° "
+                f"({gap_nudge:+.1f}°) to avoid top-platform hits from launch overshoot"
+            )
+        pddl_flight_deg = self.angle_calibrator.pddl_flight_angle(exec_angle)
+        game_pull_deg = self.angle_calibrator.game_pull_for_pddl_dial(
+            exec_angle, min_pull=GAME_PULL_MIN, max_pull=GAME_PULL_MAX
+        )
+        self._log_execution_mapping(angle, exec_angle, planned_force, sling)
+        print(f"[DEBUG] Step 5: Executing shot — PDDL dial={exec_angle:.1f}° "
+              f"(planned {angle:.1f}°), "
+              f"target flight θ={pddl_flight_deg:.1f}°, game pull={game_pull_deg:.1f}°, "
+              f"force={planned_force:.3f}...")
         release_point = self.tp.find_release_point_partial_power(
-            sling, math.radians(flight_angle_deg), v_portion=planned_force * FORCE_V_SCALE
+            sling, math.radians(game_pull_deg),
+            v_portion=pddl_force_to_v_portion(planned_force),
         )
         print(f"[DEBUG] Release point: ({release_point.X}, {release_point.Y})")
         print("[DEBUG] Calling shoot_and_record_ground_truth()...")
@@ -716,6 +1056,13 @@ class PDDLAgent(BaselineAgent):
             print(f"[COLLISION DEBUG] First block collision at frame {block_collisions[0]}")
         if platform_collisions:
             print(f"[COLLISION DEBUG] Platform collision detected at frames: {platform_collisions[:5]}{'...' if len(platform_collisions) > 5 else ''}")
+
+        self._log_sim_vs_game_comparison(
+            event_indexes_by_event,
+            planned_angle=angle,
+            planned_force=planned_force,
+            phase="events",
+        )
         
         # Debug platform collision detection - visualize trajectory with all events
         DEBUG_PLATFORM_COLLISION = False  # Set to True to enable visualization
@@ -765,6 +1112,14 @@ class PDDLAgent(BaselineAgent):
         if ENABLE_COLLISION_LEARNING:
             # Always record collision samples (for alpha validation), but only train during train phase
             self.learn_collision_effects(collisions, bird_observed_features, phase=current_phase, should_learn=should_learn)
+            if platform_collisions and hits:
+                self.learn_platform_effects(
+                    platform_collisions,
+                    bird_observed_features,
+                    hit_frames=hits,
+                    phase=current_phase,
+                    should_learn=should_learn,
+                )
         else:
             print(f"[DIRECT HIT MODE] Collision learning DISABLED (prevents physics contamination)")
             if not getattr(self, "_last_plan_uses_ground", False):
@@ -787,6 +1142,13 @@ class PDDLAgent(BaselineAgent):
         if len(first_segment) > 0:
             print(f"[SEGMENT 0 DEBUG] Start: ({first_segment[0][0]:.1f}, {first_segment[0][1]:.1f})")
             print(f"[SEGMENT 0 DEBUG] End: ({first_segment[-1][0]:.1f}, {first_segment[-1][1]:.1f})")
+            seg_ok, seg_reason = self._flight_segment_quality_ok(first_segment)
+            y_exc = float(np.max(first_segment[:, 1]) - np.min(first_segment[:, 1]))
+            print(
+                f"[SEGMENT 0 DEBUG] y_excursion={y_exc:.1f}px, "
+                f"quality={'OK' if seg_ok else 'BAD'}"
+                + (f" ({seg_reason})" if not seg_ok else "")
+            )
         
         if should_learn:
             self.learn_flight_physics(first_segment, force_scale=planned_force)
@@ -833,19 +1195,57 @@ class PDDLAgent(BaselineAgent):
 
         print(f"\n[LAUNCH ESTIMATE] release=({release[0]:.2f}, {release[1]:.2f}) "
               f"v=({launch['vx']:.1f}, {launch['vy']:.1f}) |v|={launch['v_meas']:.1f} "
-              f"θ_meas={launch['theta_deg']:.1f}° (planner dial={angle:.1f}°, flight θ={angle - ANGLE_BIAS_DEGREES:.1f}°)")
+              f"θ_meas={launch['theta_deg']:.1f}° (exec dial={exec_angle:.1f}°, planned={angle:.1f}°, "
+              f"target flight={pddl_flight_deg:.1f}°, pull={game_pull_deg:.1f}°, "
+              f"err={launch['theta_deg'] - pddl_flight_deg:+.1f}°)")
+
+        self._log_sim_vs_game_comparison(
+            event_indexes_by_event,
+            exec_angle=exec_angle,
+            planned_angle=angle,
+            planned_force=planned_force,
+            pddl_flight_deg=pddl_flight_deg,
+            launch=launch,
+            phase="execution",
+        )
+
+        self.angle_calibrator.record_shot(exec_angle, game_pull_deg, launch['theta_deg'], planned_force)
+
+        flight_err = launch['theta_deg'] - pddl_flight_deg
+        slack = self._execution_slack_deg(getattr(self, '_last_problem_data', {}))
+        if abs(flight_err) > slack:
+            print(
+                f"[EXEC MAP] ANGLE MISMATCH: measured flight={launch['theta_deg']:.1f}° vs "
+                f"ENHSP target={pddl_flight_deg:.1f}° (err={flight_err:+.1f}°, slack=±{slack:.0f}°)"
+            )
+        v_expected = self._speed_at_force(
+            self.world_model.hyperparams_values.get(Params.velocity, 180), planned_force,
+        )
+        v_err = launch['v_meas'] - v_expected
+        if abs(v_err) > 8.0:
+            print(
+                f"[EXEC MAP] SPEED MISMATCH: measured |v|={launch['v_meas']:.1f} vs "
+                f"expected={v_expected:.1f} (err={v_err:+.1f})"
+            )
+
+        self._record_force_sample(planned_force, launch["v_meas"])
 
         if should_learn:
             v_old = self.world_model.hyperparams_values[Params.velocity]
-            # Only update v_bird EMA from near-full-force shots.
-            # Partial-force shots cannot reliably back-calculate v_full because the
-            # game's force→velocity curve has a non-zero intercept (v ≈ a*f + b),
-            # so v_meas/force overshoots and corrupts the calibration.
-            if planned_force >= 0.95:
+            seg_ok, seg_reason = self._flight_segment_quality_ok(first_segment)
+            v_sane, v_sane_reason = self._velocity_update_acceptable(launch["v_meas"], v_old)
+            # Only update v_bird EMA from near-full-force shots on clean flight segments.
+            if planned_force >= 0.95 and seg_ok and v_sane:
                 v_new = 0.85 * v_old + 0.15 * launch["v_meas"]
                 self.world_model.hyperparams_values[Params.velocity] = v_new
                 print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_new:.2f} "
                       f"(EMA updated, v_meas={launch['v_meas']:.2f}, force={planned_force:.3f})")
+            elif planned_force >= 0.95 and not seg_ok:
+                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
+                      f"(EMA skipped, bad segment: {seg_reason})")
+            elif planned_force >= 0.95 and not v_sane:
+                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
+                      f"(EMA skipped, v_meas={launch['v_meas']:.2f} rejected: {v_sane_reason})")
             else:
                 print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
                       f"(EMA skipped, partial force={planned_force:.3f}, v_meas={launch['v_meas']:.2f})")
@@ -1020,6 +1420,18 @@ class PDDLAgent(BaselineAgent):
             scenario = self.phyq_metrics.extract_scenario_from_path(level_path)
             level_name = level_path.split('/')[-1] if '/' in level_path else level_path
             scenario_str = scenario if scenario else "unknown"
+
+            self._log_sim_vs_game_comparison(
+                event_indexes_by_event,
+                exec_angle=exec_angle,
+                planned_angle=angle,
+                planned_force=planned_force,
+                pddl_flight_deg=pddl_flight_deg,
+                launch=launch,
+                game_won=game_result,
+                phase="outcome",
+            )
+
             print(f"[PHY-Q] Level: {level_name} | Scenario: {scenario_str} | "
                   f"Result: {'WIN' if game_result else 'LOSS'} | Score: {score} | "
                   f"Birds used: {self._current_level_attempts}")
@@ -1148,26 +1560,13 @@ class PDDLAgent(BaselineAgent):
         print(f"  v_meas={v_meas:.2f}")
 
         # Record into KB
-        self.kb_force.append((force, v_meas))
+        self._record_force_sample(force, v_meas)
 
         # Fit model if enough samples
         if len(self.kb_force) >= self.force_learning_min_samples:
             from agents.pddl.optimizer import get_poly_rank
             forces_1d = np.array([f for f, _ in self.kb_force])
-            forces_2d = forces_1d.reshape(-1, 1)
             velocities = np.array([v for _, v in self.kb_force])
-
-            # --- Model A: Linear Regression ---
-            model_lr = LinearRegression()
-            model_lr.fit(forces_2d, velocities)
-            v_pred_lr = model_lr.predict(forces_2d)
-            r2_lr = r2_score(velocities, v_pred_lr)
-            self.force_lr_model = model_lr
-            self.force_lr_r2 = r2_lr
-
-            a = model_lr.coef_[0]
-            b = model_lr.intercept_
-            sign = "+" if b >= 0 else "-"
 
             # --- Model B: Best-degree Polynomial (get_poly_rank) ---
             rank, poly = get_poly_rank(forces_1d, velocities, max_rank=5, threshold=1.0)
@@ -1176,6 +1575,10 @@ class PDDLAgent(BaselineAgent):
 
             # --- Side-by-side comparison ---
             n = len(self.kb_force)
+            a = self.force_lr_model.coef_[0]
+            b = self.force_lr_model.intercept_
+            sign = "+" if b >= 0 else "-"
+            r2_lr = self.force_lr_r2
             print(f"\n  {'='*50}")
             print(f"  [FORCE LEARN] Model comparison (n={n})")
             print(f"  {'='*50}")
@@ -1407,9 +1810,89 @@ class PDDLAgent(BaselineAgent):
         print(f"[PDDL DEBUG] Platforms found: {len(platform_objects) if platform_objects else 0}")
 
         problem_data = bird_objects | pigs_objects | block_objects | platform_objects
+        extend_platforms_in_problem_data(problem_data, debug=True)
         return problem_data, bird_objects, pigs_objects
 
-    def _calculate_fallback_angle(
+    @staticmethod
+    def _build_shot_actions(angle: float, force: float = 1.0) -> list:
+        force = round(float(force), 4)
+        if force < 1.0 - 1e-6:
+            return [("set_force", force), ("shoot", angle)]
+        return [("set_force", 1.0), ("shoot", angle)]
+
+    def _search_fallback_by_sim(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        hint_force: float = 1.0,
+        quiet: bool = False,
+        angle_step: float = None,
+    ):
+        """
+        Relaxed angle×force grid for ballistic fallback.
+        Uses _sim_shot_score (allows platform-slide kills); no _sim_plan_is_acceptable gate.
+        Coarse angle_step with early exit at the highest force that yields a pig kill.
+        """
+        angle_step = float(self.deg_step if angle_step is None else angle_step)
+        best_angle = None
+        best_force = None
+        best_score = (-1, -1, -1, -1, -1.0, float("inf"))
+        planner_max = self._planner_max_angle(problem_data)
+        planner_min = self._planner_min_angle(problem_data)
+
+        forces = list(iter_force_grid())
+        hint_force = round(float(hint_force), 4)
+        if hint_force in forces:
+            forces.remove(hint_force)
+            forces.insert(0, hint_force)
+
+        for planned_force in forces:
+            if self._plan_pick_timed_out():
+                self._log_plan_pick_timeout_once("Fallback sim grid")
+                break
+            force_best_angle = None
+            force_best_score = (-1, -1, -1, -1, -1.0, float("inf"))
+            angle = planner_min
+            while angle <= planner_max + 1e-6:
+                if self._plan_pick_timed_out():
+                    self._log_plan_pick_timeout_once("Fallback sim grid")
+                    break
+                sim = self._simulate_planned_shot(
+                    problem_data, angle, world_model_params, force=planned_force,
+                )[0]
+                score = self._sim_shot_score(sim, angle, planned_force)
+                if score > force_best_score:
+                    force_best_score = score
+                    force_best_angle = angle
+                if score > best_score:
+                    best_score = score
+                    best_angle = angle
+                    best_force = planned_force
+                angle += angle_step
+
+            if force_best_score[0] == 1 and force_best_angle is not None:
+                refined = self._refine_angle_by_sim(
+                    problem_data, world_model_params, force_best_angle, planned_force=planned_force,
+                )
+                if not quiet:
+                    print(
+                        f"[PDDL DEBUG] Fallback sim grid: pig-kill force={planned_force:.2f}, "
+                        f"angle={refined:.1f}° (coarse {force_best_angle:.1f}°)"
+                    )
+                return refined, planned_force
+
+        if best_angle is not None:
+            if not quiet:
+                print(
+                    f"[PDDL DEBUG] Fallback sim grid: no kill; best score force={best_force:.2f}, "
+                    f"angle={best_angle:.1f}°"
+                )
+            return best_angle, best_force
+        if not quiet:
+            print("[PDDL DEBUG] Fallback sim grid: no candidate (angle, force) pair")
+        return None, None
+
+    def _calculate_fallback_ballistic_angle(
         self,
         pigs_objects,
         bird_objects,
@@ -1417,9 +1900,17 @@ class PDDLAgent(BaselineAgent):
         ref_angle_guess: float,
         problem_data: dict = None,
     ) -> float:
+        """Legacy two-arc ballistic estimate at full force (used when sim grid finds nothing)."""
+        problem_data = problem_data or {}
+        planner_min = self._planner_min_angle(problem_data)
+        planner_max = self._planner_max_angle(problem_data)
+
+        def _clamp(angle):
+            return self._clamp_planner_dial(angle, problem_data)
+
         if not pigs_objects:
-            print("[PDDL DEBUG] No pig found, using default: 45.0°")
-            return 45.0
+            print("[PDDL DEBUG] No pig found, using default clamped dial")
+            return _clamp(45.0)
         pig = list(pigs_objects.values())[0]
         bird = list(bird_objects.values())[0]
         v = bird.get('v_bird', 180)
@@ -1434,84 +1925,822 @@ class PDDLAgent(BaselineAgent):
                 dx = pig['x_pig'] - launch_x
                 angle_low = np.degrees(np.arctan((v ** 2 - np.sqrt(term)) / (g * dx)))
                 angle_high = np.degrees(np.arctan((v ** 2 + np.sqrt(term)) / (g * dx)))
-            
+
             if angle_low is not None and angle_high is not None:
                 print(f"[PDDL DEBUG] Calculated angles: low={angle_low:.1f}°, high={angle_high:.1f}°")
-                
-                # Check both angles for platform collision if we have problem_data
-                if problem_data is not None:
-                    # Test low arc
-                    sim_low = simulate_pddl_shot_plan(problem_data, angle_low, gravity=g)
-                    low_hits_platform = sim_low.get('platform_collision', False)
-                    low_kills_pig = sim_low.get('pig_killed_in_sim', False)
-                    
-                    # Test high arc
-                    sim_high = simulate_pddl_shot_plan(problem_data, angle_high, gravity=g)
-                    high_hits_platform = sim_high.get('platform_collision', False)
-                    high_kills_pig = sim_high.get('pig_killed_in_sim', False)
-                    
-                    print(f"[PDDL DEBUG] Low arc ({angle_low:.1f}°): platform_hit={low_hits_platform}, pig_killed={low_kills_pig}")
-                    print(f"[PDDL DEBUG] High arc ({angle_high:.1f}°): platform_hit={high_hits_platform}, pig_killed={high_kills_pig}")
-                    
-                    # Prefer angle that kills pig
-                    if low_kills_pig and not low_hits_platform:
-                        print(f"[PDDL DEBUG] Using LOW arc (kills pig): {angle_low:.1f}°")
-                        return angle_low
-                    if high_kills_pig and not high_hits_platform:
-                        print(f"[PDDL DEBUG] Using HIGH arc (kills pig): {angle_high:.1f}°")
-                        return angle_high
-                    
-                    # If neither kills pig cleanly, prefer one that doesn't hit platform
-                    if not low_hits_platform:
-                        print(f"[PDDL DEBUG] Using LOW arc (no platform hit): {angle_low:.1f}°")
-                        return angle_low
-                    if not high_hits_platform:
-                        print(f"[PDDL DEBUG] Using HIGH arc (no platform hit): {angle_high:.1f}°")
-                        return angle_high
-                    
-                    # Both hit platform - try high arc (better chance of clearing)
-                    print(f"[PDDL DEBUG] Both arcs hit platform, trying HIGH arc: {angle_high:.1f}°")
-                    return angle_high
-            
-            # Fallback to default ballistic (low arc)
+
+                if problem_data and not self.disable_forward_sim:
+                    best_arc_angle = None
+                    best_arc_score = (-1, -1, -1, -1, -1.0, float("inf"))
+                    for label, arc_angle in (("LOW", angle_low), ("HIGH", angle_high)):
+                        exec_sim, planned, _, _, _ = self._simulate_planned_shot(
+                            problem_data, arc_angle, world_model_params,
+                        )
+                        score = self._sim_shot_score(exec_sim, planned, 1.0)
+                        print(
+                            f"[PDDL DEBUG] {label} arc ({planned:.1f}°): "
+                            f"platform_hit={exec_sim.get('platform_collision', False)}, "
+                            f"pig_killed={exec_sim.get('pig_killed_in_sim', False)}"
+                        )
+                        if score > best_arc_score:
+                            best_arc_score = score
+                            best_arc_angle = arc_angle
+                    if best_arc_angle is not None:
+                        print(f"[PDDL DEBUG] Using best ballistic arc: {best_arc_angle:.1f}°")
+                        return _clamp(best_arc_angle)
+                else:
+                    print(f"[PDDL DEBUG] Using low ballistic arc: {angle_low:.1f}°")
+                    return _clamp(angle_low)
+
             fallback = ballistic_angle_to_target(
                 launch_x, launch_y, pig['x_pig'], pig['y_pig'], v, g,
-                min_angle=self.min_deg, max_angle=self.max_deg,
+                min_angle=planner_min, max_angle=planner_max,
             )
             if fallback is not None:
                 print(f"[PDDL DEBUG] Launch→pig ballistic angle: {fallback:.1f}°")
-                return fallback
+                return _clamp(fallback)
             direct_angle = np.degrees(np.arctan2(pig['y_pig'] - launch_y, pig['x_pig'] - launch_x))
-            fallback_angle = max(self.min_deg, min(self.max_deg, direct_angle))
-            print(f"[PDDL DEBUG] Pig may be unreachable, using direct angle: {fallback_angle:.1f}°")
+            fallback_angle = _clamp(direct_angle)
+            print(f"[PDDL DEBUG] Pig may be unreachable, using clamped direct angle: {fallback_angle:.1f}°")
             return fallback_angle
         except Exception as e:
-            print(f"[PDDL DEBUG] Angle calculation failed ({e}), using default: 45.0°")
-            return 45.0
+            print(f"[PDDL DEBUG] Angle calculation failed ({e}), using clamped default")
+            return _clamp(45.0)
+
+    def _calculate_fallback_shot(
+        self,
+        pigs_objects,
+        bird_objects,
+        world_model_params: dict,
+        ref_angle_guess: float,
+        problem_data: dict = None,
+    ) -> tuple[float, float]:
+        """Return (angle, force) for planner failure fallback."""
+        problem_data = problem_data or {}
+        if problem_data and not self.disable_forward_sim:
+            angle, force = self._search_fallback_by_sim(
+                problem_data, world_model_params, quiet=False,
+                angle_step=FALLBACK_GRID_DEG_STEP,
+            )
+            if angle is not None:
+                return (
+                    self._clamp_planner_dial(angle, problem_data),
+                    force if force is not None else 1.0,
+                )
+        angle = self._calculate_fallback_ballistic_angle(
+            pigs_objects, bird_objects, world_model_params, ref_angle_guess, problem_data,
+        )
+        return angle, 1.0
+
+    def _calculate_fallback_angle(
+        self,
+        pigs_objects,
+        bird_objects,
+        world_model_params: dict,
+        ref_angle_guess: float,
+        problem_data: dict = None,
+    ) -> float:
+        angle, _force = self._calculate_fallback_shot(
+            pigs_objects, bird_objects, world_model_params, ref_angle_guess, problem_data,
+        )
+        return angle
+
+    def _resolve_fallback_plan(
+        self,
+        vision,
+        sling,
+        agent_world_model,
+        world_model_params: dict,
+        pigs_objects,
+        bird_objects,
+        ref_guess: float,
+        problem_data: dict,
+    ) -> list:
+        """Fallback: coarse angle×force grid, re-gather bird ref, refine only (no second grid)."""
+        fallback_angle, fallback_force = self._calculate_fallback_shot(
+            pigs_objects, bird_objects, world_model_params, ref_guess, problem_data,
+        )
+        problem_data, bird_objects, pigs_objects = self._gather_problem_data(
+            vision, sling, agent_world_model, ref_angle_guess=fallback_angle,
+        )
+        if not self.disable_forward_sim:
+            fallback_angle = self._clamp_planner_dial(
+                self._refine_angle_by_sim(
+                    problem_data, world_model_params, fallback_angle, planned_force=fallback_force,
+                ),
+                problem_data,
+            )
+        else:
+            fallback_angle = self._clamp_planner_dial(fallback_angle, problem_data)
+        self._last_plan_source = "fallback"
+        actions = self._build_shot_actions(fallback_angle, fallback_force)
+        self._finalize_plan_metadata(
+            problem_data, fallback_angle, world_model_params, force=fallback_force,
+        )
+        return actions
+
+    def _sim_shot_score(self, sim: dict, angle: float, force: float = 1.0):
+        """Higher is better. Tie-break: prefer higher force, then lower dial angle."""
+        return (
+            1 if sim.get("pig_killed_in_sim") else 0,
+            0 if sim.get("block_collision") else 1,
+            0 if sim.get("platform_collision") and not sim.get("platform_slide_continued") else 1,
+            0 if sim.get("uses_ground_collision") else 1,
+            force,
+            -angle,
+        )
+
+    def _sim_angle_score(self, sim: dict, angle: float, force: float = 1.0):
+        return self._sim_shot_score(sim, angle, force)
+
+    def _sim_plan_is_acceptable(self, sim: dict) -> bool:
+        """Forward sim must predict a pig kill without blocking obstacles."""
+        if not sim.get("pig_killed_in_sim"):
+            return False
+        if sim.get("block_collision"):
+            return False
+        if sim.get("platform_collision") and not sim.get("platform_slide_continued"):
+            return False
+        return True
+
+    @staticmethod
+    def _level_has_platforms(problem_data: dict) -> bool:
+        return any(k.startswith("platform_") for k in problem_data)
+
+    def _sim_plan_robust_to_execution_error(
+        self,
+        problem_data: dict,
+        planned_angle: float,
+        world_model_params: dict,
+        planned_force: float,
+        exec_sim: dict,
+        exec_angle: float = None,
+    ) -> bool:
+        """
+        Reject plans that only work at the exact executed dial.
+
+        Validates pig kill (and platform clearance on gap levels) under measured
+        launch-angle error at the dial actually sent to the slingshot.
+        """
+        if exec_angle is None:
+            exec_angle = planned_angle
+        slack = self._execution_slack_deg(problem_data)
+
+        def _bad_platform_stop(sim: dict) -> bool:
+            return sim.get("platform_collision") and not sim.get("platform_slide_continued")
+
+        def _acceptable_at_dial(test_angle: float) -> bool:
+            test_angle = max(self.min_deg, min(self.max_deg, test_angle))
+            sim = self._simulate_shot(
+                problem_data, test_angle, world_model_params, force=planned_force,
+            )
+            return self._sim_plan_is_acceptable(sim)
+
+        intentional_slide = (
+            exec_sim.get("platform_collision") and exec_sim.get("platform_slide_continued")
+        )
+
+        if intentional_slide:
+            expected_plat = exec_sim.get("platform_hit_name")
+            for delta in (-slack, slack):
+                test_angle = max(self.min_deg, min(self.max_deg, exec_angle + delta))
+                sim = self._simulate_shot(
+                    problem_data, test_angle, world_model_params, force=planned_force,
+                )
+                if _bad_platform_stop(sim) and sim.get("platform_hit_name") != expected_plat:
+                    return False
+                if not sim.get("pig_killed_in_sim"):
+                    return False
+            return True
+
+        test_dials = {exec_angle}
+        for delta in (-slack, slack):
+            test_dials.add(max(self.min_deg, min(self.max_deg, exec_angle + delta)))
+
+        if self._level_has_platforms(problem_data):
+            for delta in (-slack, slack):
+                planned_test = max(self.min_deg, min(self.max_deg, planned_angle + delta))
+                probe = self._simulate_shot(
+                    problem_data, planned_test, world_model_params, force=planned_force,
+                )
+                nudge = self._gap_clearance_execution_nudge(problem_data, probe)
+                test_dials.add(max(self.min_deg, min(self.max_deg, planned_test + nudge)))
+            for test_angle in test_dials:
+                sim = self._simulate_shot(
+                    problem_data, test_angle, world_model_params, force=planned_force,
+                )
+                if _bad_platform_stop(sim):
+                    return False
+                if not self._sim_plan_is_acceptable(sim):
+                    return False
+            return True
+
+        for test_angle in test_dials:
+            if not _acceptable_at_dial(test_angle):
+                return False
+        return True
+
+    def _gap_clearance_execution_nudge(self, problem_data: dict, sim: dict) -> float:
+        """Dial-angle nudge for gap/over-flight plans on platform levels."""
+        if not self._level_has_platforms(problem_data):
+            return 0.0
+        if sim.get("platform_collision"):
+            return 0.0
+        return -GAP_CLEARANCE_ANGLE_NUDGE_DEG
+
+    def _begin_plan_pick_search_budget(self) -> None:
+        """Start wall-clock budget for plan-pick forward sim (not ENHSP)."""
+        self._plan_pick_timeout_logged = False
+        if self.plan_pick_timeout_sec > 0:
+            self._plan_pick_deadline = time.monotonic() + self.plan_pick_timeout_sec
+        else:
+            self._plan_pick_deadline = None
+
+    def _clear_plan_pick_search_budget(self) -> None:
+        self._plan_pick_deadline = None
+        self._plan_pick_timeout_logged = False
+
+    def _plan_pick_timed_out(self) -> bool:
+        if self._plan_pick_deadline is None:
+            return False
+        return time.monotonic() >= self._plan_pick_deadline
+
+    def _log_plan_pick_timeout_once(self, context: str = "sim search") -> None:
+        if self._plan_pick_timeout_logged:
+            return
+        self._plan_pick_timeout_logged = True
+        print(
+            f"[PLAN-PICK] {context} capped at {self.plan_pick_timeout_sec:.0f}s "
+            f"(ENHSP not affected) — using best result so far"
+        )
+
+    def _refine_angle_by_sim(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        center_angle: float,
+        planned_force: float = 1.0,
+        half_width: float = 1.0,
+        step: float = 0.1,
+    ):
+        """Fine search around a coarse best angle at fixed force."""
+        best_angle = center_angle
+        best_score = (-1, -1, -1, -1, -1.0, float("inf"))
+
+        angle = center_angle - half_width
+        while angle <= center_angle + half_width + 1e-6:
+            if self._plan_pick_timed_out():
+                self._log_plan_pick_timeout_once("Local refine")
+                break
+            angle = max(self.min_deg, min(self.max_deg, angle))
+            exec_sim, _, _, _, _ = self._simulate_planned_shot(
+                problem_data, angle, world_model_params, force=planned_force,
+            )
+            score = self._sim_shot_score(exec_sim, angle, planned_force)
+            if score > best_score:
+                best_score = score
+                best_angle = angle
+            angle += step
+
+        return best_angle
+
+    def _search_shot_by_sim(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        hint_force: float = 1.0,
+        quiet: bool = False,
+        angle_step: float = None,
+        angle_min: float = None,
+        angle_max: float = None,
+        max_forces: int = None,
+    ):
+        """Grid-search dial angles × force; prefer pig kill with higher force."""
+        best_angle = None
+        best_force = None
+        best_score = (-1, -1, -1, -1, -1.0, float("inf"))
+        step = float(self.deg_step if angle_step is None else angle_step)
+        planner_max = (
+            float(angle_max) if angle_max is not None
+            else self._planner_max_angle(problem_data)
+        )
+        planner_min = (
+            float(angle_min) if angle_min is not None
+            else self._planner_min_angle(problem_data)
+        )
+
+        forces = list(iter_force_grid())
+        hint_force = round(float(hint_force), 4)
+        if hint_force in forces:
+            forces.remove(hint_force)
+            forces.insert(0, hint_force)
+        if max_forces is not None and max_forces > 0:
+            forces = forces[:max_forces]
+
+        for planned_force in forces:
+            if self._plan_pick_timed_out():
+                self._log_plan_pick_timeout_once("Sim grid search")
+                break
+            angle = planner_min
+            while angle <= planner_max + 1e-6:
+                if self._plan_pick_timed_out():
+                    self._log_plan_pick_timeout_once("Sim grid search")
+                    break
+                exec_sim, planned, exec_angle, _, _ = self._simulate_planned_shot(
+                    problem_data, angle, world_model_params, force=planned_force,
+                )
+                if not self._sim_plan_is_acceptable(exec_sim):
+                    angle += step
+                    continue
+                if not self._sim_plan_robust_to_execution_error(
+                    problem_data, planned, world_model_params, planned_force,
+                    exec_sim, exec_angle,
+                ):
+                    angle += step
+                    continue
+                score = self._sim_shot_score(exec_sim, planned, planned_force)
+                if score > best_score:
+                    best_score = score
+                    best_angle = angle
+                    best_force = planned_force
+                angle += step
+
+        refine_step = 0.1 if step <= 0.5 else 0.25
+        if best_score[0] == 1:
+            refined = self._refine_angle_by_sim(
+                problem_data, world_model_params, best_angle, planned_force=best_force,
+                step=refine_step,
+            )
+            if not quiet:
+                print(
+                    f"[PDDL DEBUG] Sim search: pig-kill force={best_force:.2f}, "
+                    f"angle={refined:.1f}° (coarse {best_angle:.1f}°)"
+                )
+            return refined, best_force
+        if best_score[2] == 1 and best_angle is not None:
+            if not quiet:
+                print(
+                    f"[PDDL DEBUG] Sim search: no kill; best no-platform "
+                    f"force={best_force:.2f}, angle={best_angle:.1f}°"
+                )
+            return best_angle, best_force
+        if not quiet:
+            print("[PDDL DEBUG] Sim search: no acceptable (angle, force) pair")
+        return None, None
+
+    def _search_angle_by_sim(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        planned_force: float = 1.0,
+        quiet: bool = False,
+    ):
+        """Backward-compatible wrapper: angle-only search at fixed force."""
+        angle, _ = self._search_shot_by_sim(
+            problem_data, world_model_params, hint_force=planned_force, quiet=quiet
+        )
+        return angle
+
+    def _log_sim_shadow_advisory(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        planned_force: float,
+        planner_angle: float = None,
+        planner_sim: dict = None,
+    ):
+        """Log what sim search would pick vs the planner shot."""
+        print("[SIM SHADOW] Evaluating sim search alternative...")
+
+        if planner_angle is not None:
+            if planner_sim is None:
+                exec_sim, planned, _, _, probe = self._simulate_planned_shot(
+                    problem_data, planner_angle, world_model_params, force=planned_force,
+                )
+            else:
+                probe = getattr(self, "_last_probe_sim", None) or planner_sim
+                exec_sim, planned, _, _, _ = self._simulate_planned_shot(
+                    problem_data, planner_angle, world_model_params,
+                    force=planned_force, probe_sim=probe,
+                )
+            planner_ok = self._sim_plan_is_acceptable(exec_sim)
+            print(
+                f"[SIM SHADOW] Planner shot: force={planned_force:.3f}, angle={planned:.1f}°, "
+                f"acceptable={planner_ok}, pig_killed={exec_sim.get('pig_killed_in_sim')}, "
+                f"platform={exec_sim.get('platform_collision')}, "
+                f"block={exec_sim.get('block_collision')}, "
+                f"ground={exec_sim.get('uses_ground_collision')}"
+            )
+        else:
+            print("[SIM SHADOW] Planner: no solution (unsolvable / failed)")
+
+        sim_angle, sim_force = self._search_shot_by_sim(
+            problem_data, world_model_params, hint_force=planned_force, quiet=True
+        )
+        if sim_angle is None:
+            print("[SIM SHADOW] Sim search: no acceptable (angle, force) pair")
+            return
+
+        exec_sim, _, _, _, _ = self._simulate_planned_shot(
+            problem_data, sim_angle, world_model_params, force=sim_force,
+        )
+        sim_ok = self._sim_plan_is_acceptable(exec_sim)
+        if planner_angle is not None:
+            delta = sim_angle - planner_angle
+            force_delta = sim_force - planned_force
+            print(
+                f"[SIM SHADOW] Sim search would use: force={sim_force:.2f}, angle={sim_angle:.1f}° "
+                f"(Δforce={force_delta:+.2f}, Δangle={delta:+.1f}° vs planner), acceptable={sim_ok}, "
+                f"pig_killed={exec_sim.get('pig_killed_in_sim')}, "
+                f"platform={exec_sim.get('platform_collision')}, "
+                f"block={exec_sim.get('block_collision')}, "
+                f"ground={exec_sim.get('uses_ground_collision')}"
+            )
+            if abs(delta) < 0.05 and abs(force_delta) < 0.05 and planner_ok == sim_ok:
+                print("[SIM SHADOW] Sim agrees with planner on this shot")
+            elif not planner_ok and sim_ok:
+                print("[SIM SHADOW] Sim would OVERRIDE planner (planner rejected, sim has kill)")
+            elif planner_ok and not sim_ok:
+                print("[SIM SHADOW] Planner passes sim gate; sim search found no better acceptable shot")
+        else:
+            print(
+                f"[SIM SHADOW] Sim search would use: force={sim_force:.2f}, angle={sim_angle:.1f}°, "
+                f"acceptable={sim_ok}, pig_killed={exec_sim.get('pig_killed_in_sim')}"
+            )
+
+    def _candidate_from_sim(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        angle: float,
+        force: float,
+        source: str,
+        sim: dict = None,
+    ) -> dict:
+        """Build a plan-pick candidate scored at the executed dial (planned + gap nudge)."""
+        exec_sim, planned, exec_angle, gap_nudge, probe_sim = self._simulate_planned_shot(
+            problem_data, angle, world_model_params, force=force, probe_sim=sim,
+        )
+        force = round(float(force), 4)
+        score = self._sim_shot_score(exec_sim, planned, force)
+        acceptable = self._sim_plan_is_acceptable(exec_sim)
+        robust = self._sim_plan_robust_to_execution_error(
+            problem_data, planned, world_model_params, force, exec_sim, exec_angle,
+        )
+        return {
+            "source": source,
+            "angle": planned,
+            "exec_angle": exec_angle,
+            "gap_nudge": gap_nudge,
+            "force": force,
+            "sim": exec_sim,
+            "probe_sim": probe_sim,
+            "score": score,
+            "acceptable": acceptable,
+            "robust": robust,
+        }
+
+    def _evaluate_shot_candidate(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        angle: float,
+        force: float,
+        source: str,
+    ) -> dict:
+        """Score one (angle, force) pair with execution-aligned forward sim."""
+        return self._candidate_from_sim(
+            problem_data, world_model_params, angle, force, source, sim=None,
+        )
+
+    @staticmethod
+    def _format_sim_shot_score(score: tuple) -> str:
+        pig, no_block, plat_ok, no_ground, force, neg_angle = score
+        return (
+            f"pig={pig}, no_block={no_block}, plat_ok={plat_ok}, "
+            f"no_ground={no_ground}, force={force:.2f}, angle={-neg_angle:.1f}°"
+        )
+
+    @staticmethod
+    def _strong_plan_pick_candidates(candidates: list) -> list:
+        """Acceptable, execution-robust sim shots that kill the pig."""
+        return [
+            c for c in candidates
+            if c["acceptable"] and c["robust"] and c["score"][0] == 1
+        ]
+
+    def _run_plan_pick_full_search(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        planner_angle: float,
+        planner_force: float,
+    ):
+        """Escalating sim grid: near planner -> full coarse -> all forces."""
+        if self._plan_pick_timed_out():
+            return None, None
+        if self.plan_pick_fast:
+            near_min = max(
+                self._planner_min_angle(problem_data),
+                planner_angle - PLAN_PICK_NEAR_SEARCH_HALF_WIDTH_DEG,
+            )
+            near_max = min(
+                self._planner_max_angle(problem_data),
+                planner_angle + PLAN_PICK_NEAR_SEARCH_HALF_WIDTH_DEG,
+            )
+            search_angle, search_force = self._search_shot_by_sim(
+                problem_data,
+                world_model_params,
+                hint_force=planner_force,
+                quiet=True,
+                angle_step=PLAN_PICK_FULL_SEARCH_DEG_STEP,
+                angle_min=near_min,
+                angle_max=near_max,
+                max_forces=1,
+            )
+            if search_angle is not None:
+                return search_angle, search_force
+
+            search_angle, search_force = self._search_shot_by_sim(
+                problem_data,
+                world_model_params,
+                hint_force=planner_force,
+                quiet=True,
+                angle_step=PLAN_PICK_FULL_SEARCH_DEG_STEP,
+                max_forces=3,
+            )
+            if search_angle is not None:
+                return search_angle, search_force
+
+        return self._search_shot_by_sim(
+            problem_data,
+            world_model_params,
+            hint_force=planner_force,
+            quiet=True,
+            angle_step=PLAN_PICK_FULL_SEARCH_DEG_STEP if self.plan_pick_fast else None,
+        )
+
+    def _select_best_sim_shot_plan(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        planner_angle: float,
+        planner_force: float,
+        *,
+        include_full_search: bool = True,
+        planner_sim: dict = None,
+    ):
+        """
+        Compare ENHSP plan against locally refined and full sim-search candidates.
+        Returns (actions, angle, force, plan_source, sim) for the highest sim score.
+        """
+        self._begin_plan_pick_search_budget()
+        try:
+            return self._select_best_sim_shot_plan_inner(
+                problem_data,
+                world_model_params,
+                planner_angle,
+                planner_force,
+                include_full_search=include_full_search,
+                planner_sim=planner_sim,
+            )
+        finally:
+            self._clear_plan_pick_search_budget()
+
+    def _select_best_sim_shot_plan_inner(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        planner_angle: float,
+        planner_force: float,
+        *,
+        include_full_search: bool = True,
+        planner_sim: dict = None,
+    ):
+        local_step = (
+            PLAN_PICK_FAST_LOCAL_STEP_DEG if self.plan_pick_fast else PLAN_PICK_LOCAL_STEP_DEG
+        )
+        if planner_sim is not None:
+            probe = getattr(self, "_last_probe_sim", None) or planner_sim
+            candidates = [
+                self._candidate_from_sim(
+                    problem_data, world_model_params,
+                    planner_angle, planner_force, "planner", probe,
+                )
+            ]
+        else:
+            candidates = [
+                self._evaluate_shot_candidate(
+                    problem_data, world_model_params, planner_angle, planner_force, "planner"
+                )
+            ]
+
+        refined = self._refine_angle_by_sim(
+            problem_data,
+            world_model_params,
+            planner_angle,
+            planned_force=planner_force,
+            half_width=PLAN_PICK_LOCAL_HALF_WIDTH_DEG,
+            step=local_step,
+        )
+        if abs(refined - candidates[0]["angle"]) > 0.05:
+            candidates.append(
+                self._evaluate_shot_candidate(
+                    problem_data, world_model_params, refined, planner_force, "sim_refine"
+                )
+            )
+
+        need_full_search = include_full_search
+        if need_full_search and self.plan_pick_fast and self._strong_plan_pick_candidates(candidates):
+            need_full_search = False
+            print(
+                "[PLAN-PICK] Fast path: acceptable local candidate — skipping full sim grid"
+            )
+
+        if need_full_search and not self._plan_pick_timed_out():
+            search_angle, search_force = self._run_plan_pick_full_search(
+                problem_data, world_model_params, planner_angle, planner_force,
+            )
+            if search_angle is not None:
+                candidates.append(
+                    self._evaluate_shot_candidate(
+                        problem_data,
+                        world_model_params,
+                        search_angle, search_force, "sim_search"
+                    )
+                )
+
+        valid = [c for c in candidates if c["acceptable"] and c["robust"]]
+        pool = valid if valid else [c for c in candidates if c["acceptable"]]
+        if not pool:
+            pool = candidates
+
+        best = max(pool, key=lambda c: c["score"])
+
+        if best["score"][0] == 0 and not self._plan_pick_timed_out():
+            print(
+                "[PLAN-PICK] No sim pig-kill among planner/refine/search — "
+                "running relaxed sim grid..."
+            )
+            fb_angle, fb_force = self._search_fallback_by_sim(
+                problem_data,
+                world_model_params,
+                hint_force=planner_force,
+                quiet=True,
+                angle_step=(
+                    PLAN_PICK_FULL_SEARCH_DEG_STEP if self.plan_pick_fast else FALLBACK_GRID_DEG_STEP
+                ),
+            )
+            if fb_angle is not None:
+                fb_sim, _, fb_exec, _, _ = self._simulate_planned_shot(
+                    problem_data, fb_angle, world_model_params, force=fb_force,
+                )
+                candidates.append(
+                    self._candidate_from_sim(
+                        problem_data, world_model_params,
+                        fb_angle, fb_force, "sim_relaxed", fb_sim,
+                    )
+                )
+                relaxed = candidates[-1]
+                if relaxed["score"][0] == 1:
+                    best = relaxed
+                    pool = [relaxed]
+                elif not relaxed["acceptable"]:
+                    print(
+                        "[PLAN-PICK] Relaxed grid found pig kill but shot blocked by "
+                        "sim gate (block/platform) — keeping best scored candidate"
+                    )
+            else:
+                print(
+                    "[PLAN-PICK] Relaxed sim grid found no pig-kill angle — "
+                    "keeping highest-scored candidate (may still miss in game)"
+                )
+
+        planner_c = candidates[0]
+
+        print("\n[PLAN-PICK] === Sim plan comparison ===")
+        for c in candidates:
+            tag = " <-- chosen" if c is best else ""
+            exec_note = ""
+            if c.get("gap_nudge", 0) != 0:
+                exec_note = f", exec={c.get('exec_angle', c['angle']):.1f}°"
+            print(
+                f"[PLAN-PICK] {c['source']:11s} angle={c['angle']:5.1f}°{exec_note} force={c['force']:.2f} "
+                f"pig={c['sim'].get('pig_killed_in_sim')} "
+                f"acceptable={c['acceptable']} robust={c['robust']} "
+                f"score=({self._format_sim_shot_score(c['score'])}){tag}"
+            )
+
+        if best["source"] != "planner":
+            print(
+                f"[PLAN-PICK] Prefer {best['source']} over ENHSP "
+                f"({planner_c['angle']:.1f}° -> {best['angle']:.1f}°, "
+                f"force {planner_c['force']:.2f} -> {best['force']:.2f})"
+            )
+        else:
+            print("[PLAN-PICK] Keeping ENHSP plan (best sim score among candidates)")
+
+        actions = self._build_shot_actions(best["angle"], best["force"])
+        source_map = {"sim_refine": "sim_refine", "sim_relaxed": "sim_relaxed"}
+        plan_source = source_map.get(best["source"], best["source"])
+        return actions, best["angle"], best["force"], plan_source, best["sim"]
+
+    def _try_sim_search_plan(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        planned_force: float = 1.0,
+    ):
+        """Run joint (angle, force) sim search; return (actions, angle, force) or (None, None, None)."""
+        search_angle, search_force = self._search_shot_by_sim(
+            problem_data, world_model_params, hint_force=planned_force
+        )
+        if search_angle is None:
+            return None, None, None
+        exec_sim, _, _, _, _ = self._simulate_planned_shot(
+            problem_data, search_angle, world_model_params, force=search_force,
+        )
+        if not self._sim_plan_is_acceptable(exec_sim):
+            return None, None, None
+        if search_force < 1.0:
+            actions = [("set_force", search_force), ("shoot", search_angle)]
+        else:
+            actions = [("set_force", 1.0), ("shoot", search_angle)]
+        return actions, search_angle, search_force
+
+    def _executable_dial_bounds(self) -> tuple:
+        """PDDL dial range that maps to unclamped slingshot pulls (via AngleCalibrator)."""
+        return self.angle_calibrator.executable_dial_bounds(
+            dial_min=float(self.min_deg),
+            dial_max=float(self.max_deg),
+            dial_step=float(self.deg_step),
+        )
+
+    def _planner_min_angle(self, problem_data: dict) -> float:
+        """ENHSP dial floor written as PDDL min_angle."""
+        return float(self.min_deg)
+
+    def _planner_max_angle(self, problem_data: dict) -> float:
+        """ENHSP dial ceiling: do not plan dials that clamp to GAME_PULL_MAX."""
+        _, exec_max = self._executable_dial_bounds()
+        return min(exec_max, float(self.max_deg))
+
+    def _clamp_planner_dial(self, angle: float, problem_data: dict) -> float:
+        """Snap angle to ENHSP grid within executable planner bounds."""
+        planner_min = self._planner_min_angle(problem_data)
+        planner_max = self._planner_max_angle(problem_data)
+        return align_dial_to_planner_grid(
+            angle, planner_max, self.deg_step, planner_min, planner_max,
+        )
+
+    @staticmethod
+    def _enforce_planner_angle_on_actions(actions, clamped_angle: float):
+        """Replace shoot angle in parsed actions with grid-clamped dial."""
+        return [
+            (action_type, clamped_angle if action_type == 'shoot' else value)
+            for action_type, value in actions
+        ]
 
     def _run_enhsp_planner(self, problem_data: dict, agent_world_model: WorldModel):
         """Write problem/domain, run ENHSP. Returns (actions or None, planner_output)."""
         domain_path = 'base_domain_modified.pddl'
+        planner_min = self._planner_min_angle(problem_data)
+        planner_max = self._planner_max_angle(problem_data)
+        planner_min = align_dial_to_planner_grid(
+            planner_min, planner_max, self.deg_step, planner_min, planner_max,
+        )
+        exec_min, exec_max = self._executable_dial_bounds()
 
         print("[PDDL DEBUG] Writing problem file...")
         print(
             f"[PDDL DEBUG] Physics: gravity={agent_world_model.hyperparams_values[Params.gravity]:.2f}, "
             f"velocity={agent_world_model.hyperparams_values[Params.velocity]:.2f}"
         )
-        print(f"[PDDL DEBUG] Using angle range: min={self.min_deg}°, max={self.max_deg}° (start={self.max_deg}°)")
+        print(
+            f"[PDDL DEBUG] Executable dial range (calibrator): [{exec_min:.1f}°, {exec_max:.1f}°]"
+        )
+        print(
+            f"[PDDL DEBUG] Using angle range: min={planner_min}°, max={planner_max}° "
+            f"(start={planner_max}°)"
+        )
         write_problem_file(
             'agents/pddl/pddl_files/problem.pddl',
             problem_data,
-            self.max_deg,
+            planner_max,
             self.deg_step,
             agent_world_model,
-            min_angle=self.min_deg,
-            max_angle=self.max_deg,
+            min_angle=planner_min,
+            max_angle=planner_max,
         )
         print("[PDDL DEBUG] Problem file written")
 
         print("[PDDL DEBUG] Injecting base_domain.pddl (collision + learned physics)...")
-        inject_domain_file('agents/pddl/pddl_files/base_domain.pddl', agent_world_model)
+        has_platforms = any(k.startswith("platform_") for k in problem_data)
+        inject_domain_file(
+            'agents/pddl/pddl_files/base_domain.pddl',
+            agent_world_model,
+            defer_ground_m5=has_platforms,
+        )
         print("[PDDL DEBUG] Domain file injected")
         print(f"[PDDL DEBUG] Using domain: {domain_path}")
 
@@ -1557,9 +2786,28 @@ class PDDLAgent(BaselineAgent):
 
             print("[PDDL DEBUG] Parsing solution...")
             actions = parse_solution_to_actions(
-                'solution.pddl', self.max_deg, self.deg_step,
+                'solution.pddl', planner_max, self.deg_step,
                 force_min=FORCE_MIN, force_rate=FORCE_RATE,
             )
+            _, planned_angle = _extract_force_angle(actions)
+            if planned_angle is not None:
+                clamped = align_dial_to_planner_grid(
+                    planned_angle, planner_max, self.deg_step, planner_min, planner_max,
+                )
+                if abs(clamped - planned_angle) > 1e-6:
+                    print(
+                        f"[PDDL DEBUG] Clamped planner angle "
+                        f"{planned_angle:.1f}° → {clamped:.1f}° "
+                        f"(grid [{planner_min:.1f}°, {planner_max:.1f}°])"
+                    )
+                    actions = self._enforce_planner_angle_on_actions(actions, clamped)
+                    planned_angle = clamped
+                if not self.angle_calibrator.is_dial_executable(planned_angle):
+                    raw_pull = self.angle_calibrator.raw_game_pull_for_pddl_dial(planned_angle)
+                    print(
+                        f"[PDDL DEBUG] WARNING: planner angle {planned_angle:.1f}° maps to "
+                        f"unclamped pull {raw_pull:.1f}° (outside [{GAME_PULL_MIN}, {GAME_PULL_MAX}])"
+                    )
             print(f"[PDDL DEBUG] Parsed actions: {actions}")
             return actions, planner_output
         except Exception as e:
@@ -1627,25 +2875,192 @@ class PDDLAgent(BaselineAgent):
             print(f"[HIT VIZ] Visualization error (non-fatal): {e}")
             traceback.print_exc()
 
+    def _log_sim_vs_game_comparison(
+        self,
+        event_indexes_by_event: dict,
+        *,
+        exec_angle=None,
+        planned_angle=None,
+        planned_force=None,
+        pddl_flight_deg=None,
+        launch=None,
+        game_won=None,
+        phase="events",
+    ) -> None:
+        """Log where forward-sim predictions diverge from observed game behavior."""
+        sim = getattr(self, "_last_sim_result", None) or {}
+        if not sim and phase != "outcome":
+            return
+
+        hits = event_indexes_by_event.get("hit") or []
+        platform_frames = event_indexes_by_event.get("platform_collision") or []
+        block_frames = event_indexes_by_event.get("block_collision") or []
+        ground_frames = event_indexes_by_event.get("ground_collision") or []
+
+        game_hit = len(hits) > 0
+        game_platform = len(platform_frames) > 0
+        game_block = len(block_frames) > 0
+        game_ground = len(ground_frames) > 0
+
+        first_event_frame = None
+        first_event_type = None
+        for etype, frames in event_indexes_by_event.items():
+            if frames:
+                f0 = min(frames)
+                if first_event_frame is None or f0 < first_event_frame:
+                    first_event_frame = f0
+                    first_event_type = etype
+
+        sim_pig = bool(sim.get("pig_killed_in_sim"))
+        sim_platform = bool(sim.get("platform_collision"))
+        sim_block = bool(sim.get("block_collision"))
+        sim_ground = bool(sim.get("uses_ground_collision"))
+        sim_acceptable = self._sim_plan_is_acceptable(sim) if sim else None
+        planner_only = getattr(self, "planner_only", True)
+
+        mismatches = []
+
+        if phase in ("events", "outcome"):
+            if sim_pig != game_hit:
+                mismatches.append(
+                    f"pig: sim={'KILL' if sim_pig else 'MISS'} vs game={'HIT' if game_hit else 'NO_HIT'}"
+                )
+            if sim_platform != game_platform:
+                mismatches.append(
+                    f"platform: sim={'YES' if sim_platform else 'NO'} vs game={'YES' if game_platform else 'NO'}"
+                    + (f" (first game frame {platform_frames[0]})" if platform_frames else "")
+                )
+            if sim_block != game_block:
+                mismatches.append(
+                    f"block: sim={'YES' if sim_block else 'NO'} vs game={'YES' if game_block else 'NO'}"
+                    + (f" (first game frame {block_frames[0]})" if block_frames else "")
+                )
+            if sim_ground != game_ground:
+                mismatches.append(
+                    f"ground: sim={'YES' if sim_ground else 'NO'} vs game={'YES' if game_ground else 'NO'}"
+                    + (f" (first game frame {ground_frames[0]})" if ground_frames else "")
+                )
+            if sim_pig and game_platform and not game_hit:
+                mismatches.append(
+                    f"sim direct-kill path but game platform first at frame {platform_frames[0]}"
+                )
+            if sim_platform and sim.get("platform_slide_continued") and game_hit and not sim_pig:
+                mismatches.append("game pig hit via path sim did not predict as direct kill")
+
+        if phase == "execution" and launch is not None and pddl_flight_deg is not None:
+            theta_err = launch["theta_deg"] - pddl_flight_deg
+            if abs(theta_err) > 2.0:
+                mismatches.append(
+                    f"launch angle: target flight={pddl_flight_deg:.1f}° vs measured={launch['theta_deg']:.1f}° "
+                    f"(err={theta_err:+.1f}°)"
+                )
+            v_model = self.world_model.hyperparams_values.get(Params.velocity)
+            if v_model is not None and planned_force is not None and planned_force >= 0.95:
+                v_err = launch["v_meas"] - v_model
+                if abs(v_err) > 8.0:
+                    mismatches.append(
+                        f"launch speed: model v={v_model:.1f} vs measured={launch['v_meas']:.1f} "
+                        f"(err={v_err:+.1f})"
+                    )
+
+        if phase == "outcome" and game_won is not None:
+            if sim_pig and not game_won:
+                mismatches.append("sim predicted pig kill but level LOST")
+            elif not sim_pig and game_won:
+                mismatches.append("sim predicted miss but level WON (indirect/collapse path)")
+
+        print(f"\n[SIM/REAL] === Comparison ({phase}) ===")
+        print(
+            f"[SIM/REAL] Plan: source={getattr(self, '_last_plan_source', '?')}, "
+            f"angle={planned_angle if planned_angle is not None else getattr(self, '_last_planned_angle', '?')}°, "
+            f"force={planned_force if planned_force is not None else getattr(self, '_last_planned_force', 1.0):.3f}, "
+            f"planner_only={planner_only}, sim_gate={'SKIP' if planner_only else 'ON'}"
+        )
+        if sim:
+            print(
+                f"[SIM/REAL] Sim: pig={'KILL' if sim_pig else 'miss'}, "
+                f"platform={'YES' if sim_platform else 'no'}"
+                f"{'' if not sim_platform else (' slide_ok' if sim.get('platform_slide_continued') else ' STOP')}, "
+                f"block={'YES' if sim_block else 'no'}, ground={'YES' if sim_ground else 'no'}, "
+                f"acceptable={sim_acceptable}"
+            )
+            if sim.get("platform_hit_name"):
+                print(f"[SIM/REAL] Sim platform target: {sim.get('platform_hit_name')}")
+            if sim.get("block_hit_name"):
+                print(f"[SIM/REAL] Sim block target: {sim.get('block_hit_name')}")
+        if phase != "outcome":
+            print(
+                f"[SIM/REAL] Game events: hit={len(hits)}, platform={len(platform_frames)}, "
+                f"block={len(block_frames)}, ground={len(ground_frames)}"
+            )
+            if first_event_frame is not None:
+                print(f"[SIM/REAL] Game first event: {first_event_type} @ frame {first_event_frame}")
+        if game_won is not None:
+            print(f"[SIM/REAL] Level outcome: {'WIN' if game_won else 'LOSS'}")
+        if launch is not None and phase == "execution":
+            print(
+                f"[SIM/REAL] Execution: dial={exec_angle:.1f}°, "
+                f"θ_meas={launch['theta_deg']:.1f}°, |v|={launch['v_meas']:.1f}"
+            )
+        if mismatches:
+            for msg in mismatches:
+                print(f"[SIM/REAL] MISMATCH: {msg}")
+        else:
+            print("[SIM/REAL] No major sim/game divergence detected in this phase")
+
+    def _empty_sim_result(self) -> dict:
+        return {
+            "uses_ground_collision": False,
+            "pig_killed_in_sim": False,
+            "ground_touches": 0,
+            "platform_collision": False,
+            "block_collision": False,
+            "block_hit_name": None,
+            "platform_slide_continued": False,
+            "platform_hit_name": None,
+            "platform_hit_pos": None,
+            "trajectory": [],
+        }
+
     def _finalize_plan_metadata(self, problem_data: dict, angle: float, world_model_params: dict,
-                               force: float = 1.0):
+                               force: float = 1.0) -> dict:
         """Store plan flags and optionally run direct-hit analysis for ground-bounce plans."""
-        g = world_model_params['gravity']
-        # Run simulation with debug=True to see detailed collision checks
-        sim = simulate_pddl_shot_plan(problem_data, angle, gravity=g, force=force, debug=True)
+        if self.disable_forward_sim:
+            sim = self._empty_sim_result()
+            probe_sim = sim
+            exec_angle = angle
+            gap_nudge = 0.0
+            print("[PDDL DEBUG] Forward sim disabled — skipping plan simulation")
+        else:
+            sim, angle, exec_angle, gap_nudge, probe_sim = self._simulate_planned_shot(
+                problem_data, angle, world_model_params, force=force, debug=True,
+            )
+        self._last_sim_result = sim
+        self._last_probe_sim = probe_sim
+        self._last_exec_angle = exec_angle
+        self._last_gap_nudge = gap_nudge
         self._last_planned_angle = angle
+        self._last_planned_force = force
         self._last_plan_uses_ground = sim['uses_ground_collision']
         self._last_problem_data = problem_data
         self._last_sim_trajectory = sim.get('trajectory', [])
 
-        print(
-            f"[PDDL DEBUG] Plan sim: ground_touches={sim['ground_touches']}, "
-            f"pig_killed_in_sim={sim['pig_killed_in_sim']}, "
-            f"uses_ground_collision={sim['uses_ground_collision']}, "
-            f"platform_collision={sim.get('platform_collision', False)}"
-        )
-        if sim.get('platform_collision'):
-            print(f"[PDDL DEBUG] Platform hit: {sim.get('platform_hit_name')} at {sim.get('platform_hit_pos')}")
+        if not self.disable_forward_sim:
+            exec_note = ""
+            if gap_nudge != 0.0:
+                exec_note = f", exec_dial={exec_angle:.1f}° (nudge {gap_nudge:+.1f}°)"
+            print(
+                f"[PDDL DEBUG] Plan sim: ground_touches={sim['ground_touches']}, "
+                f"pig_killed_in_sim={sim['pig_killed_in_sim']}, "
+                f"uses_ground_collision={sim['uses_ground_collision']}, "
+                f"platform_collision={sim.get('platform_collision', False)}, "
+                f"block_collision={sim.get('block_collision', False)}"
+                f"{exec_note}"
+            )
+            if sim.get('block_collision'):
+                print(f"[PDDL DEBUG] Block hit: {sim.get('block_hit_name')}")
+            if sim.get('platform_collision'):
+                print(f"[PDDL DEBUG] Platform hit: {sim.get('platform_hit_name')} at {sim.get('platform_hit_pos')}")
 
         # Defer level visualization until we know the level was lost
         if getattr(self, 'visualize_pddl_input', False):
@@ -1670,6 +3085,7 @@ class PDDLAgent(BaselineAgent):
                 'trajectory': sim.get('trajectory'),
                 'angle': angle,
             }
+        return sim
 
     def get_action_to_perform(self, agent_world_model: WorldModel):
         """
@@ -1704,19 +3120,41 @@ class PDDLAgent(BaselineAgent):
         self._last_planner_unsolvable = "unsolvable" in planner_output.lower() if planner_output else False
         
         if not actions:
-            print("[PDDL DEBUG] Falling back to calculated trajectory angle...")
-            self._last_plan_source = "fallback"
-            fallback_angle = self._calculate_fallback_angle(
-                pigs_objects, bird_objects, world_model_params, ref_guess, problem_data
+            if self.planner_only:
+                if self.disable_forward_sim:
+                    print("[PDDL DEBUG] Planner failed — running ballistic fallback...")
+                else:
+                    print("[PDDL DEBUG] Planner failed — running fallback grid...")
+            else:
+                print("[PDDL DEBUG] Planner failed — trying sim search...")
+            if self.planner_only or self.disable_sim_override:
+                if not self.planner_only:
+                    self._log_sim_shadow_advisory(
+                        problem_data, world_model_params, planned_force=1.0, planner_angle=None
+                    )
+                actions = self._resolve_fallback_plan(
+                    vision, sling, agent_world_model, world_model_params,
+                    pigs_objects, bird_objects, ref_guess, problem_data,
+                )
+                print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
+                return actions
+
+            sim_actions, sim_angle, sim_force = self._try_sim_search_plan(
+                problem_data, world_model_params, planned_force=1.0
             )
-            problem_data, bird_objects, pigs_objects = self._gather_problem_data(
-                vision, sling, agent_world_model, ref_angle_guess=fallback_angle
+            if sim_actions is not None:
+                self._last_plan_source = "sim_search"
+                self._finalize_plan_metadata(
+                    problem_data, sim_angle, world_model_params, force=sim_force
+                )
+                print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {sim_actions} ==========\n")
+                return sim_actions
+
+            print("[PDDL DEBUG] Sim search failed — falling back to angle×force grid...")
+            actions = self._resolve_fallback_plan(
+                vision, sling, agent_world_model, world_model_params,
+                pigs_objects, bird_objects, ref_guess, problem_data,
             )
-            fallback_angle = self._calculate_fallback_angle(
-                pigs_objects, bird_objects, world_model_params, fallback_angle, problem_data
-            )
-            actions = [("shoot", fallback_angle)]
-            self._finalize_plan_metadata(problem_data, fallback_angle, world_model_params)
             print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
             return actions
         
@@ -1724,25 +3162,111 @@ class PDDLAgent(BaselineAgent):
 
         planned_force, angle = _extract_force_angle(actions)
 
-        # if abs(angle - ref_guess) > ANGLE_REPLAN_THRESHOLD_DEG:
-        #     print(
-        #         f"[PDDL DEBUG] Replanning: angle {angle:.1f}° differs from "
-        #         f"pa-twang guess {ref_guess:.1f}° — refreshing bird ref"
-        #     )
-        #     problem_data, bird_objects, pigs_objects = self._gather_problem_data(
-        #         vision, sling, agent_world_model, ref_angle_guess=angle
-        #     )
-        #     actions, _ = self._run_enhsp_planner(problem_data, agent_world_model)
-        #     if not actions:
-        #         print("[PDDL DEBUG] Replan failed; refreshing bird ref at first-pass angle")
-        #         problem_data, bird_objects, pigs_objects = self._gather_problem_data(
-        #             vision, sling, agent_world_model, ref_angle_guess=angle
-        #         )
-        #         actions = [("shoot", angle)]
-        #     else:
-        #         _, angle = actions[0]
+        sim = self._finalize_plan_metadata(problem_data, angle, world_model_params, force=planned_force)
 
-        self._finalize_plan_metadata(problem_data, angle, world_model_params, force=planned_force)
+        if not self.disable_forward_sim and self.prefer_sim_plan:
+            actions, angle, planned_force, picked_source, sim = self._select_best_sim_shot_plan(
+                problem_data, world_model_params, angle, planned_force,
+                planner_sim=sim,
+            )
+            self._last_plan_source = picked_source
+            self._finalize_plan_metadata(
+                problem_data, angle, world_model_params, force=planned_force
+            )
+            print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
+            return actions
+
+        if self.planner_only:
+            if not self.disable_forward_sim:
+                sim_acceptable = self._sim_plan_is_acceptable(sim)
+                if not sim_acceptable:
+                    print(
+                        "[SIM-GATE] Plan would be REJECTED if sim gate enabled: "
+                        f"pig_killed={sim.get('pig_killed_in_sim')}, "
+                        f"platform={sim.get('platform_collision')}, "
+                        f"platform_slide={sim.get('platform_slide_continued')}, "
+                        f"block={sim.get('block_collision')}, "
+                        f"ground={sim.get('uses_ground_collision')}"
+                    )
+            print("[PDDL DEBUG] Planner-only mode — keeping ENHSP plan (sim gate skipped)")
+            print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
+            return actions
+
+        robust = self._sim_plan_robust_to_execution_error(
+            problem_data,
+            angle,
+            world_model_params,
+            planned_force,
+            sim,
+            getattr(self, "_last_exec_angle", angle),
+        )
+        if not robust:
+            print(
+                f"[PDDL DEBUG] Planner shot fragile under ±{self._execution_slack_deg(problem_data):.0f}° "
+                f"execution error (gap/platform clearance) — sim search..."
+            )
+        if not self._sim_plan_is_acceptable(sim) or not robust:
+            print(
+                "[PDDL DEBUG] Planner shot rejected by forward sim "
+                f"(pig_killed={sim.get('pig_killed_in_sim')}, "
+                f"platform={sim.get('platform_collision')}, "
+                f"block={sim.get('block_collision')}, robust={robust}) — sim search..."
+            )
+            self._log_sim_shadow_advisory(
+                problem_data,
+                world_model_params,
+                planned_force,
+                planner_angle=angle,
+                planner_sim=sim,
+            )
+
+            sim_actions, sim_angle, sim_force = self._try_sim_search_plan(
+                problem_data, world_model_params, planned_force=planned_force
+            )
+            if sim_actions is not None:
+                self._last_plan_source = "sim_gate" if self.disable_sim_override else "sim_search"
+                actions = sim_actions
+                planned_force = sim_force
+                self._finalize_plan_metadata(
+                    problem_data, sim_angle, world_model_params, force=sim_force
+                )
+                if self.disable_sim_override:
+                    print(
+                        f"[PDDL DEBUG] Sim gate: rejected planner replaced by "
+                        f"sim search (force={sim_force:.2f}, angle={sim_angle:.1f}°)"
+                    )
+            elif self.disable_sim_override:
+                print(
+                    f"[PDDL DEBUG] Sim gate: no acceptable sim alternative — "
+                    f"keeping planner plan (force={planned_force:.3f}, angle={angle:.1f}°)"
+                )
+            else:
+                print("[PDDL DEBUG] Sim search failed; relaxed fallback grid...")
+                fallback_angle, fallback_force = self._calculate_fallback_shot(
+                    pigs_objects, bird_objects, world_model_params, angle, problem_data
+                )
+                angle = fallback_angle
+                planned_force = fallback_force
+                self._last_plan_source = "fallback"
+                if planned_force < 1.0 - 1e-6:
+                    actions = [("set_force", planned_force), ("shoot", angle)]
+                elif len(actions) > 1 and actions[0][0] == "set_force":
+                    actions = [("set_force", planned_force), ("shoot", angle)]
+                else:
+                    actions = [("shoot", angle)]
+                self._finalize_plan_metadata(
+                    problem_data, angle, world_model_params, force=planned_force
+                )
+
+        if self.disable_sim_override and self._sim_plan_is_acceptable(sim):
+            self._log_sim_shadow_advisory(
+                problem_data,
+                world_model_params,
+                planned_force,
+                planner_angle=angle,
+                planner_sim=sim,
+            )
+
         print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
         return actions
 
@@ -1835,10 +3359,8 @@ class PDDLAgent(BaselineAgent):
             
             # Extract gravity (yddot constant) from this trajectory
             # Quality gate: skip trajectories that are too short or nearly flat (unreliable 2nd derivative)
-            MIN_TRAJ_FRAMES = 40
-            MIN_Y_EXCURSION_PX = 40  # require meaningful vertical motion for reliable gravity estimate
             y_excursion = float(np.max(traj[:, 1]) - np.min(traj[:, 1]))
-            traj_quality_ok = len(traj) >= MIN_TRAJ_FRAMES and y_excursion >= MIN_Y_EXCURSION_PX
+            traj_quality_ok, _ = self._flight_segment_quality_ok(traj)
             try:
                 if rank_y <= 2:
                     # Degree ≤ 2: 2nd derivative is a constant everywhere
@@ -1853,7 +3375,7 @@ class PDDLAgent(BaselineAgent):
             if traj_quality_ok:
                 all_yddot_constants.append(yddot_traj)
             else:
-                print(f"  [GRAVITY] Traj {traj_idx}: SKIP (frames={len(traj)}, y_excursion={y_excursion:.1f}px < thresholds {MIN_TRAJ_FRAMES}/{MIN_Y_EXCURSION_PX})")
+                print(f"  [GRAVITY] Traj {traj_idx}: SKIP (frames={len(traj)}, y_excursion={y_excursion:.1f}px < thresholds {self.MIN_FLIGHT_SEGMENT_FRAMES}/{self.MIN_FLIGHT_Y_EXCURSION_PX})")
             
             # ========================================================================
             # STEP 3: Extract state transition pairs from this trajectory
@@ -2062,7 +3584,12 @@ class PDDLAgent(BaselineAgent):
             print(f"Error in learn_process_transitions step 3: {e}")
             print("Some transition functions may not have been learned.")
     
-    def _create_learned_transition_world_model(self, force_scale: float = 1.0, current_v_bird: float = None):
+    def _create_learned_transition_world_model(
+        self,
+        force_scale: float = 1.0,
+        current_v_bird: float = None,
+        segment_quality_ok: bool = True,
+    ):
         """
         Create a new WorldModel from learned transitions.
         Updates gravity from every shot (force-independent), but only updates
@@ -2103,9 +3630,39 @@ class PDDLAgent(BaselineAgent):
         if vx is not None and vy is not None:
             v_partial = math.sqrt(vx**2 + vy**2)
             if force_scale >= 0.95:
-                # At full (or near-full) force the measured speed IS v_full — no division needed
-                initial_values[Params.velocity] = v_partial
-                print(f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, v_full={v_partial:.2f} (full-force, direct)")
+                if not segment_quality_ok:
+                    if current_v_bird is not None:
+                        initial_values[Params.velocity] = current_v_bird
+                        print(
+                            f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, "
+                            f"v_full=kept {current_v_bird:.2f} (bad segment quality)"
+                        )
+                    else:
+                        initial_values[Params.velocity] = v_partial
+                        print(
+                            f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, "
+                            f"v_full={v_partial:.2f} (bad segment, no prior v_bird)"
+                        )
+                else:
+                    ok, reason = self._velocity_update_acceptable(v_partial, current_v_bird)
+                    if ok:
+                        initial_values[Params.velocity] = v_partial
+                        print(
+                            f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, "
+                            f"v_full={v_partial:.2f} (full-force, direct)"
+                        )
+                    elif current_v_bird is not None:
+                        initial_values[Params.velocity] = current_v_bird
+                        print(
+                            f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, "
+                            f"v_full=kept {current_v_bird:.2f} (rejected: {reason})"
+                        )
+                    else:
+                        initial_values[Params.velocity] = v_partial
+                        print(
+                            f"[LEARNED MODEL] v_partial={v_partial:.2f}, planned_force={force_scale:.4f}, "
+                            f"v_full={v_partial:.2f} (full-force fallback, no prior v_bird)"
+                        )
             else:
                 # Keep the existing v_bird; only gravity was reliably learned this shot
                 if current_v_bird is not None:

@@ -1,5 +1,4 @@
-import math
-
+from agents.pddl.pddl_files.pddl_parser import pddl_bird_position_after_pa_twang
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from src.computer_vision.GroundTruthReader import GroundTruthReader
@@ -33,10 +32,10 @@ def get_birds(vision, sling, tp, agent_world_model: WorldModel, ref_angle_guess:
             print(f"  Screen X: {bird.X}, Y: {bird.Y}")
             print(f"  Width: {bird.width}, Height: {bird.height}")
             print(f"  Center PDDL: ({center_x:.1f}, {center_y_pddl:.1f})")
+            after_x, after_y = pddl_bird_position_after_pa_twang(ref_x, ref_y, ref_angle_guess)
             print(f"  PDDL init (sling ref): ({ref_x:.1f}, {ref_y:.1f})")
-            print(f"  After pa-twang @ {ref_angle_guess:.1f}°: "
-                  f"({ref_x - 16*math.cos(math.radians(ref_angle_guess)):.1f}, "
-                  f"{ref_y - 12*math.sin(math.radians(ref_angle_guess)):.1f})")
+            print(f"  After pa-twang @ dial {ref_angle_guess:.1f}° (bias-adjusted trig): "
+                  f"({after_x:.1f}, {after_y:.1f})")
 
             problem_data[f"bird_{bird_id}"] = {
                 "x_bird": ref_x,
@@ -44,7 +43,7 @@ def get_birds(vision, sling, tp, agent_world_model: WorldModel, ref_angle_guess:
                 "bird_id": bird_id,
                 "bird_type": BIRD_TYPES.index(GameObjectType(bird_type)),
                 "m_bird": bird.width * bird.height,  # check this because it is not mandatory
-                "bird_radius": min(bird.width, bird.height) / 2,  # use min for tighter collision detection
+                "bird_radius": max(bird.width, bird.height) / 2,
                 "v_bird": agent_world_model.hyperparams_values[Params.velocity],
                 "bounce_count": 0,
 

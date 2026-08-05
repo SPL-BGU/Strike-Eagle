@@ -21,13 +21,19 @@ class AgentThread(threading.Thread):
                  scenario_filter: str = None,
                  phyq_config_path: str = "ScienceBirds/win6.6/win/config_phyq_sample.xml",
                  levels_per_template: int = None,
-                 visualize_pddl: bool = True,
+                 visualize_pddl: bool = False,
                  debug_mag_comparison: bool = True,
                  mag_comparison_angle: float = 60.0,
                  mag_comparison_start: float = 5.0,
                  mag_comparison_decrement: float = 0.1,
                  force_learning_mode: bool = False,
-                 force_learning_min_samples: int = 5):
+                 force_learning_min_samples: int = 5,
+                 disable_sim_override: bool = False,
+                 planner_only: bool = True,
+                 disable_forward_sim: bool = False,
+                 prefer_sim_plan: bool = False,
+                 plan_pick_fast: bool = True,
+                 plan_pick_timeout_sec: float = 60.0):
         """
         Constructor function
         Parameters
@@ -53,7 +59,7 @@ class AgentThread(threading.Thread):
         levels_per_template : int, optional
             Limit the number of levels per template
         visualize_pddl : bool
-            Show PDDL visualization when a level is lost (default: enabled)
+            Show PDDL visualization when a level is lost (default: disabled)
         debug_mag_comparison : bool
             Enable mag comparison debug mode
         mag_comparison_angle : float
@@ -81,6 +87,12 @@ class AgentThread(threading.Thread):
         self.mag_comparison_decrement = mag_comparison_decrement
         self.force_learning_mode = force_learning_mode
         self.force_learning_min_samples = force_learning_min_samples
+        self.disable_sim_override = disable_sim_override
+        self.planner_only = planner_only
+        self.disable_forward_sim = disable_forward_sim
+        self.prefer_sim_plan = prefer_sim_plan
+        self.plan_pick_fast = plan_pick_fast
+        self.plan_pick_timeout_sec = plan_pick_timeout_sec
         threading.Thread.__init__(self)
 
     def run(self):
@@ -117,7 +129,13 @@ class AgentThread(threading.Thread):
             mag_comparison_decrement=self.mag_comparison_decrement,
             # Force -> velocity learning mode
             force_learning_mode=self.force_learning_mode,
-            force_learning_min_samples=self.force_learning_min_samples
+            force_learning_min_samples=self.force_learning_min_samples,
+            disable_sim_override=self.disable_sim_override,
+            planner_only=self.planner_only,
+            disable_forward_sim=self.disable_forward_sim,
+            prefer_sim_plan=self.prefer_sim_plan,
+            plan_pick_fast=self.plan_pick_fast,
+            plan_pick_timeout_sec=self.plan_pick_timeout_sec,
         )
         agent.run()
 
@@ -132,13 +150,19 @@ def main(agent_configs,
          scenario_filter: str = None,
          phyq_config_path: str = "ScienceBirds/win6.6/win/config_phyq_sample.xml",
          levels_per_template: int = None,
-         visualize_pddl: bool = True,
+         visualize_pddl: bool = False,
          debug_mag_comparison: bool = False,
          mag_comparison_angle: float = 60.0,
          mag_comparison_start: float = 5.0,
          mag_comparison_decrement: float = 0.1,
          force_learning_mode: bool = False,
-         force_learning_min_samples: int = 5):
+         force_learning_min_samples: int = 5,
+         disable_sim_override: bool = False,
+         planner_only: bool = True,
+         disable_forward_sim: bool = False,
+         prefer_sim_plan: bool = False,
+         plan_pick_fast: bool = True,
+         plan_pick_timeout_sec: float = 60.0):
     """
     Main function to start the agent.
     
@@ -165,7 +189,7 @@ def main(agent_configs,
     levels_per_template : int, optional
         Limit the number of levels per template
     visualize_pddl : bool
-        Show PDDL visualization when a level is lost (default: enabled)
+        Show PDDL visualization when a level is lost (default: disabled)
     debug_mag_comparison : bool
         Enable mag comparison debug mode
     mag_comparison_angle : float
@@ -195,7 +219,13 @@ def main(agent_configs,
             mag_comparison_start=mag_comparison_start,
             mag_comparison_decrement=mag_comparison_decrement,
             force_learning_mode=force_learning_mode,
-            force_learning_min_samples=force_learning_min_samples
+            force_learning_min_samples=force_learning_min_samples,
+            disable_sim_override=disable_sim_override,
+            planner_only=planner_only,
+            disable_forward_sim=disable_forward_sim,
+            prefer_sim_plan=prefer_sim_plan,
+            plan_pick_fast=plan_pick_fast,
+            plan_pick_timeout_sec=plan_pick_timeout_sec,
         )
         agent.start()
         time.sleep(5)
@@ -317,10 +347,10 @@ Examples:
                              "(generated by generate_phyq_configs.py). Enabled by default.")
     parser.add_argument("--no-config-metadata", action="store_true",
                         help="Disable auto-loading from .meta.json file, use command-line parameters only.")
-    parser.add_argument("--visualize", action="store_true", default=True,
-                        help="Show PDDL visualization when a level is lost (default: enabled)")
+    parser.add_argument("--visualize", action="store_true",
+                        help="Show PDDL visualization when a level is lost (default: disabled)")
     parser.add_argument("--no-visualize", action="store_true",
-                        help="Disable PDDL visualization")
+                        help="Disable PDDL visualization (default)")
     
     # Debug mag comparison mode
     parser.add_argument("--debug-mag", action="store_true", default=False,
@@ -339,8 +369,44 @@ Examples:
                         help="Enable force->velocity learning mode: random angle+force, fit v=f(force) model")
     parser.add_argument("--force-min-samples", type=int, default=5,
                         help="Min samples before fitting force model (default: 5)")
+    parser.set_defaults(disable_sim_override=False)
+    parser.add_argument("--enable-sim-override", dest="disable_sim_override", action="store_false",
+                        help="Allow sim search when ENHSP fails or plan is rejected")
+    parser.add_argument("--disable-sim-override", dest="disable_sim_override", action="store_true",
+                        help="Skip sim search on planner failure; use fallback grid only")
+    parser.set_defaults(planner_only=True)
+    parser.add_argument("--enable-sim-gate", dest="planner_only", action="store_false",
+                        help="Run sim search when ENHSP fails; sim gate may reject bad plans")
+    parser.add_argument("--planner-only", dest="planner_only", action="store_true",
+                        help="(default) Use ENHSP plans as-is; fallback grid only on planner failure")
+    parser.set_defaults(disable_forward_sim=False)
+    parser.add_argument("--enable-forward-sim", dest="disable_forward_sim", action="store_false",
+                        help="(default) Forward sim for validation, fallback grid, and plan metadata")
+    parser.add_argument("--disable-forward-sim", dest="disable_forward_sim", action="store_true",
+                        help="Skip forward sim; use ENHSP plan and ballistic fallback only")
+    parser.set_defaults(prefer_sim_plan=False)
+    parser.add_argument("--prefer-sim-plan", dest="prefer_sim_plan", action="store_true",
+                        help="After ENHSP, pick best forward-sim shot among planner / "
+                             "local refine / sim search (implies --enable-forward-sim)")
+    parser.add_argument("--no-prefer-sim-plan", dest="prefer_sim_plan", action="store_false",
+                        help="(default) Keep ENHSP plan; run forward sim for validation only")
+    parser.set_defaults(plan_pick_fast=True)
+    parser.add_argument("--plan-pick-thorough", dest="plan_pick_fast", action="store_false",
+                        help="Always run full angle×force sim grid during plan-pick (slower)")
+    parser.add_argument("--plan-pick-fast", dest="plan_pick_fast", action="store_true",
+                        help="(default) Skip full grid when local planner/refine already finds a kill")
+    parser.add_argument(
+        "--plan-pick-timeout",
+        type=float,
+        default=60.0,
+        metavar="SEC",
+        help="Wall-clock cap for plan-pick forward sim search only (default: 60; 0 = no cap; ENHSP unchanged)",
+    )
     
     args = parser.parse_args()
+    
+    if args.prefer_sim_plan:
+        args.disable_forward_sim = False
     
     # Determine if generalization protocol should be used
     use_generalization = args.generalization != "none"
@@ -371,5 +437,11 @@ Examples:
         mag_comparison_start=args.mag_start,
         mag_comparison_decrement=args.mag_decrement,
         force_learning_mode=args.force_learning,
-        force_learning_min_samples=args.force_min_samples
+        force_learning_min_samples=args.force_min_samples,
+        disable_sim_override=args.disable_sim_override,
+        planner_only=args.planner_only,
+        disable_forward_sim=args.disable_forward_sim,
+        prefer_sim_plan=args.prefer_sim_plan,
+        plan_pick_fast=args.plan_pick_fast,
+        plan_pick_timeout_sec=args.plan_pick_timeout,
     )

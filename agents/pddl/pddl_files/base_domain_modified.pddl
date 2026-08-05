@@ -163,9 +163,9 @@
 
         )
         :effect (and
-            (assign (y_bird ?b) (+ 1.4336 (+ (* 0.0044 (x_bird ?b)) (* 0.0028 (vy_bird ?b)))))
-            (assign (vx_bird ?b) (+ -39.8080 (+ (* 0.0132 (x_bird ?b)) (* 0.6349 (vx_bird ?b)))))
-            (assign (vy_bird ?b) (+ -0.1710 (+ (* -0.0301 (x_bird ?b)) (+ (* 0.1417 (vx_bird ?b)) (* -0.2897 (vy_bird ?b))))))
+            (assign (y_bird ?b) 0.0)
+            (assign (vy_bird ?b) 0.0)
+            (assign (vx_bird ?b) 0.0)
             (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
         )
     )
@@ -271,16 +271,10 @@
             (> (* (block_life ?bl) (block_life ?bl) ) ( * ( + ( * (vx_bird ?b) (vx_bird ?b) ) (	* (vy_bird ?b) (vy_bird ?b) ) ) ( * (bird_block_damage ?b ?bl) (bird_block_damage ?b ?bl) ) ) )
         )
         :effect (and
-            (assign (x_bird ?b) (- (x_bird ?b) (+ (bird_radius ?b) 1) ) )
-            (assign (y_bird ?b) (+ (y_bird ?b) (+ (bird_radius ?b) 1) ) )
-            (assign (vy_bird ?b) (* (vy_bird ?b) (/ (v_bird ?b) (block_life ?bl)) ))
-            (assign (vx_bird ?b) (- 0 (* (vx_bird ?b) (/ (v_bird ?b) (block_life ?bl))) ))
-            (assign (block_stability ?bl) (- (block_stability ?bl) (v_bird ?b)) )
-            (assign (block_life ?bl) (- (block_life ?bl) ( * (v_bird ?b) (bird_block_damage ?b ?bl))) )
-            (assign (block_life ?bl) 0 )
-            (assign (v_bird ?b) (/ (v_bird ?b) 2))  ; This is an approximation, because the original values of block stability and life have already been lost.
-            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
-
+            (assign (v_bird ?b) 0)
+            (assign (vx_bird ?b) 0)
+            (assign (vy_bird ?b) 0)
+            (assign (bounce_count ?b) 3)
         )
     )
 
@@ -297,13 +291,10 @@
             (> (block_life ?bl) 0)
             (<= (* (block_life ?bl) (block_life ?bl) ) ( * ( + ( * (vx_bird ?b) (vx_bird ?b) ) (	* (vy_bird ?b) (vy_bird ?b) ) ) ( * (bird_block_damage ?b ?bl) (bird_block_damage ?b ?bl) ) ) ) )
         :effect (and
-            (decrease (vy_bird ?b) (* (/ (block_life ?bl) (bird_block_damage ?b ?bl)) (/ (vy_bird ?b) (v_bird ?b))))
-            (decrease (vx_bird ?b) (* (/ (block_life ?bl) (bird_block_damage ?b ?bl)) (/ (vx_bird ?b) (v_bird ?b))))
-            (assign (block_stability ?bl) 0)
-            (decrease (v_bird ?b) (/ (block_life ?bl) (bird_block_damage ?b ?bl)))
-            (assign (block_life ?bl) 0) ;(- (block_life ?bl) ( * (v_bird ?b) (bird_block_damage ?b ?bl))) )
-            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
-            ;(increase (points_score) 500)
+            (assign (v_bird ?b) 0)
+            (assign (vx_bird ?b) 0)
+            (assign (vy_bird ?b) 0)
+            (assign (bounce_count ?b) 3)
         )
     )
 
@@ -396,17 +387,20 @@
             (= (active_bird) (bird_id ?b))
             (> (v_bird ?b) 0)
 
-            ; Collision margins (1.5 multipliers) - reduced from 2.5/3.0 to allow bird to pass closer to platforms
-            (<= (- (x_bird ?b)  (* (bird_radius ?b) 1.5)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.5)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 1.5)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            (<= (- (y_bird ?b)  (* (bird_radius ?b) 1.5)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            ; Collision margins (1.1 multipliers) - reduced from 2.5/3.0 to allow bird to pass closer to platforms
+            (<= (- (x_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
+            (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
+            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 1.1)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (<= (- (y_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
         )
         :effect (and
-            (assign (v_bird ?b) 0)
-            (assign (vx_bird ?b) 0)
-            (assign (vy_bird ?b) 0)
-            (assign (bounce_count ?b) 3)
+            (when (< (vx_bird ?b) 66.66666000) (assign (y_bird ?b) (+ 11.0238 (+ (* 0.8698 (y_bird ?b)) (* 0.0323 (vy_bird ?b))))))
+            (when (>= (vx_bird ?b) 66.66666000) (assign (y_bird ?b) (+ 0.2508 (+ (* -0.0032 (x_bird ?b)) (* 1.0039 (y_bird ?b))))))
+            (when (< (x_bird ?b) 261.83333000) (assign (vx_bird ?b) (+ -223.5147 (+ (* 1.1133 (x_bird ?b)) (+ (* 0.3382 (y_bird ?b)) (+ (* 0.2572 (vx_bird ?b)) (* 0.5777 (vy_bird ?b))))))))
+            (when (>= (x_bird ?b) 261.83333000) (assign (vx_bird ?b) (+ 861.1225 (+ (* -1.6637 (x_bird ?b)) (+ (* -3.1288 (y_bird ?b)) (+ (* -0.6936 (vx_bird ?b)) (* -0.4198 (vy_bird ?b))))))))
+            (when (< (y_bird ?b) 74.66667000) (assign (vy_bird ?b) (+ -201.3254 (+ (* 0.2614 (x_bird ?b)) (+ (* 1.7529 (y_bird ?b)) (+ (* 0.0995 (vx_bird ?b)) (* -0.7669 (vy_bird ?b))))))))
+            (when (>= (y_bird ?b) 74.66667000) (assign (vy_bird ?b) (+ -83.8680 (+ (* -0.4490 (x_bird ?b)) (+ (* 0.8994 (y_bird ?b)) (+ (* 0.7839 (vx_bird ?b)) (* 0.2721 (vy_bird ?b))))))))
+            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
             (assign (mod) 2)
         )
     )

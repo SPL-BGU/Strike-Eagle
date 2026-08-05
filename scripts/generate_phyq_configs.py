@@ -464,7 +464,7 @@ def generate_local_generalization_config(
     This tests within-task generalization - can the agent solve new instances
     of problem types it has seen during training?
     
-    Order: Templates are kept as batches, but template order is shuffled.
+    Order: Templates are kept as batches in sorted template-number order.
     The agent will interleave train/test per template at runtime.
     
     Args:
@@ -473,7 +473,7 @@ def generate_local_generalization_config(
         train_ratio: Fraction of levels per template for training (default: 0.8)
         dry_run: If True, don't write file
         name_suffix: Suffix for output filename
-        shuffle: If True, shuffle levels (default: True)
+        shuffle: If True, shuffle levels within each template for train/test split (default: True)
         levels_per_template: If specified, limit levels per template to this number
         seed: Random seed for reproducibility
         scenario_filter: Scenario name if filtering was applied
@@ -515,10 +515,8 @@ def generate_local_generalization_config(
         limit_info = f" (using {used}/{available})" if levels_per_template and used < available else ""
         print(f"    Template {template}: {len(train_by_template[template])} train, {len(test_by_template[template])} test{limit_info}")
     
-    # Shuffle template order (but keep levels within each template together)
-    template_order = list(all_levels_by_template.keys())
-    if shuffle:
-        random.shuffle(template_order)
+    # Keep templates in sorted order (train/test batches stay grouped per template)
+    template_order = sorted(all_levels_by_template.keys())
     
     print(f"  Template order: {template_order}")
     
@@ -593,7 +591,7 @@ def generate_broad_generalization_config(
         test_templates: List of template numbers to use for testing
         dry_run: If True, don't write file
         name_suffix: Suffix for output filename
-        shuffle: If True, shuffle levels (default: True)
+        shuffle: If True, shuffle levels within and across templates (default: True)
         levels_per_template: If specified, limit levels per template to this number
         seed: Random seed for reproducibility
         scenario_filter: Scenario name if filtering was applied
