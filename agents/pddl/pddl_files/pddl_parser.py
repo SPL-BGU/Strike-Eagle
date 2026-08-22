@@ -1224,12 +1224,22 @@ def pddl_planned_launch_state(
 
 def pddl_shot_to_release_point(tp, sling, dial_deg: float, force: float):
     """
-    Map PDDL angle+force to a game release point using the domain flight angle
-    (dial - angle_bias) and the standard force→pullback scale — no dial tables.
+    Map PDDL angle+force to a game release point.
+
+    The domain's dial-minus-angle_bias is the *actual flight angle* we want
+    the bird to produce. But the game's sling launches slightly flatter than
+    the requested pull angle (angle-dependent, larger deficit at low angles).
+    Apply BamBirds' ``actual_to_launch`` correction so what we ask the game
+    to fire at compensates for the deficit, and the observed flight matches
+    what the PDDL domain simulates.
+
+    Reference: BamBirds ShotHelper.actualToLaunch (see bambirds_shot_helper).
     """
+    from .bambirds_shot_helper import actual_to_launch
     flight_angle_rad = math.radians(pddl_flight_angle_deg(dial_deg))
+    corrected_launch_rad = actual_to_launch(flight_angle_rad)
     v_portion = pddl_force_to_v_portion(force)
-    return tp.find_release_point_partial_power(sling, flight_angle_rad, v_portion)
+    return tp.find_release_point_partial_power(sling, corrected_launch_rad, v_portion)
 
 
 def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: WorldModel,

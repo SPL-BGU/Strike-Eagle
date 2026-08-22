@@ -1152,12 +1152,40 @@ class PDDLAgent(BaselineAgent):
             force_lr_model=self.force_lr_model,
         )
         pddl_flight_deg = planned_launch["flight_angle_deg"]
+        release_point = pddl_shot_to_release_point(
+            self.tp, sling, exec_angle, planned_force,
+        )
+        # Log the BamBirds correction being applied so we can see the actual
+        # game-request angle vs the domain's flight angle.
+        from agents.pddl.pddl_files.bambirds_shot_helper import actual_to_launch_deg
+        _bam_request_deg = actual_to_launch_deg(pddl_flight_deg)
+        _bam_correction_deg = _bam_request_deg - pddl_flight_deg
+        print(
+            f"[BAMBIRDS] flight_target={pddl_flight_deg:.2f}° "
+            f"→ actualToLaunch → request from game={_bam_request_deg:.2f}° "
+            f"(correction=+{_bam_correction_deg:.2f}°)"
+        )
+        # All three points expressed in PDDL Y-up world frame (H=640, origin
+        # bottom-left) — the same frame extract_real_trajectory / GT segments
+        # already use (see trajectory_parser.py:26 ``640 - entity.Y``). Comparing
+        # across frames was masking a coord-system flip in earlier logs.
+        sim_launch_x = float(planned_launch["launch_x"])
+        sim_launch_y = float(planned_launch["launch_y"])
+        release_x_pddl = float(release_point.X)
+        release_y_pddl = 640.0 - float(release_point.Y)
+        delta_release_vs_sim = math.hypot(
+            release_x_pddl - sim_launch_x, release_y_pddl - sim_launch_y,
+        )
         self._last_shot_diag = {
             "planned_angle": float(angle),
             "exec_angle": float(exec_angle),
             "flight_target": float(pddl_flight_deg),
-            "launch_x": float(planned_launch["launch_x"]),
-            "launch_y": float(planned_launch["launch_y"]),
+            "launch_x": sim_launch_x,
+            "launch_y": sim_launch_y,
+            "release_x_pddl": release_x_pddl,
+            "release_y_pddl": release_y_pddl,
+            "release_x_screen": float(release_point.X),
+            "release_y_screen": float(release_point.Y),
             "expected_speed": float(planned_launch["speed"]),
             "force": float(planned_force),
         }
@@ -1165,18 +1193,21 @@ class PDDLAgent(BaselineAgent):
         print(f"[DEBUG] Step 5: Executing shot — PDDL angle={exec_angle:.1f}° "
               f"(planned {angle:.1f}°), "
               f"flight θ={pddl_flight_deg:.1f}°, "
-              f"launch=({planned_launch['launch_x']:.1f}, {planned_launch['launch_y']:.1f}), "
+              f"launch=({sim_launch_x:.1f}, {sim_launch_y:.1f}), "
               f"force={planned_force:.3f}...")
         print(
             f"[SHOT DIAG PRE] angle={exec_angle:.2f}° (planned {angle:.2f}°)  "
-            f"flight_target={pddl_flight_deg:.2f}°  "
-            f"launch=({planned_launch['launch_x']:.1f}, {planned_launch['launch_y']:.1f})  "
-            f"|v|={planned_launch['speed']:.1f}  force={planned_force:.3f}"
+            f"flight_target={pddl_flight_deg:.2f}°  force={planned_force:.3f}  "
+            f"|v|={planned_launch['speed']:.1f}\n"
+            f"[SHOT DIAG PRE]   [all coords in PDDL Y-up frame, H=640]\n"
+            f"[SHOT DIAG PRE]   sim_launch (pa-twang)=({sim_launch_x:.1f}, {sim_launch_y:.1f})\n"
+            f"[SHOT DIAG PRE]   game_release (SimpleTrajPlanner)=({release_x_pddl:.1f}, {release_y_pddl:.1f})\n"
+            f"[SHOT DIAG PRE]   Δ(release, sim_launch)={delta_release_vs_sim:.1f}px  "
+            f"[intra-PDDL disagreement — Day 2 will unify]\n"
+            f"[SHOT DIAG PRE]   game_release (raw screen, sent to game)="
+            f"({release_point.X}, {release_point.Y})"
         )
-        release_point = pddl_shot_to_release_point(
-            self.tp, sling, exec_angle, planned_force,
-        )
-        print(f"[DEBUG] Release point: ({release_point.X}, {release_point.Y})")
+        print(f"[DEBUG] Release point (screen): ({release_point.X}, {release_point.Y})")
         print("[DEBUG] Calling shoot_and_record_ground_truth()...")
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
         gt_frame_count = len(batch_gt) if batch_gt else 0
@@ -1396,25 +1427,55 @@ class PDDLAgent(BaselineAgent):
                 actual_deg = math.degrees(math.atan2(dy, dx)) if dx != 0.0 else float("nan")
                 actual_x = float(first_segment[0][0])
                 actual_y = float(first_segment[0][1])
+            # All coords now consistently in PDDL Y-up frame (H=640, origin
+            # bottom-left). GT (actual_x/y from estimate_launch_from_trajectory)
+            # is already Y-up per trajectory_parser.py:26.
             angle_err = actual_deg - diag["flight_target"]
-            pos_err = math.hypot(
-                actual_x - diag["launch_x"], actual_y - diag["launch_y"],
+            sim_launch_x = diag["launch_x"]
+            sim_launch_y = diag["launch_y"]
+            rel_x = diag.get("release_x_pddl")
+            rel_y = diag.get("release_y_pddl")
+            pos_err_sim = math.hypot(
+                actual_x - sim_launch_x, actual_y - sim_launch_y,
             )
-            if abs(angle_err) > 3.0 and pos_err > 8.0:
+            pos_err_release = (
+                math.hypot(actual_x - rel_x, actual_y - rel_y)
+                if rel_x is not None else float("nan")
+            )
+            # Intra-PDDL disagreement: sim-launch vs release. Day 2 target.
+            pos_err_release_vs_sim = (
+                math.hypot(rel_x - sim_launch_x, rel_y - sim_launch_y)
+                if rel_x is not None else float("nan")
+            )
+            if abs(angle_err) > 3.0 and pos_err_sim > 8.0:
                 verdict = "BOTH (angle + launch position)"
             elif abs(angle_err) > 3.0:
                 verdict = "ANGLE (actual θ != PDDL flight θ)"
-            elif pos_err > 8.0:
+            elif pos_err_sim > 8.0:
                 verdict = "POSITION (launch point != pa-twang position)"
             else:
                 verdict = "OK (angle and launch position match PDDL)"
             print(
-                f"[SHOT DIAG POST] actual_launch=({actual_x:.1f}, {actual_y:.1f}) "
-                f"θ={actual_deg:.2f}°  "
-                f"pddl_target=({diag['launch_x']:.1f}, {diag['launch_y']:.1f}) "
-                f"θ={diag['flight_target']:.2f}°  "
-                f"Δθ={angle_err:+.2f}°  Δpos={pos_err:.1f}px  force={diag['force']:.3f}"
+                f"[SHOT DIAG POST] [Y-up PDDL frame, H=640]\n"
+                f"[SHOT DIAG POST]   actual_launch=({actual_x:.1f}, {actual_y:.1f}) "
+                f"θ={actual_deg:.2f}°\n"
+                f"[SHOT DIAG POST]   pddl_target  =({sim_launch_x:.1f}, {sim_launch_y:.1f}) "
+                f"θ={diag['flight_target']:.2f}°\n"
+                f"[SHOT DIAG POST]   Δθ={angle_err:+.2f}°  Δpos(sim→actual)={pos_err_sim:.1f}px  "
+                f"force={diag['force']:.3f}"
             )
+            if rel_x is not None:
+                print(
+                    f"[SHOT DIAG POST]   3-way: game_release=({rel_x:.1f}, {rel_y:.1f}) "
+                    f"→ sim_launch=({sim_launch_x:.1f}, {sim_launch_y:.1f}) "
+                    f"→ actual=({actual_x:.1f}, {actual_y:.1f})\n"
+                    f"[SHOT DIAG POST]   Δ(release→sim)={pos_err_release_vs_sim:.1f}px "
+                    f"[intra-PDDL, want→0]  "
+                    f"Δ(release→actual)={pos_err_release:.1f}px "
+                    f"[game snap-back, expected 5-15px]  "
+                    f"Δ(sim→actual)={pos_err_sim:.1f}px "
+                    f"[sim vs GT — the number that matters]"
+                )
             print(f"[SHOT DIAG POST] verdict: {verdict}")
 
         if should_learn:
