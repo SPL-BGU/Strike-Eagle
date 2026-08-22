@@ -1,4 +1,8 @@
-from agents.pddl.pddl_files.pddl_parser import pddl_bird_position_after_pa_twang
+from agents.pddl.pddl_files.pddl_parser import (
+    block_bbox_from_game_object,
+    pddl_bird_position_after_pa_twang,
+    platform_bbox_from_game_object,
+)
 from agents.pddl.pddl_files.world_model.params import Params
 from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from src.computer_vision.GroundTruthReader import GroundTruthReader
@@ -83,9 +87,14 @@ def get_pigs(vision, sling, tp):
     return problem_data
 
 
-def get_blocks(vision, sling, tp):
-    import numpy as np
-    
+# Block materials the PDDL planner should ignore entirely (skipped in get_blocks()).
+# Ignored materials are not written to problem.pddl, so ENHSP treats their volume
+# as empty and the Python forward simulator (which iterates problem_data for
+# `block_*` keys) does not stop the bird on them either.
+IGNORED_BLOCK_TYPES = frozenset({'ice'})
+
+
+def get_blocks(vision, sling, tp, ignored_types=IGNORED_BLOCK_TYPES):
     block_types = vision.find_blocks()
     x = 0
     blocks_data = {
@@ -116,53 +125,35 @@ def get_blocks(vision, sling, tp):
     block_id = 0
     if not block_types:
         return {}
+    ignored_types = frozenset(ignored_types or ())
     for block_type, blocks in block_types.items():
+        if block_type in ignored_types:
+            skipped = len(blocks) if blocks else 0
+            if skipped:
+                print(f"[BLOCK DEBUG] Skipping {skipped} '{block_type}' block(s) (ignored by planner)")
+            continue
         for block in blocks:
-            # Get rotation angle if available
-            angle = getattr(block, 'angle', 0) or 0
-            
-            # Calculate actual dimensions and center from vertices if available
-            if hasattr(block, 'vertices') and block.vertices and len(block.vertices) >= 2:
-                vertices = np.array(block.vertices)
-                x_coords = vertices[:, 0]
-                y_coords = vertices[:, 1]
-                
-                # Calculate actual bounding box from vertices
-                actual_width = np.max(x_coords) - np.min(x_coords)
-                actual_height = np.max(y_coords) - np.min(y_coords)
-                center_x = (np.max(x_coords) + np.min(x_coords)) / 2
-                center_y = (np.max(y_coords) + np.min(y_coords)) / 2
-                
-                # Use actual dimensions from vertices
-                width = actual_width
-                height = actual_height
-                x_center = center_x
-                y_center = center_y
-            else:
-                # Fallback to reported dimensions
-                width = block.width
-                height = block.height
-                x_center = block.X + block.width / 2
-                y_center = block.Y + block.height / 2
-            
-            # DEBUG: Log block info including rotation
+            angle = getattr(block, "angle", 0) or 0
+            bbox = block_bbox_from_game_object(block)
+            width = bbox["block_width"]
+            height = bbox["block_height"]
+
             print(f"\n[BLOCK DEBUG] block_{block_id} ({block_type}):")
             print(f"  Screen X: {block.X}, Y: {block.Y}")
             print(f"  Reported Width: {block.width}, Height: {block.height}")
             print(f"  Angle: {angle}°")
-            if hasattr(block, 'vertices') and block.vertices:
+            if hasattr(block, "vertices") and block.vertices:
                 print(f"  Vertices: {block.vertices}")
-                print(f"  Actual from vertices: W={width:.0f}, H={height:.0f}, Center=({x_center:.0f}, {y_center:.0f})")
-            
+            print(
+                f"  PDDL conservative AABB: W={width:.1f}, H={height:.1f}, "
+                f"center=({bbox['x_block']:.1f}, {bbox['y_block']:.1f})"
+            )
+
             problem_data[f"block_{block_id}"] = {
-                "x_block": x_center,
-                "y_block": 640 - y_center,
-                "block_width": width,
-                "block_height": height,
-                "block_life": blocks_data[block_type]['life'] * blocks_data[block_type]['multi'],
-                "block_mass": width * height * blocks_data[block_type]['mass_coef'],
+                **bbox,
+                "block_life": blocks_data[block_type]["life"] * blocks_data[block_type]["multi"],
+                "block_mass": width * height * blocks_data[block_type]["mass_coef"],
                 "block_stability": 1,
-                # For visualization only (not written to PDDL):
                 "_block_angle": angle,
                 "_block_type": block_type,
             }
@@ -210,26 +201,23 @@ def get_platforms(vision: GroundTruthReader, sling, tp):
     print(f"[PLATFORM DEBUG] Processing {len(all_platforms)} total platform(s)")
     
     for platform in all_platforms:
-        # Get dimensions WITHOUT mutating the original object
-        # The original has width/height swapped, so we swap them back for our use
-        # Use local variables to avoid mutating the cached vision object
-        width = platform.height  # Swap: use height as width
-        height = platform.width  # Swap: use width as height
-        
-        # DEBUG: Log raw screen coordinates
-        print(f"\n[PLATFORM DEBUG] platform_{platform_id} raw screen coords:")
-        print(f"  Screen X: {platform.X}, Y: {platform.Y}")
-        print(f"  Original W/H: {platform.width}/{platform.height} -> Using W/H: {width}/{height}")
-        
-        pddl_y = 640 - platform.Y - height / 2
-        print(f"  PDDL Y = 640 - {platform.Y} - {height}/2 = {pddl_y}")
-        
-        problem_data[f"platform_{platform_id}"] = {
-            "x_platform": platform.X + width / 2,
-            "y_platform": pddl_y,
-            "platform_width": width,
-            "platform_height": height
-        }
+        bbox = platform_bbox_from_game_object(platform)
+        used_vertices = (
+            hasattr(platform, "vertices")
+            and platform.vertices
+            and len(platform.vertices) >= 2
+        )
+
+        print(f"\n[PLATFORM DEBUG] platform_{platform_id} geometry:")
+        print(f"  Source: {'vertices' if used_vertices else 'MBR fallback'}")
+        print(
+            f"  PDDL center=({bbox['x_platform']:.1f}, {bbox['y_platform']:.1f}), "
+            f"size={bbox['platform_width']:.1f}x{bbox['platform_height']:.1f}"
+        )
+        top = bbox["y_platform"] + bbox["platform_height"] / 2
+        print(f"  PDDL top={top:.1f}")
+
+        problem_data[f"platform_{platform_id}"] = bbox
         platform_id += 1
 
     return problem_data

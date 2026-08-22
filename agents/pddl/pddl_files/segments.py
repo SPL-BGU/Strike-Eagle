@@ -74,38 +74,58 @@ def calculate_features(trajectory):
     return features_dict_list
 
 
-def getSegmentsEvents(groundtruth_trajectories:dict,groundtruth_objects:dict):
-    objects_features = dict()
-    for object,traj in groundtruth_trajectories.items():
-        objects_features[object] = calculate_features(np.stack(traj))
-    event_indexes = check_events(objects_features,groundtruth_objects
-                                 , [
-                                     {
-                                         "name": "ground_collision",
-                                         "func": is_ground_collision
-                                     },
-                                     {
-                                         "name": "hit",
-                                         "func": is_hit
-                                     },
-                                     {
-                                         "name": "platform_collision",
-                                         "func": is_platform_collision
-                                     },
-                                     {
-                                         "name": "block_collision",
-                                         "func": is_block_collision
-                                     },
-                                 ]
-                                 )
+EVENT_KIND_SPECS = [
+    {"name": "ground_collision", "func": is_ground_collision},
+    {"name": "hit", "func": is_hit},
+    {"name": "platform_collision", "func": is_platform_collision},
+    {"name": "block_collision", "func": is_block_collision},
+]
 
+
+def _empty_event_indexes():
+    """Empty event-indexes dict with the canonical event-name keys."""
+    return {spec["name"]: [] for spec in EVENT_KIND_SPECS}
+
+
+def getSegmentsEvents(groundtruth_trajectories: dict, groundtruth_objects: dict):
+    """Compute event indexes from per-object trajectories.
+
+    Returns ``(_empty_event_indexes(), {})`` if either argument is empty or
+    every object has an empty trajectory. Science Birds occasionally returns
+    zero ground-truth frames for a shot (see run_20260814_082859 crash at
+    train-21: SB reported ``got 0 ground truth frames`` and ``check_events``
+    called ``max()`` on an empty generator, which killed the agent thread).
+    Callers already have a placeholder-trajectory fallback for the
+    "no active bird" case (see ``pddl_agent.solve`` line ~1156); this guard
+    just lets that fallback take over instead of crashing.
+    """
+    if not groundtruth_trajectories:
+        return _empty_event_indexes(), {}
+
+    objects_features = dict()
+    for object_name, traj in groundtruth_trajectories.items():
+        if traj is None or len(traj) == 0:
+            continue
+        objects_features[object_name] = calculate_features(np.stack(traj))
+
+    if not objects_features:
+        return _empty_event_indexes(), {}
+
+    event_indexes = check_events(objects_features, groundtruth_objects, EVENT_KIND_SPECS)
     return event_indexes, objects_features
 
 
-def check_events(objects_features,groundtruth_objects, events: list):
+def check_events(objects_features, groundtruth_objects, events: list):
     result = {event["name"]: [] for event in events}
 
-    max_time = max(len(traj) for traj in objects_features.values())
+    if not objects_features:
+        return result
+
+    non_empty_lens = [len(traj) for traj in objects_features.values() if traj]
+    if not non_empty_lens:
+        return result
+
+    max_time = max(non_empty_lens)
 
     # Step 2: Stretch the trajectories to match the max length
     for obj, traj in objects_features.items():

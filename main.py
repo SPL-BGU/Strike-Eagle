@@ -5,6 +5,7 @@ from agents import BirdsInBoots
 from agents.quatzel.quatzel_agent import QuatzelAgent
 from agents.owler.owler_agent import OwlerAgent
 from agents.pddl.pddl_agent import PDDLAgent
+from src.utils.tee_logger import start_tee_logging
 
 import argparse
 import json
@@ -33,7 +34,9 @@ class AgentThread(threading.Thread):
                  disable_forward_sim: bool = False,
                  prefer_sim_plan: bool = False,
                  plan_pick_fast: bool = True,
-                 plan_pick_timeout_sec: float = 60.0):
+                 plan_pick_timeout_sec: float = 60.0,
+                 sim_gate_test_only: bool = True,
+                 max_train_attempts: int = 5):
         """
         Constructor function
         Parameters
@@ -93,6 +96,8 @@ class AgentThread(threading.Thread):
         self.prefer_sim_plan = prefer_sim_plan
         self.plan_pick_fast = plan_pick_fast
         self.plan_pick_timeout_sec = plan_pick_timeout_sec
+        self.sim_gate_test_only = sim_gate_test_only
+        self.max_train_attempts = max_train_attempts
         threading.Thread.__init__(self)
 
     def run(self):
@@ -136,6 +141,8 @@ class AgentThread(threading.Thread):
             prefer_sim_plan=self.prefer_sim_plan,
             plan_pick_fast=self.plan_pick_fast,
             plan_pick_timeout_sec=self.plan_pick_timeout_sec,
+            sim_gate_test_only=self.sim_gate_test_only,
+            max_train_attempts=self.max_train_attempts,
         )
         agent.run()
 
@@ -162,7 +169,9 @@ def main(agent_configs,
          disable_forward_sim: bool = False,
          prefer_sim_plan: bool = False,
          plan_pick_fast: bool = True,
-         plan_pick_timeout_sec: float = 60.0):
+         plan_pick_timeout_sec: float = 60.0,
+         sim_gate_test_only: bool = True,
+         max_train_attempts: int = 5):
     """
     Main function to start the agent.
     
@@ -226,6 +235,8 @@ def main(agent_configs,
             prefer_sim_plan=prefer_sim_plan,
             plan_pick_fast=plan_pick_fast,
             plan_pick_timeout_sec=plan_pick_timeout_sec,
+            sim_gate_test_only=sim_gate_test_only,
+            max_train_attempts=max_train_attempts,
         )
         agent.start()
         time.sleep(5)
@@ -253,6 +264,19 @@ def str2bool(v):
 
 
 if __name__ == "__main__":
+
+    # Mirror every print (and stderr) to a timestamped log file under ./log/.
+    # Installed FIRST so subsequent startup prints are captured too. Override
+    # location / disable via --log-dir, --log-file, or --no-log.
+    _pre_parser = argparse.ArgumentParser(add_help=False)
+    _pre_parser.add_argument("--log-dir", default="log")
+    _pre_parser.add_argument("--log-file", default=None,
+                             help="Explicit log filename inside --log-dir (default: run_<timestamp>.log)")
+    _pre_parser.add_argument("--no-log", action="store_true",
+                             help="Do not mirror stdout/stderr to a log file")
+    _pre_args, _ = _pre_parser.parse_known_args()
+    if not _pre_args.no_log:
+        start_tee_logging(log_dir=_pre_args.log_dir, filename=_pre_args.log_file)
 
     default_agent_host = "127.0.0.1"
     default_agent_port = 2004
@@ -306,6 +330,15 @@ Examples:
   python main.py --generalization local --scenario single_force --levels-per-template 30 --no-config-metadata
 """
     )
+
+    # Logging (parsed once above too; declared here so --help lists them and
+    # argparse doesn't complain about unknown args)
+    parser.add_argument("--log-dir", default="log",
+                        help="Directory for the mirrored stdout/stderr log file (default: log/)")
+    parser.add_argument("--log-file", default=None,
+                        help="Explicit log filename inside --log-dir (default: run_<timestamp>.log)")
+    parser.add_argument("--no-log", action="store_true",
+                        help="Do not mirror stdout/stderr to a log file")
 
     # Connection settings
     parser.add_argument("-s", "--save_logs", type=str2bool, nargs='?',
@@ -378,7 +411,7 @@ Examples:
     parser.add_argument("--enable-sim-gate", dest="planner_only", action="store_false",
                         help="Run sim search when ENHSP fails; sim gate may reject bad plans")
     parser.add_argument("--planner-only", dest="planner_only", action="store_true",
-                        help="(default) Use ENHSP plans as-is; fallback grid only on planner failure")
+                        help="(default) Use ENHSP plans as-is; ballistic fallback only if planner fails")
     parser.set_defaults(disable_forward_sim=False)
     parser.add_argument("--enable-forward-sim", dest="disable_forward_sim", action="store_false",
                         help="(default) Forward sim for validation, fallback grid, and plan metadata")
@@ -402,7 +435,19 @@ Examples:
         metavar="SEC",
         help="Wall-clock cap for plan-pick forward sim search only (default: 60; 0 = no cap; ENHSP unchanged)",
     )
-    
+    parser.set_defaults(sim_gate_test_only=True)
+    parser.add_argument("--sim-gate-test-only", dest="sim_gate_test_only", action="store_true",
+                        help="(default) With --planner-only: TRAIN and TEST both keep ENHSP plan; "
+                             "sim gate only rejects the narrow 'platform-hit-short' failure "
+                             "(bird stops in front of pig) via sim search replacement")
+    parser.add_argument("--no-sim-gate-test-only", dest="sim_gate_test_only", action="store_false",
+                        help="Legacy: enable the broad sim gate on TEST levels "
+                             "(rejects any unacceptable plan and runs sim_search/fallback)")
+    parser.add_argument("--max-train-attempts", type=int, default=5, metavar="N",
+                        help="Cap on retries per TRAIN level before it is ABANDONED "
+                             "(default: 5; was 8 — reduced to leave SB's 12000s time "
+                             "budget for TEST levels)")
+
     args = parser.parse_args()
     
     if args.prefer_sim_plan:
@@ -444,4 +489,6 @@ Examples:
         prefer_sim_plan=args.prefer_sim_plan,
         plan_pick_fast=args.plan_pick_fast,
         plan_pick_timeout_sec=args.plan_pick_timeout,
+        sim_gate_test_only=args.sim_gate_test_only,
+        max_train_attempts=args.max_train_attempts,
     )

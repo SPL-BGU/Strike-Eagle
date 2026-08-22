@@ -4,36 +4,26 @@ from src.computer_vision.GroundTruthReader import GroundTruthReader
 import numpy as np
 from src.computer_vision.game_object import GameObject
 import math
+from agents.pddl.pddl_files.pddl_parser import platform_bbox_from_game_object
 
 def filter_from_entity(entity: GameObject, entity_type: str = None):
     """
     Extract location and dimensions from a game entity.
     
-    For platforms (hills), uses vertices to calculate actual rotated bounding box
-    and center position. For other entities (birds, pigs, blocks), uses X, Y as center.
+    For platforms (hills), uses polygon vertices via platform_bbox_from_game_object.
+    For other entities (birds, pigs, blocks), uses X, Y as center.
     """
-    # Check if this is a platform/hill that might be rotated
     is_platform = entity_type and "hill" in entity_type.lower()
     
-    if is_platform and hasattr(entity, 'vertices') and entity.vertices and len(entity.vertices) >= 2:
-        # For platforms: calculate actual bounding box from vertices (handles rotation)
-        vertices = np.array(entity.vertices)
-        x_coords = vertices[:, 0]
-        y_coords = vertices[:, 1]
-        
-        # Actual bounding box dimensions
-        actual_width = np.max(x_coords) - np.min(x_coords)
-        actual_height = np.max(y_coords) - np.min(y_coords)
-        dimension = [actual_width, actual_height]
-        
-        # Calculate center from bounding box (X, Y is top-left for platforms)
-        center_x = (np.max(x_coords) + np.min(x_coords)) / 2
-        center_y = (np.max(y_coords) + np.min(y_coords)) / 2
-        location = np.array([center_x, 640 - center_y])  # invert y axis
-    else:
-        # For birds, pigs, blocks: X, Y is already the center
-        dimension = [entity.width, entity.height]
-        location = np.array([entity.X, 640 - entity.Y])  # invert y axis
+    if is_platform:
+        bbox = platform_bbox_from_game_object(entity)
+        return {
+            "location": np.array([bbox["x_platform"], bbox["y_platform"]]),
+            "dimension": [bbox["platform_width"], bbox["platform_height"]],
+        }
+
+    dimension = [entity.width, entity.height]
+    location = np.array([entity.X, 640 - entity.Y])  # invert y axis
     
     return {
         "location": location,

@@ -28,6 +28,76 @@ from xml.etree import ElementTree as ET
 from enum import Enum
 
 
+def parse_sciencebirds_config(config_path) -> ET.Element:
+    """
+    Parse a Science Birds evaluation config XML.
+
+    Handles UTF-16 configs (with BOM) and UTF-8 files that still declare utf-16
+    after being edited in a text editor.
+
+    Side effect: if the file is UTF-16 content **without** a BOM, this
+    function rewrites it in place with a UTF-16 LE BOM before returning.
+    Python's XML parser doesn't need the BOM, but Unity's XmlReader
+    (LoadLevelSchema.readTestConfig) does — without it Unity reads the file
+    as UTF-8, hits the first \\x00 byte, and hangs the whole eval loop at
+    the initial configure handshake (see run_20260821_220350 for a live
+    reproduction). Auto-repairing on load is by far the cheapest way to keep
+    downstream tooling from silently wedging the game server.
+    """
+    path = Path(config_path)
+    raw = path.read_bytes()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        return ET.fromstring(raw)
+
+    # No BOM. Detect BOM-less UTF-16 and heal it in place before Unity sees it.
+    head = raw[:64]
+    if b"\x00" in head:
+        for enc in ("utf-16-le", "utf-16-be"):
+            try:
+                text_utf16 = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                text_utf16 = None
+        if text_utf16 is not None:
+            try:
+                with open(path, "w", encoding="utf-16", newline="") as f:
+                    f.write(text_utf16)
+                new_head = path.read_bytes()[:2]
+                if new_head == b"\xff\xfe":
+                    print(
+                        f"[CONFIG REPAIR] Re-added UTF-16 LE BOM to {path.name} "
+                        f"(Unity's XmlReader requires it; without it the game "
+                        f"client hangs at 'Sending configure request'). "
+                        f"Root cause is usually a text-mode edit of the "
+                        f"generated config; regenerate with "
+                        f"scripts/generate_phyq_configs.py or edit only with "
+                        f"UTF-16-aware tooling."
+                    )
+                    return ET.fromstring(path.read_bytes())
+            except OSError as exc:
+                print(f"[CONFIG REPAIR] Warning: could not rewrite {path}: {exc}")
+
+    text = None
+    for encoding in ("utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+
+    # Text editors often save these configs as UTF-8 while leaving utf-16 in the header.
+    text = re.sub(
+        r'(<\?xml[^?]*encoding=")[^"]*(")',
+        r"\1utf-8\2",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return ET.fromstring(text.encode("utf-8"))
+
+
 class GeneralizationType(Enum):
     """Type of generalization evaluation."""
     LOCAL = "local"      # 80/20 split within each template
@@ -204,8 +274,7 @@ class PhyQGeneralizationProtocol:
     def _load_levels_from_config(self) -> None:
         """Load level paths from config XML file, preserving train/test assignment from XML."""
         try:
-            tree = ET.parse(self.config_path)
-            root = tree.getroot()
+            root = parse_sciencebirds_config(self.config_path)
             
             # Track levels from config with their mode (training/testing)
             self._config_train_levels: List[str] = []

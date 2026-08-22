@@ -480,12 +480,12 @@ def parse_config_level_paths(config_path: str) -> List[str]:
         List of level paths in order (1-indexed when used with current_level)
     """
     from xml.etree import ElementTree as ET
+    from agents.pddl.phyq_generalization import parse_sciencebirds_config
     
     level_paths = []
     
     try:
-        tree = ET.parse(config_path)
-        root = tree.getroot()
+        root = parse_sciencebirds_config(config_path)
         
         for game_level in root.iter('game_levels'):
             level_path = game_level.get('level_path')

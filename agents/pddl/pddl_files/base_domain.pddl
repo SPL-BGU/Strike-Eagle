@@ -295,7 +295,6 @@
         )
     )
 
-
     (:event remove_unsupported_block
         :parameters (?bl_bottom - block ?bl_top - block)
         :precondition (and
@@ -384,11 +383,16 @@
             (= (active_bird) (bird_id ?b))
             (> (v_bird ?b) 0)
 
-            ; Collision margins (1.1 multipliers) - reduced from 2.5/3.0 to allow bird to pass closer to platforms
+            ; x-checks keep the 1.1× margin (grazing the side of a platform is
+            ; legitimately hard in the game). y-checks use the true bird radius
+            ; so overhung-pig layouts (pig sitting on a platform with a roof
+            ; platform above) have a real navigable slot — the previous 1.1× y
+            ; margin made template-4 single_force levels systematically report
+            ; "Problem unsolvable" in ENHSP (see _unsolvable_snapshots).
             (<= (- (x_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
             (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 1.1)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            (<= (- (y_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
         )
         :effect (and
             {SE-collision-platform-effect}

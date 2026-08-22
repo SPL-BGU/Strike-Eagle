@@ -118,26 +118,46 @@ def prettify_xml(elem: ET.Element) -> str:
 def create_config_xml(
     train_levels: List[str],
     test_levels: List[str],
-    time_limit: int = 12000,
-    attempt_limit: int = 1,
-    interaction_limit: int = 100,
+    time_limit: int = 20000,
+    attempt_limit: int = 5,
+    interaction_limit: int = 20000,
     checkpoint_time_limit: int = 200,
     checkpoint_interaction_limit: int = 200,
     interleaved: bool = True
 ) -> ET.Element:
     """
     Create a Science Birds config.xml structure.
-    
+
     Args:
         train_levels: List of training level paths
         test_levels: List of test level paths
-        time_limit: Time limit in seconds
-        attempt_limit: Maximum attempts per level
+        time_limit: Time limit in seconds for the entire game_level_set.
+            Empirically a full PhyQ single_force train pass of 24 levels
+            (5 attempts each, ~30 s per attempt including reload + shot +
+            planner + LOST screen) needs roughly 24 * 5 * 30 = 3600 s of
+            active play in the best case, but planner-heavy shots and
+            per-level bookkeeping push the real budget to ~700 s/level.
+            run_20260821_105543 (see log) hit the previous 12000 s cap at
+            level 17 of 24 (EVALUATION_TERMINATED with 8/16 wins). 20000 s
+            (~5.5 h) fits 24 levels with headroom while still bounding
+            runaway configurations.
+        attempt_limit: Maximum attempts per level. Must be >= the PDDL agent's
+            ``max_train_attempts`` (default 5) or LOST-retry no longer works
+            (see ``agents/pddl/pddl_agent.py`` line ~138). Any headroom above
+            ``max_train_attempts`` is wasted burn-cycles: for every finalized
+            level SB still requires ``attempt_limit - actual_attempts`` extra
+            attempts before advancing, and each of those costs ~20-30 s of
+            real game time (level reload + shot animation + LOST screen).
+            run_20260814_164155 with ``attempt_limit=8`` and typical
+            ``actual_attempts=1.85`` burned ~25 min on wasted cycles and hit
+            the 200-min SB budget before reaching any test level. Setting
+            this to exactly ``max_train_attempts`` (5) removes that overhead
+            entirely while still allowing the full retry-diversify schedule.
         interaction_limit: Total interaction limit per level
         checkpoint_time_limit: Checkpoint time limit
         checkpoint_interaction_limit: Checkpoint interaction limit
         interleaved: If True, creates single trial with all levels in order
-    
+
     Returns:
         ElementTree Element for the config
     """
@@ -227,14 +247,103 @@ def create_config_xml(
     return evaluation
 
 
+UTF16_LE_BOM = b"\xff\xfe"
+UTF16_BE_BOM = b"\xfe\xff"
+
+
+def ensure_utf16_bom(path: Path) -> str:
+    """Ensure ``path`` is a UTF-16 LE XML file with the BOM Unity requires.
+
+    Returns one of: ``"ok"`` (already had a BOM), ``"repaired"`` (was UTF-16
+    without a BOM and has been rewritten with one), ``"not_utf16"`` (looked
+    like UTF-8/ASCII, left alone), ``"missing"`` (file does not exist).
+
+    Unity's ``LoadLevelSchema.readTestConfig`` uses .NET's ``XmlReader`` which
+    detects UTF-16 only via BOM. A BOM-less UTF-16 file is read as UTF-8, the
+    reader hits the first ``\\x00`` byte, and throws::
+
+        XmlException: Name cannot begin with the '.' character,
+        hexadecimal value 0x00. Line 1, position 2.
+
+    From the Python agent side this manifests as a permanent hang on the
+    first ``configure`` request because the Unity client never finishes level
+    schema init (see run_20260821_220350 / run_20260821_223750).
+
+    Any text-mode edit of the config after ``write_config`` will strip the
+    BOM (that includes VS Code with the wrong "save with encoding" setting,
+    ``StrReplace``-style tooling, and PowerShell ``>`` redirection). This
+    helper is the cheap recovery path.
+    """
+    if not path.exists():
+        return "missing"
+    raw = path.read_bytes()
+    if raw.startswith(UTF16_LE_BOM) or raw.startswith(UTF16_BE_BOM):
+        return "ok"
+    # Heuristic: real UTF-16 content will have interleaved \x00 bytes in the
+    # ASCII portion of the header (e.g. "<?xml" -> "<\x00?\x00x\x00m\x00l\x00").
+    # UTF-8 configs won't. Only auto-repair when we're confident.
+    head = raw[:64]
+    if b"\x00" not in head:
+        return "not_utf16"
+    try:
+        text = raw.decode("utf-16-le")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("utf-16-be")
+        except UnicodeDecodeError:
+            return "not_utf16"
+    # Re-emit as UTF-16 LE with BOM, preserving textual content.
+    encoding = "utf-16"  # Python writes LE + BOM for this codec.
+    with open(path, "w", encoding=encoding, newline="") as f:
+        f.write(text)
+    # Verify.
+    new_head = path.read_bytes()[:2]
+    if new_head != UTF16_LE_BOM:
+        raise RuntimeError(
+            f"ensure_utf16_bom: failed to write BOM to {path} "
+            f"(got {new_head!r})"
+        )
+    return "repaired"
+
+
+def repair_configs(config_dir: Path, pattern: str = "config_phyq_*.xml") -> int:
+    """Scan ``config_dir`` and re-add missing UTF-16 BOMs to Phy-Q configs.
+
+    Returns the number of files repaired.
+    """
+    if not config_dir.exists():
+        print(f"[REPAIR] Config directory not found: {config_dir}")
+        return 0
+    repaired = 0
+    for xml_path in sorted(config_dir.glob(pattern)):
+        status = ensure_utf16_bom(xml_path)
+        if status == "repaired":
+            print(f"[REPAIR] Re-added UTF-16 BOM to {xml_path.name}")
+            repaired += 1
+        elif status == "not_utf16":
+            print(f"[REPAIR] Skipped {xml_path.name} (not UTF-16)")
+        # "ok" -> silent
+    if repaired == 0:
+        print(f"[REPAIR] All {len(list(config_dir.glob(pattern)))} configs already have a BOM.")
+    else:
+        print(f"[REPAIR] Repaired {repaired} config file(s).")
+    return repaired
+
+
 def write_config(config: ET.Element, output_path: Path, dry_run: bool = False) -> None:
-    """Write config XML to file."""
+    """Write config XML to file (UTF-16 LE with BOM for Science Birds / Unity)."""
     xml_string = prettify_xml(config)
     xml_string = xml_string.replace('<?xml version="1.0" ?>\n', '<?xml version="1.0" encoding="utf-16"?>\n')
     
     if not dry_run:
         with open(output_path, 'w', encoding='utf-16') as f:
             f.write(xml_string)
+        bom = output_path.read_bytes()[:2]
+        if bom not in (b"\xff\xfe", b"\xfe\xff"):
+            raise RuntimeError(
+                f"{output_path.name} missing UTF-16 BOM after write (got {bom!r}); "
+                "Science Birds will fail to load the config."
+            )
         print(f"Written: {output_path}")
     else:
         print(f"Would write: {output_path}")
@@ -447,6 +556,76 @@ def extract_template_from_path(path: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def level_identity_key(path: str) -> tuple:
+    """Stable identity for a level file, ignoring train/ vs test/ folder."""
+    import re
+    path_str = path.replace("\\", "/")
+    scenario_match = re.search(r'scenario_\d+_(\w+)', path_str)
+    scenario = scenario_match.group(1) if scenario_match else path_str
+    template = extract_template_from_path(path)
+    level_id_match = re.search(r'_(\d{5})\.xml', path_str)
+    level_id = level_id_match.group(1) if level_id_match else path_str
+    return scenario, template, level_id
+
+
+def dedupe_level_paths(paths: List[str], prefer_train: bool = True) -> List[str]:
+    """
+    Keep one filesystem path per logical level.
+
+    Phy-Q ships the same level IDs under both ``train/`` and ``test/`` folders.
+    Concatenating both lists without deduping inflates the pool (e.g. template
+    t02: 100 paths for 80 unique levels), so ``levels_per_template=30`` can
+    waste slots on duplicates and shuffle order becomes seed-sensitive noise.
+    """
+    chosen: Dict[tuple, str] = {}
+    for path in paths:
+        key = level_identity_key(path)
+        if key not in chosen:
+            chosen[key] = path
+            continue
+        existing = chosen[key]
+        if prefer_train and "/train/" in path.replace("\\", "/") and "/test/" in existing.replace("\\", "/"):
+            chosen[key] = path
+    return [chosen[k] for k in sorted(chosen.keys())]
+
+
+def normalize_level_path_to_train(path: str) -> str:
+    """Prefer ``train/`` folder path when the same level ID exists in both folders."""
+    path_str = path.replace("\\", "/")
+    if "/train/" in path_str:
+        return path
+    if "/test/" not in path_str:
+        return path
+    return path_str.replace("/test/", "/train/")
+
+
+def legacy_template_level_pool(
+    levels: Dict[str, Dict[str, List[str]]],
+    scenario_name: str,
+    template: int,
+    levels_per_template: int,
+    seed: int,
+) -> List[str]:
+    """
+    Build the pre-fix local pool: concat train+test paths (with duplicates),
+    shuffle with seed, take the first N.
+
+    Keeps benchmark continuity for ``--seed 123 --templates 2 --levels-per-template 30``
+    (test holdout: 00070, 00075, 00055, 00016, 00047, 00036). New runs should
+    prefer dedupe_level_paths unless reproducing that pinned split.
+    """
+    import re
+    paths = [
+        p for p in levels[scenario_name]["train"] + levels[scenario_name]["test"]
+        if extract_template_from_path(p) == template
+    ]
+    rng = random.Random(seed)
+    shuffled = paths.copy()
+    rng.shuffle(shuffled)
+    selected = shuffled[:levels_per_template]
+    return [normalize_level_path_to_train(p) for p in selected]
+
+
 def generate_local_generalization_config(
     levels: Dict[str, Dict[str, List[str]]],
     output_dir: Path,
@@ -456,7 +635,8 @@ def generate_local_generalization_config(
     shuffle: bool = True,
     levels_per_template: Optional[int] = None,
     seed: int = 42,
-    scenario_filter: Optional[str] = None
+    scenario_filter: Optional[str] = None,
+    use_legacy_pool: bool = False,
 ) -> None:
     """
     Generate config for LOCAL generalization: 80/20 split within each template.
@@ -477,12 +657,16 @@ def generate_local_generalization_config(
         levels_per_template: If specified, limit levels per template to this number
         seed: Random seed for reproducibility
         scenario_filter: Scenario name if filtering was applied
+        use_legacy_pool: If True, use pre-fix duplicate pool shuffle (benchmark split)
     """
-    # Combine all levels from train and test folders
+    # Combine levels from both folders, then dedupe by level identity.
     all_levels_by_template: Dict[int, List[str]] = {}
     
     for scenario_name in sorted(levels.keys()):
-        for level_path in levels[scenario_name]["train"] + levels[scenario_name]["test"]:
+        scenario_paths = dedupe_level_paths(
+            levels[scenario_name]["train"] + levels[scenario_name]["test"]
+        )
+        for level_path in scenario_paths:
             template = extract_template_from_path(level_path)
             if template not in all_levels_by_template:
                 all_levels_by_template[template] = []
@@ -496,24 +680,44 @@ def generate_local_generalization_config(
     print(f"  Local Generalization Split ({train_ratio:.0%} train / {1-train_ratio:.0%} test{limit_str}):")
     
     for template in sorted(all_levels_by_template.keys()):
-        template_levels = all_levels_by_template[template].copy()
-        
-        # Shuffle within template to randomly select train/test
-        if shuffle:
-            random.shuffle(template_levels)
-        
-        # Apply levels_per_template limit if specified
-        if levels_per_template and len(template_levels) > levels_per_template:
-            template_levels = template_levels[:levels_per_template]
+        if use_legacy_pool and levels_per_template:
+            scenario_name = next(
+                sn for sn, data in levels.items()
+                if any(extract_template_from_path(p) == template
+                       for p in data["train"] + data["test"])
+            )
+            template_levels = legacy_template_level_pool(
+                levels, scenario_name, template, levels_per_template, seed,
+            )
+            print(
+                f"    Template {template}: legacy pool ({len(template_levels)} levels, "
+                f"seed={seed}) — benchmark-compatible split"
+            )
+        else:
+            template_levels = sorted(all_levels_by_template[template], key=level_identity_key)
+            if shuffle:
+                random.shuffle(template_levels)
+            if levels_per_template and len(template_levels) > levels_per_template:
+                template_levels = template_levels[:levels_per_template]
         
         split_idx = int(len(template_levels) * train_ratio)
         train_by_template[template] = template_levels[:split_idx]
         test_by_template[template] = template_levels[split_idx:]
         
+        if use_legacy_pool:
+            continue
+
         available = len(all_levels_by_template[template])
         used = len(template_levels)
         limit_info = f" (using {used}/{available})" if levels_per_template and used < available else ""
         print(f"    Template {template}: {len(train_by_template[template])} train, {len(test_by_template[template])} test{limit_info}")
+    
+    if use_legacy_pool:
+        for template in sorted(train_by_template.keys()):
+            print(
+                f"    Template {template}: {len(train_by_template[template])} train, "
+                f"{len(test_by_template[template])} test (legacy pool)"
+            )
     
     # Keep templates in sorted order (train/test batches stay grouped per template)
     template_order = sorted(all_levels_by_template.keys())
@@ -596,11 +800,14 @@ def generate_broad_generalization_config(
         seed: Random seed for reproducibility
         scenario_filter: Scenario name if filtering was applied
     """
-    # Combine all levels from train and test folders
+    # Combine levels from both folders, then dedupe by level identity.
     all_levels_by_template: Dict[int, List[str]] = {}
     
     for scenario_name in sorted(levels.keys()):
-        for level_path in levels[scenario_name]["train"] + levels[scenario_name]["test"]:
+        scenario_paths = dedupe_level_paths(
+            levels[scenario_name]["train"] + levels[scenario_name]["test"]
+        )
+        for level_path in scenario_paths:
             template = extract_template_from_path(level_path)
             if template not in all_levels_by_template:
                 all_levels_by_template[template] = []
@@ -768,6 +975,12 @@ Examples:
         default=42,
         help="Random seed for reproducible shuffling (default: 42)"
     )
+    parser.add_argument(
+        "--legacy-split",
+        action="store_true",
+        help="Local gen only: use pre-fix duplicate pool shuffle (seed 123 + template 2 "
+             "reproduces benchmark test holdout 00070/00075/00055/00016/00047/00036)"
+    )
     
     # Generalization protocol options
     parser.add_argument(
@@ -812,8 +1025,23 @@ Examples:
         help="Only include specific template numbers (e.g., --templates 1 2 3). "
              "If not specified, uses all available templates."
     )
-    
+    parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Scan existing config_phyq_*.xml files in the output directory "
+             "and re-add the UTF-16 LE BOM to any that have lost it. Runs "
+             "instead of generation. Use this if Science Birds / Unity hangs "
+             "at the 'Sending configure request' step (see docstring of "
+             "ensure_utf16_bom)."
+    )
+
     args = parser.parse_args()
+
+    if args.repair:
+        target_dir = Path(args.output_dir) if args.output_dir else get_config_dest_dir()
+        print(f"[REPAIR] Scanning {target_dir}")
+        repair_configs(target_dir)
+        return 0
     
     # Handle --scenario as single item for --scenarios
     if args.scenario and not args.scenarios:
@@ -927,6 +1155,13 @@ Examples:
     # If generalization mode is specified, only generate that config
     if args.generalization:
         if args.generalization == "local":
+            if args.levels_per_template and not args.templates:
+                print(
+                    "WARNING: --levels-per-template without --templates includes ALL "
+                    "templates in the scenario (e.g. t01,t02,t04,...). For the "
+                    "single_force 30-level benchmark use: "
+                    "--templates 2 --levels-per-template 30 --seed 123 --legacy-split"
+                )
             print("Generating LOCAL generalization config...")
             generate_local_generalization_config(
                 levels, output_dir, 
@@ -936,7 +1171,8 @@ Examples:
                 shuffle=True,
                 levels_per_template=args.levels_per_template,
                 seed=seed,
-                scenario_filter=scenario_filter
+                scenario_filter=scenario_filter,
+                use_legacy_pool=args.legacy_split,
             )
         else:  # broad
             print("Generating BROAD generalization config...")

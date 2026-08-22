@@ -80,9 +80,29 @@ PLATFORM_DEFAULT_SPEED_RATIO = 0.50
 PLATFORM_DEFAULT_VY_RATIO = 0.50
 PLATFORM_SURFACE_RADIUS_FACTOR = 0.35
 PLATFORM_SWEEP_SUBSTEPS = 5
-PLATFORM_MARGIN_MULT = 1.1
+# Bird-radius multiplier for platform-collision detection in the forward sim.
+# Was 1.1 (10% safety inflation), but that caused "coincident-contact" false
+# negatives: when a pig sits directly on top of a platform, the inflated
+# margin makes platform contact fire on the same integration step the bird
+# reaches the pig, and — under the pre-fix collision ordering — the platform
+# stop terminated the sim before pig-kill was checked, so ENHSP plans that
+# ballistically kill the pig were rejected by the sim. Setting to 1.0 matches
+# the domain's collision_platform predicate exactly (bird tangent to platform
+# surface). Combined with pig-kill being checked BEFORE platform in the loop
+# (see simulate_pddl_shot_plan), a same-step pig contact wins.
+PLATFORM_MARGIN_MULT = 1.0
 # Measured launch angle often deviates from PDDL flight angle; validate plans at ±slack.
 ANGLE_EXECUTION_SLACK_DEG = 4.0
+# Tighter slack when constraining ENHSP dial search to slingshot-executable angles.
+PLANNER_FLIGHT_SLACK_DEG = 2.0
+# Extra inflation on block AABBs so ENHSP / forward sim clear rotated obstacles conservatively.
+BLOCK_PLANNING_MARGIN_PX = 3.0
+# Sheltering blocks (stacked above/over the pig): use tight AABB so ENHSP can thread arcs.
+BLOCK_SHELTER_MARGIN_PX = 0.0
+BLOCK_SHELTER_X_PAD_PX = 8.0
+BLOCK_SHELTER_LIFE_FACTOR = 0.45
+BLOCK_SHELTER_DAMAGE = 0.12
+DEFAULT_BIRD_BLOCK_DAMAGE = 0.01
 # Platform/gap levels: wider slack band for nonlinear slingshot + overshoot-up misses.
 PLATFORM_EXECUTION_SLACK_DEG = 6.0
 # When plan clears platforms (gap/over-flight), nudge dial down so game overshoot-up misses top shelf.
@@ -124,8 +144,12 @@ def _build_platform_slide_placeholder() -> str:
         f"(assign (bounce_count ?b) (+ (bounce_count ?b) 1))\n            "
         f"(assign (mod) 2)"
     )
-# segments.calculate_features uses y_pddl - 360 (same frame as ground collision learning)
-_LEARNING_Y_OFFSET = 360.0
+# Terrain surface in PDDL coords (640 - screen_y); matches segments.GROUND_LEVEL and
+# event is_ground_collision (relative y = pddl_y - PLAYFIELD_FLOOR_Y).
+PLAYFIELD_FLOOR_Y = 360.0
+# Center-based slack above floor; matches event_conditions.is_ground_collision epsilon.
+GROUND_CONTACT_CENTER_SLACK = 3.0
+_LEARNING_Y_OFFSET = PLAYFIELD_FLOOR_Y
 
 
 def format_affine_assign_rhs(coefs, intercept, bird_var="?b", threshold=1e-8, precision=4):
@@ -306,30 +330,248 @@ def _platform_bounds(plat: dict):
     )
 
 
+def _rotated_aabb_extents(width: float, height: float, angle_deg: float):
+    """Full width/height of the axis-aligned bbox of a rotated rectangle."""
+    import math
+    rad = math.radians(float(angle_deg))
+    c, s = abs(math.cos(rad)), abs(math.sin(rad))
+    w, h = float(width), float(height)
+    return w * c + h * s, w * s + h * c
+
+
+def block_bbox_from_game_object(block, margin_px: float = BLOCK_PLANNING_MARGIN_PX) -> dict:
+    """
+    Conservative block center and AABB in PDDL coords for ENHSP / forward sim.
+
+    Uses polygon vertices when available. When the block is rotated but only MBR
+    width/height are known, expands to the true rotated AABB. Adds margin_px on
+    each side so trajectories with small execution error still register block contact.
+    """
+    angle = float(getattr(block, "angle", 0) or 0)
+    margin = max(0.0, float(margin_px))
+
+    if hasattr(block, "vertices") and block.vertices and len(block.vertices) >= 2:
+        vertices = np.asarray(block.vertices, dtype=float)
+        x_coords = vertices[:, 0]
+        y_coords = vertices[:, 1]
+        width = float(np.max(x_coords) - np.min(x_coords))
+        height = float(np.max(y_coords) - np.min(y_coords))
+        center_x = float((np.max(x_coords) + np.min(x_coords)) / 2)
+        center_y_screen = float((np.max(y_coords) + np.min(y_coords)) / 2)
+    else:
+        width = float(block.width)
+        height = float(block.height)
+        center_x = float(block.X + block.width / 2)
+        center_y_screen = float(block.Y + block.height / 2)
+        if abs(angle) > 0.5:
+            width, height = _rotated_aabb_extents(width, height, angle)
+
+    width += 2.0 * margin
+    height += 2.0 * margin
+
+    return {
+        "x_block": center_x,
+        "y_block": 640.0 - center_y_screen,
+        "block_width": width,
+        "block_height": height,
+    }
+
+
+def platform_bbox_from_game_object(platform) -> dict:
+    """
+    Platform center and size in PDDL coords from ground-truth geometry.
+
+    Prefer polygon vertices (float) over the GameObject MBR, which truncates to int
+    and stores width/height on swapped axes in Rectangle.
+    """
+    if hasattr(platform, "vertices") and platform.vertices and len(platform.vertices) >= 2:
+        vertices = np.asarray(platform.vertices, dtype=float)
+        x_coords = vertices[:, 0]
+        y_coords = vertices[:, 1]
+        width = float(np.max(x_coords) - np.min(x_coords))
+        height = float(np.max(y_coords) - np.min(y_coords))
+        center_x = float((np.max(x_coords) + np.min(x_coords)) / 2)
+        center_y_screen = float((np.max(y_coords) + np.min(y_coords)) / 2)
+    else:
+        # Rectangle stores screen x-extent in .height and y-extent in .width.
+        width = float(platform.height)
+        height = float(platform.width)
+        center_x = float(platform.X + width / 2)
+        center_y_screen = float(platform.Y + height / 2)
+
+    return {
+        "x_platform": center_x,
+        "y_platform": 640.0 - center_y_screen,
+        "platform_width": width,
+        "platform_height": height,
+    }
+
+
+# Hysteresis: snap platform_top to pig_surface whenever they differ by no more
+# than this many pixels. Purpose is to eat sub-pixel vision noise on the top
+# vertex (see run_20260810_064920 level 1: 1-pixel wobble on the hill top
+# flipped the ENHSP plan from a winning 84.5° dial to a losing 36.0° dial).
+#
+# History: run_20260812_114238 train-17 (t02_00023) lost with `diff = -3`
+# where the old 1-px window did not fire and ENHSP declared the problem
+# unsolvable. run_20260812_155211 tried widening this window to `pig_radius`
+# (~3.5 px) — that "correction" also snapped down every normal pig-on-hill
+# scene where SB routinely draws pigs with 2-3 px of visual overlap on the
+# supporting hill, and 6+ levels (#2, #3, #4, #10, #14, #19, #22) that had
+# been won on attempt 1 regressed to 2+ attempts. Total training attempts
+# ballooned 46 → 57, the SB 200-min time budget expired before any test
+# level was played, and #17 recovered by luck (favorable vision jitter),
+# not by the widening. So the widening is reverted; #17-class multi-pixel
+# vision jitter is left to the retry-diversify / ballistic-fallback path.
+_PIG_STAND_SNAP_PX = 1.0
+# Drop hill platforms whose horizontal span does not overlap the bird→pig corridor.
+# run_20260815_093511 test #25 (t02_00070): platform_1 at x≈391 steered ENHSP toward
+# high-arc over-flight plans while the pig stand is at x≈228; removing far hills
+# leaves the stand line plus any mid-corridor obstacles only.
+PLATFORM_CORRIDOR_MARGIN_PX = 15.0
+
+
+def _block_aabb(block_data: dict):
+    """Return left, right, bottom, top for a block entry in problem_data."""
+    x = float(block_data["x_block"])
+    y = float(block_data["y_block"])
+    half_w = float(block_data["block_width"]) / 2.0
+    half_h = float(block_data["block_height"]) / 2.0
+    return x - half_w, x + half_w, y - half_h, y + half_h
+
+
+def identify_sheltering_blocks(problem_data: dict) -> set:
+    """
+    Blocks that cap or wall the pig in the bird→pig corridor (template-4 pattern).
+
+    Hill/platform templates (t01/t02) rarely satisfy this; keeps their pessimistic
+    ENHSP platform model unchanged.
+    """
+    pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
+    bird_key = next((k for k in problem_data if k.startswith("bird_")), None)
+    if not pig_key:
+        return set()
+
+    pig = problem_data[pig_key]
+    px = float(pig["x_pig"])
+    py = float(pig["y_pig"])
+    pr = float(pig.get("pig_radius", 3.5))
+    pig_stand = py - pr
+
+    bx = float(problem_data[bird_key]["x_bird"]) if bird_key else px
+    br = float(problem_data[bird_key].get("bird_radius", 4.0)) if bird_key else 0.0
+    corridor_left = min(bx, px) - br - PLATFORM_CORRIDOR_MARGIN_PX
+    corridor_right = max(bx, px) + pr + PLATFORM_CORRIDOR_MARGIN_PX
+
+    sheltering = set()
+    for key, val in problem_data.items():
+        if not key.startswith("block_"):
+            continue
+        left, right, bottom, top = _block_aabb(val)
+        x_overlap_pig = left - BLOCK_SHELTER_X_PAD_PX <= px <= right + BLOCK_SHELTER_X_PAD_PX
+        caps_pig = bottom >= pig_stand - 5.0
+        walls_corridor = (
+            right >= corridor_left
+            and left <= corridor_right
+            and top >= pig_stand - 10.0
+            and bottom <= py + pr + 15.0
+        )
+        if (x_overlap_pig and caps_pig) or walls_corridor:
+            sheltering.add(key)
+    return sheltering
+
+
+def block_sheltered_layout(problem_data: dict) -> bool:
+    return bool(identify_sheltering_blocks(problem_data))
+
+
+def apply_block_shelter_adjustments(problem_data: dict, debug: bool = False) -> dict:
+    """Tighten sheltering block AABB (Pass B) so ENHSP can plan trajectories that
+    skirt past the shelter block — critical on t04 layouts where the raw conservative
+    AABB blocks every angle. Also lowers block_life and raises bird_block_damage so
+    the planner treats a bird→shelter collision as a definitive hard stop rather
+    than a bounce-off; no crush/destroy shortcut is exposed (see
+    base_domain.pddl — shelter_block_crush_pig was removed after run_20260816_181229
+    where 44+ Pass B plans predicted 'hit block → crush' but sim/game confirmed
+    zero pig kills)."""
+    sheltering = identify_sheltering_blocks(problem_data)
+    if not sheltering:
+        return problem_data
+
+    shrink = 2.0 * max(0.0, BLOCK_PLANNING_MARGIN_PX - BLOCK_SHELTER_MARGIN_PX)
+    for key in sheltering:
+        block = dict(problem_data[key])
+        block["block_width"] = max(4.0, float(block["block_width"]) - shrink)
+        block["block_height"] = max(4.0, float(block["block_height"]) - shrink)
+        block["block_life"] = max(
+            0.2, float(block.get("block_life", 0.75)) * BLOCK_SHELTER_LIFE_FACTOR,
+        )
+        block["block_stability"] = min(float(block.get("block_stability", 1.0)), 0.5)
+        block["_sheltering_block"] = True
+        problem_data[key] = block
+        if debug:
+            print(
+                f"[BLOCK DEBUG] {key}: shelters pig — tightened AABB "
+                f"({block['block_width']:.1f}x{block['block_height']:.1f}), "
+                f"life={block['block_life']:.2f}, damage={BLOCK_SHELTER_DAMAGE}"
+            )
+    return problem_data
+
+
+def should_use_planning_pessimistic_platform(problem_data: dict) -> bool:
+    """
+    Use hard-stop platform collision for ENHSP on hill/slide-sensitive layouts only.
+
+    Block-sheltered levels (typical t04) keep the slide/M5 platform model so ENHSP
+    can plan platform-contact kills; t02 hill levels stay pessimistic.
+    """
+    if not any(k.startswith("platform_") for k in problem_data):
+        return False
+    return not block_sheltered_layout(problem_data)
+
+
 def _extend_platforms_for_pig(platforms: list, px: float, py: float, pr: float):
-    """Extend platform AABB upward when a pig stands on the hill surface above the MBR top."""
+    """Align platform AABB with the pig stand line (symmetric snap + upward bump).
+
+    - If ``|pig_surface - top| <= _PIG_STAND_SNAP_PX`` snap ``top`` to
+      ``pig_surface`` (both up and down). Kills the branch flip that made ENHSP
+      plans non-reproducible across replays.
+    - Else if ``pig_surface > top`` still extend upward as before (unbounded lift).
+    - Otherwise leave the platform alone (genuinely taller than the pig line —
+      a wall, not a stand line, OR the standard SB pig-on-hill visual overlap).
+    """
     if px is None or py is None or not platforms:
         return platforms
     extended = []
     for plat in platforms:
         p = dict(plat)
-        left, right, bottom, top = _platform_bounds(p)
+        left, right, _bottom, top = _platform_bounds(p)
         if left - pr <= px <= right + pr:
             pig_surface = py - pr
-            if pig_surface > top:
-                extra = pig_surface - top
-                p["h"] = p["h"] + extra
-                p["y"] = p["y"] + extra / 2
+            diff = pig_surface - top
+            if abs(diff) <= _PIG_STAND_SNAP_PX:
+                if diff != 0:
+                    p["h"] = p["h"] + diff
+                    p["y"] = p["y"] + diff / 2
+            elif diff > 0:
+                p["h"] = p["h"] + diff
+                p["y"] = p["y"] + diff / 2
         extended.append(p)
     return extended
 
 
-def extend_platforms_in_problem_data(problem_data: dict, debug: bool = False) -> dict:
+def extend_platforms_in_problem_data(
+    problem_data: dict, debug: bool = False, apply_shelter: bool = False,
+) -> dict:
     """
-    Extend platform objects in problem_data so PDDL and forward sim share hill geometry.
+    Align platform tops with the pig stand line when geometry is still slightly low.
 
-    Vision hill MBRs are often shorter than the surface the pig stands on; extend upward
-    to the pig stand line when the pig is horizontally over the platform.
+    Primary bounds come from polygon vertices in get_platforms(); this pass only
+    bumps the AABB upward when a pig standing on the hill is above the computed top.
+
+    ``apply_shelter`` toggles the block-shelter adjustments (tightened AABB,
+    reduced ``block_life``). Left off by default so vision→PDDL preserves the
+    raw geometry; callers can turn it on for the shelter-mode ENHSP pass.
     """
     pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
     if not pig_key:
@@ -339,6 +581,9 @@ def extend_platforms_in_problem_data(problem_data: dict, debug: bool = False) ->
     px = float(pig["x_pig"])
     py = float(pig["y_pig"])
     pr = float(pig.get("pig_radius", 3.5))
+
+    if apply_shelter:
+        apply_block_shelter_adjustments(problem_data, debug=debug)
 
     platforms = []
     for key, val in problem_data.items():
@@ -369,7 +614,7 @@ def extend_platforms_in_problem_data(problem_data: dict, debug: bool = False) ->
         _, _, _, new_top = _platform_bounds(plat)
         if debug:
             print(
-                f"[PLATFORM DEBUG] {key}: extended for pig stand line "
+                f"[PLATFORM DEBUG] {key}: safety adjust to pig stand line "
                 f"(top {old_top:.1f} -> {new_top:.1f}, "
                 f"y {old_y:.1f}->{plat['y']:.1f}, h {old_h:.1f}->{plat['h']:.1f})"
             )
@@ -380,6 +625,70 @@ def extend_platforms_in_problem_data(problem_data: dict, debug: bool = False) ->
             "platform_width": plat["w"],
             "platform_height": plat["h"],
         }
+
+    return filter_platforms_for_corridor(problem_data, debug=debug)
+
+
+def filter_platforms_for_corridor(problem_data: dict, debug: bool = False) -> dict:
+    """Remove platforms outside the slingshot→pig horizontal corridor.
+
+    Keeps:
+      - the pig stand platform (pig x within platform span ± pig_radius), and
+      - any platform whose horizontal bounds overlap
+        [min(bird_x, pig_x), max(bird_x, pig_x)] expanded by radii/margin.
+
+    Forward sim and ENHSP share ``problem_data``; distant decorative hills that
+    never lie on a direct shot path are dropped so ENHSP does not plan high-arc
+    routes around irrelevant geometry.
+    """
+    bird_key = next((k for k in problem_data if k.startswith("bird_")), None)
+    pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
+    if not bird_key or not pig_key:
+        return problem_data
+
+    bx = float(problem_data[bird_key]["x_bird"])
+    br = float(problem_data[bird_key].get("bird_radius", 4.0))
+    px = float(problem_data[pig_key]["x_pig"])
+    pr = float(problem_data[pig_key].get("pig_radius", 3.5))
+    margin = float(PLATFORM_CORRIDOR_MARGIN_PX)
+
+    corridor_left = min(bx, px) - br - margin
+    corridor_right = max(bx, px) + pr + margin
+
+    drop_keys = []
+    for key, val in problem_data.items():
+        if not key.startswith("platform_"):
+            continue
+        plat = {
+            "x": float(val["x_platform"]),
+            "y": float(val["y_platform"]),
+            "w": float(val["platform_width"]),
+            "h": float(val["platform_height"]),
+        }
+        left, right, _bottom, _top = _platform_bounds(plat)
+
+        pig_on_stand = left - pr <= px <= right + pr
+        overlaps_corridor = right >= corridor_left and left <= corridor_right
+        if pig_on_stand or overlaps_corridor:
+            continue
+
+        drop_keys.append(key)
+        if debug:
+            print(
+                f"[PLATFORM DEBUG] {key}: dropped (outside bird→pig corridor "
+                f"[{corridor_left:.1f}, {corridor_right:.1f}]; "
+                f"platform x=[{left:.1f}, {right:.1f}], pig x={px:.1f})"
+            )
+
+    for key in drop_keys:
+        del problem_data[key]
+
+    if debug and drop_keys:
+        kept = [k for k in problem_data if k.startswith("platform_")]
+        print(
+            f"[PLATFORM DEBUG] Corridor filter: kept {len(kept)} platform(s) "
+            f"{kept}, dropped {len(drop_keys)}"
+        )
 
     return problem_data
 
@@ -486,6 +795,12 @@ DEG_TO_RAD = 0.01745329252
 GAME_PULL_MIN = 15.0
 GAME_PULL_MAX = 85.0
 # Shallow ENHSP dial angles are hard to reproduce; platform levels use a higher floor.
+# NOTE: In practice this value is dominated by the calibrator's executable dial floor
+# (~25° with a full calibration curve), so the constant is effectively inert unless
+# raised well above it. A previous experiment at 35° regressed win rate 18/21 → 13/21
+# because _level_has_platforms fires on any scene with a hill in the scenery — not
+# only when the pig is on it — forcing steep lobs on levels that need direct shots.
+# Keep at 20° until the platform-floor trigger is narrowed to pig-on-hill geometry.
 PLANNER_MIN_ANGLE_PLATFORM = 20.0
 
 
@@ -496,6 +811,17 @@ class AngleCalibrator:
     PDDL flight uses (dial - ANGLE_BIAS_DEGREES). The slingshot does not obey a fixed
     offset: shallow pulls lose much more angle than steep ones. This class inverts
     (game_pull → measured launch) so measured ≈ PDDL flight angle.
+
+    Force-dependence:
+        Same pull produces different measured launch angles at different forces —
+        the game's short-pullback release physics vary with pullback distance.
+        For example (from run logs):
+            pull=17.9°, force=1.00 → measured=20.2°
+            pull=17.9°, force=0.85 → measured=13.4°  (−7° at same pull)
+        We keep two bootstrap curves — force≈1.0 (``_BOOTSTRAP``) and force≈0.85
+        (``_BOOTSTRAP_PARTIAL``) — and linearly blend them by ``force`` in
+        [0.85, 1.0]. Force outside that band uses the nearer curve (conservative:
+        below 0.85 keeps the partial-force curve rather than extrapolating).
     """
 
     # Bootstrap (game_pull, measured_θ) at force≈1.0 from Science Birds calibration.
@@ -510,25 +836,87 @@ class AngleCalibrator:
         (81.5, 77.9),
     )
 
+    # Bootstrap (game_pull, measured_θ) at force≈0.85, derived from clean-execution
+    # observations in run_20260819_112711 + run_20260816_181229 (|angle-err|≤6°,
+    # unclamped pulls). At shallow pulls the game produces a much flatter launch
+    # for partial force; at pull ≥ 51° the two curves converge, so beyond that we
+    # inherit the force=1.0 shape (measured values pinned to _BOOTSTRAP).
+    _BOOTSTRAP_PARTIAL = (
+        (17.9, 13.4),
+        (24.0, 22.7),
+        (29.0, 26.0),
+        (35.0, 28.0),
+        (39.0, 32.0),
+        (44.0, 42.0),
+        (51.0, 50.9),
+        (59.0, 58.8),
+        (75.5, 73.9),
+        (81.5, 77.9),
+    )
+
+    # Force at which _BOOTSTRAP_PARTIAL was measured. Between this and 1.0 we
+    # linearly blend the two curves; outside this band we clamp to the nearer
+    # curve rather than extrapolating.
+    _PARTIAL_FORCE_ANCHOR = 0.85
+
     def __init__(self):
         self._samples = []
 
     def pddl_flight_angle(self, pddl_dial: float) -> float:
         return float(pddl_dial) - ANGLE_BIAS_DEGREES
 
-    def raw_game_pull_for_pddl_dial(self, pddl_dial: float) -> float:
+    def raw_game_pull_for_pddl_dial(
+        self,
+        pddl_dial: float,
+        force: float = 1.0,
+    ) -> float:
         """Unclamped slingshot pull (degrees) for a PDDL dial target flight angle."""
-        return self._invert_measured_to_pull(self.pddl_flight_angle(pddl_dial))
+        return self._invert_measured_to_pull(self.pddl_flight_angle(pddl_dial), force=force)
+
+    def measured_flight_for_pddl_dial(
+        self,
+        pddl_dial: float,
+        min_pull: float = GAME_PULL_MIN,
+        max_pull: float = GAME_PULL_MAX,
+        force: float = 1.0,
+    ) -> float:
+        """Launch angle the game will produce for this PDDL dial (after pull clamping)."""
+        game_pull = self.game_pull_for_pddl_dial(
+            pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
+        return self.measured_flight_for_game_pull(
+            game_pull, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
 
     def is_dial_executable(
         self,
         pddl_dial: float,
         min_pull: float = GAME_PULL_MIN,
         max_pull: float = GAME_PULL_MAX,
+        flight_slack: float = ANGLE_EXECUTION_SLACK_DEG,
+        force: float = 1.0,
     ) -> bool:
-        """True when the calibrator does not need to clamp pull for this dial."""
-        pull = self.raw_game_pull_for_pddl_dial(pddl_dial)
-        return min_pull <= pull <= max_pull
+        """
+        True when pull is unclamped and measured launch angle matches PDDL flight target.
+
+        Rejects dials whose inverted pull sits at the slingshot floor/ceiling but cannot
+        reach the ENHSP flight angle (e.g. dial 0° clamped to pull 15° → shallow flight).
+        With ``force<1.0`` the check uses the force-blended curve, so shallow-angle
+        requests that are only reachable at full force are rejected.
+        """
+        target = self.pddl_flight_angle(pddl_dial)
+        raw_pull = self.raw_game_pull_for_pddl_dial(pddl_dial, force=force)
+        if not (min_pull <= raw_pull <= max_pull):
+            return False
+        game_pull = self.game_pull_for_pddl_dial(
+            pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
+        if abs(game_pull - raw_pull) > 1e-3:
+            return False
+        measured = self.measured_flight_for_game_pull(
+            game_pull, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
+        return abs(measured - target) <= float(flight_slack)
 
     def executable_dial_bounds(
         self,
@@ -537,14 +925,19 @@ class AngleCalibrator:
         dial_step: float = 0.5,
         min_pull: float = GAME_PULL_MIN,
         max_pull: float = GAME_PULL_MAX,
+        flight_slack: float = ANGLE_EXECUTION_SLACK_DEG,
+        force: float = 1.0,
     ):
         """
-        Scan PDDL dial range; return (min_dial, max_dial) that map to unclamped game pulls.
-        ENHSP should not plan outside this range if shots must match PDDL flight angles.
+        Scan PDDL dial range; return (min_dial, max_dial) with unclamped pulls whose
+        measured launch angle matches the PDDL flight target within flight_slack.
         """
         executable = [
             d for d in np.arange(dial_min, dial_max + 1e-6, dial_step)
-            if self.is_dial_executable(d, min_pull=min_pull, max_pull=max_pull)
+            if self.is_dial_executable(
+                d, min_pull=min_pull, max_pull=max_pull,
+                flight_slack=flight_slack, force=force,
+            )
         ]
         if not executable:
             return float(dial_min), float(dial_max)
@@ -555,34 +948,206 @@ class AngleCalibrator:
         pddl_dial: float,
         min_pull: float = GAME_PULL_MIN,
         max_pull: float = GAME_PULL_MAX,
+        force: float = 1.0,
     ) -> float:
         target = self.pddl_flight_angle(pddl_dial)
-        pull = self._invert_measured_to_pull(target)
+        pull = self._invert_measured_to_pull(target, force=force)
         return max(min_pull, min(max_pull, pull))
 
+    def measured_flight_for_game_pull(
+        self,
+        game_pull: float,
+        min_pull: float = GAME_PULL_MIN,
+        max_pull: float = GAME_PULL_MAX,
+        force: float = 1.0,
+    ) -> float:
+        """Measured launch angle (degrees) for a slingshot pull (after clamping)."""
+        pull = max(min_pull, min(max_pull, float(game_pull)))
+        pulls, measured = self._get_curve(force=force)
+        if len(pulls) < 2:
+            return pull
+        return float(np.interp(pull, pulls, measured))
+
+    def sim_dial_for_game_execution(
+        self,
+        pddl_dial: float,
+        min_pull: float = GAME_PULL_MIN,
+        max_pull: float = GAME_PULL_MAX,
+        force: float = 1.0,
+    ) -> float:
+        """
+        PDDL dial to pass to forward sim so trajectory matches in-game launch.
+
+        Maps ENHSP dial → clamped game pull → measured flight θ → dial for sim
+        (dial = measured θ + ANGLE_BIAS_DEGREES).
+        """
+        game_pull = self.game_pull_for_pddl_dial(
+            pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
+        measured = self.measured_flight_for_game_pull(
+            game_pull, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
+        return measured + ANGLE_BIAS_DEGREES
+
     def record_shot(
-        self, pddl_dial: float, game_pull: float, measured_deg: float, force: float = 1.0
+        self,
+        pddl_dial: float,
+        game_pull: float,
+        measured_deg: float,
+        force: float = 1.0,
+        raw_pull: float = None,
     ) -> None:
         """Append a calibration sample (full-force shots only)."""
         if force < 0.95:
             return
-        self._samples.append((float(game_pull), float(measured_deg)))
+        pull = float(game_pull)
+        # Clamped pulls do not reflect the requested dial → flight mapping.
+        if pull <= GAME_PULL_MIN + 0.5 or pull >= GAME_PULL_MAX - 0.5:
+            return
+        if raw_pull is not None and abs(float(raw_pull) - pull) > 1e-3:
+            return
+        self._samples.append((pull, float(measured_deg)))
 
-    def _get_curve(self):
-        merged = {}
-        for pull, meas in self._BOOTSTRAP + tuple(self._samples):
-            if pull in merged:
-                merged[pull] = 0.5 * (merged[pull] + meas)
-            else:
-                merged[pull] = meas
-        pulls = np.array(sorted(merged.keys()), dtype=float)
-        measured = np.array([merged[p] for p in pulls], dtype=float)
+    # A learned sample only overrides bootstrap within this pull neighborhood.
+    # This prevents a single wild measurement (e.g. pull=50→meas=8) from
+    # wiping out large stretches of the shipped calibration.
+    _LEARNED_OVERRIDE_PULL_WINDOW = 5.0
+
+    def _build_curve(self, bootstrap=None, include_samples: bool = True):
+        """
+        Merge bootstrap + samples into a monotonic pull→measured curve.
+
+        ``bootstrap`` selects which bootstrap tuple to use (defaults to the
+        force≈1.0 ``_BOOTSTRAP``). Learned samples are only merged into the
+        force≈1.0 curve — ``record_shot`` requires force ≥ 0.95, so they do not
+        represent the force≈0.85 regime and must not corrupt that curve.
+
+        Learned samples take precedence over LOCALLY conflicting bootstrap
+        (within _LEARNED_OVERRIDE_PULL_WINDOW degrees): a stale bootstrap
+        point near a learned sample is dropped, on the theory that the
+        running game state is more authoritative than the shipped calibration.
+        Learned samples that break monotonicity against learned neighbors, or
+        that disagree with bootstrap far outside their pull neighborhood, are
+        skipped (likely noise or clamped shots).
+        """
+        if bootstrap is None:
+            bootstrap = self._BOOTSTRAP
+        merged = {}  # pull -> (measured, is_learned)
+        for pull, meas in bootstrap:
+            merged[float(pull)] = (float(meas), False)
+        if include_samples:
+            for pull, meas in self._samples:
+                p, m = float(pull), float(meas)
+                if p in merged:
+                    prev_m, prev_learned = merged[p]
+                    if prev_learned:
+                        merged[p] = (0.5 * (prev_m + m), True)
+                    else:
+                        merged[p] = (m, True)
+                else:
+                    merged[p] = (m, True)
+
+        # Enforce monotonic (non-decreasing) measured vs. pull, walking pulls
+        # ascending. When a point would break monotonicity:
+        #   - A learned point may drop nearby bootstrap (within the pull
+        #     window), reflecting a fresher local reading.
+        #   - Otherwise the offending point is skipped.
+        window = self._LEARNED_OVERRIDE_PULL_WINDOW
+        pulls_sorted = sorted(merged.keys())
+        clean = []  # list of (pull, measured, is_learned)
+        for p in pulls_sorted:
+            m, is_learned = merged[p]
+            while clean and clean[-1][1] > m + 1e-6:
+                last_p, _, last_learned = clean[-1]
+                if is_learned and not last_learned and (p - last_p) <= window:
+                    clean.pop()  # drop stale bootstrap in local neighborhood
+                else:
+                    break
+            if not clean or m >= clean[-1][1] - 1e-6:
+                clean.append((p, m, is_learned))
+            # else: skip this point to preserve monotonicity.
+
+        pulls = np.array([p for p, _, _ in clean], dtype=float)
+        measured = np.array([m for _, m, _ in clean], dtype=float)
         return pulls, measured
 
-    def _invert_measured_to_pull(self, target_measured: float) -> float:
-        pulls, measured = self._get_curve()
-        target = float(target_measured)
+    def _blend_weight(self, force: float) -> float:
+        """
+        Weight for the force=1.0 curve. Returns 1.0 for force≥1.0, 0.0 for
+        force≤anchor, linear between. Below-anchor forces clamp to the partial
+        curve rather than extrapolating (we have no evidence for force<0.85).
+        """
+        f = float(force)
+        if f >= 1.0:
+            return 1.0
+        if f <= self._PARTIAL_FORCE_ANCHOR:
+            return 0.0
+        return (f - self._PARTIAL_FORCE_ANCHOR) / (1.0 - self._PARTIAL_FORCE_ANCHOR)
+
+    def _get_curve(self, force: float = 1.0):
+        """(pulls, measured) curve for a given force, blending the two bootstraps.
+
+        For force≥1.0 this returns the full-force curve (with learned samples).
+        For force≤anchor this returns the partial-force curve (no learned mixing).
+        In between, we evaluate both curves at a common pull axis and linearly
+        blend the measured values by ``_blend_weight(force)``.
+        """
+        w = self._blend_weight(force)
+        if w >= 1.0 - 1e-9:
+            return self._build_curve(bootstrap=self._BOOTSTRAP, include_samples=True)
+        if w <= 1e-9:
+            return self._build_curve(
+                bootstrap=self._BOOTSTRAP_PARTIAL, include_samples=False,
+            )
+        pulls_full, meas_full = self._build_curve(
+            bootstrap=self._BOOTSTRAP, include_samples=True,
+        )
+        pulls_part, meas_part = self._build_curve(
+            bootstrap=self._BOOTSTRAP_PARTIAL, include_samples=False,
+        )
+        # Common pull axis: union of both curves' pulls, restricted to the
+        # overlap so np.interp stays inside both.
+        lo = float(max(pulls_full[0], pulls_part[0]))
+        hi = float(min(pulls_full[-1], pulls_part[-1]))
+        axis_pulls = sorted(
+            set(float(p) for p in pulls_full if lo <= p <= hi)
+            | set(float(p) for p in pulls_part if lo <= p <= hi)
+            | {lo, hi}
+        )
+        pulls_axis = np.array(axis_pulls, dtype=float)
+        m_full = np.interp(pulls_axis, pulls_full, meas_full)
+        m_part = np.interp(pulls_axis, pulls_part, meas_part)
+        blended = (1.0 - w) * m_part + w * m_full
+        # Re-enforce monotonicity after blending (both inputs are monotonic, so
+        # the blend should be too, but np.interp + float noise can nudge equal
+        # values by ε — clamp to non-decreasing).
+        for i in range(1, len(blended)):
+            if blended[i] < blended[i - 1]:
+                blended[i] = blended[i - 1]
+        return pulls_axis, blended
+
+    def _get_inversion_curve(self, force: float = 1.0):
+        """Measured (non-decreasing) → pull for dial inversion."""
+        pulls, measured = self._get_curve(force=force)
         if len(pulls) < 2:
+            return measured, pulls
+
+        pairs = sorted(zip(measured, pulls))
+        m_out, p_out = [], []
+        for m, p in pairs:
+            if m_out and m < m_out[-1] - 1e-6:
+                continue
+            if m_out and abs(m - m_out[-1]) < 1e-6:
+                p_out[-1] = 0.5 * (p_out[-1] + p)
+            else:
+                m_out.append(m)
+                p_out.append(p)
+        return np.array(m_out, dtype=float), np.array(p_out, dtype=float)
+
+    def _invert_measured_to_pull(self, target_measured: float, force: float = 1.0) -> float:
+        measured, pulls = self._get_inversion_curve(force=force)
+        target = float(target_measured)
+        if len(measured) < 2:
             return target
 
         if target <= measured[0]:
@@ -625,6 +1190,48 @@ def pddl_bird_position_before_pa_twang(after_x: float, after_y: float, angle_deg
     return after_x + PA_TWANG_X_KICK * cosine, after_y + PA_TWANG_Y_KICK * sinus
 
 
+def pddl_flight_angle_deg(dial_deg: float) -> float:
+    """Launch angle used by base_domain trig: ``(angle - angle_bias)``."""
+    return float(dial_deg) - ANGLE_BIAS_DEGREES
+
+
+def pddl_planned_launch_state(
+    dial_deg: float,
+    ref_x: float,
+    ref_y: float,
+    force: float,
+    v_bird: float,
+    force_lr_model=None,
+) -> dict:
+    """
+    PDDL launch state immediately after pa-twang — position and velocity the
+    domain assigns for this angle and force.
+    """
+    _, cosine, sinus = _initial_angle_trig(dial_deg)
+    launch_x, launch_y = pddl_bird_position_after_pa_twang(ref_x, ref_y, dial_deg)
+    speed = effective_launch_speed(v_bird, force, force_lr_model=force_lr_model)
+    return {
+        "launch_x": launch_x,
+        "launch_y": launch_y,
+        "vx": speed * cosine,
+        "vy": speed * sinus,
+        "speed": speed,
+        "flight_angle_deg": pddl_flight_angle_deg(dial_deg),
+        "angle_deg": float(dial_deg),
+        "force": float(force),
+    }
+
+
+def pddl_shot_to_release_point(tp, sling, dial_deg: float, force: float):
+    """
+    Map PDDL angle+force to a game release point using the domain flight angle
+    (dial - angle_bias) and the standard force→pullback scale — no dial tables.
+    """
+    flight_angle_rad = math.radians(pddl_flight_angle_deg(dial_deg))
+    v_portion = pddl_force_to_v_portion(force)
+    return tp.find_release_point_partial_power(sling, flight_angle_rad, v_portion)
+
+
 def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: WorldModel,
                   min_angle: float = -4, max_angle: float = 85,
                   force_min: float = FORCE_MIN, force_max: float = FORCE_MAX):
@@ -653,7 +1260,21 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         f"(= (force_rate) {FORCE_RATE})",
         f"(= (min_force) {force_min})",
         f"(= (max_force) {force_max})",
+        # T1.2: ENHSP requires every numeric fluent it evaluates to have a
+        # defined initial value. Missing inits caused inconsistent heuristic
+        # estimates on some layouts (see SPEED MISMATCH cluster in
+        # run_20260822_082303.log).
+        f"(= (points_score) 0)",
+        f"(= (mod) 0)",
     ]
+    # T1.2 (continued): per-bird velocity fluents. These are undefined until
+    # pa-twang fires; ENHSP's numeric heuristic then treats them as unknown and
+    # prunes the flying branch. Initialising to 0 is consistent with a bird at
+    # rest on the sling.
+    for object_name in problem_data:
+        if object_name.startswith('bird_'):
+            initial_state.append(f"(= (vx_bird {object_name}) 0)")
+            initial_state.append(f"(= (vy_bird {object_name}) 0)")
     for object, object_data in problem_data.items():
         objects.append(f"{object} - {object.split('_')[0]}")
         if "pig" in object:
@@ -666,7 +1287,15 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         # relations
         for other_object in problem_data:
             if 'bird' in object and 'block' in other_object:
-                initial_state.append(f'(= (bird_block_damage {object} {other_object}) 0.01)')
+                block_data = problem_data[other_object]
+                damage = (
+                    BLOCK_SHELTER_DAMAGE
+                    if block_data.get("_sheltering_block")
+                    else DEFAULT_BIRD_BLOCK_DAMAGE
+                )
+                initial_state.append(
+                    f'(= (bird_block_damage {object} {other_object}) {damage})'
+                )
 
     objects_str = "\n".join(objects)
     goals_str = "\n".join(goals)
@@ -687,7 +1316,12 @@ def write_problem_file(path: str, problem_data: dict, init_angle: float, angel_r
         file.write(problem)
 
 
-def inject_domain_file(path: str, world_model: WorldModel, defer_ground_m5: bool = False):
+def inject_domain_file(
+    path: str,
+    world_model: WorldModel,
+    defer_ground_m5: bool = False,
+    planning_pessimistic_platform: bool = False,
+):
     """
     Inject learned M5 collision models into the PDDL domain file.
 
@@ -696,8 +1330,21 @@ def inject_domain_file(path: str, world_model: WorldModel, defer_ground_m5: bool
 
     When defer_ground_m5 is True (e.g. hill levels during planning), skip ground M5
     injection to keep ENHSP search tractable.
+
+    When planning_pessimistic_platform is True, inject PLATFORM_COLLISION_HARD_STOP
+    for ENHSP instead of the learned slide/bounce M5. Forward sim still uses the
+    Python platform_kb slide model; only the planner domain becomes pessimistic so
+    ENHSP avoids hill-graze trajectories that fail in game (run_20260815 test
+    #26/#28/#29). Intentional slide-to-kill paths remain available to forward sim
+    and sim_search.
     """
     _collision_inject_log(f"inject_domain_file input={path!r}")
+
+    # T3.1 was reverted after run_20260822_104751: dropping the
+    # `(<= (pig_life ?p) (v_bird ?b))` guard theoretically helped AIBR but
+    # empirically produced 3 wins vs 5 baseline on the same bucket because
+    # ENHSP began preferring partial-force / shallow-dial plans that arrive
+    # too weak to score in-game (t04_00015/00008/00055 regressed).
 
     ground_placeholder = (
         "(assign (y_bird ?b) 0.0)\n            "
@@ -726,33 +1373,41 @@ def inject_domain_file(path: str, world_model: WorldModel, defer_ground_m5: bool
 
     platform_sentinel = "{SE-collision-platform-effect}"
     if platform_sentinel in new_content:
-        platform_kb = world_model.kb.get("platform_collision", {})
-        n_samples = len(platform_kb.get("states") or [])
-        platform_vars = platform_kb.get("variables") or {}
-        if n_samples >= PLATFORM_COLLISION_MIN_SAMPLES and platform_vars:
-            m5_body = _build_collision_effect_m5(platform_vars, bounce_mode="platform")
-            if m5_body is not None:
-                new_content = new_content.replace(platform_sentinel, m5_body)
-                _collision_inject_log(
-                    f"Injected M5 platform collision effect ({n_samples} samples)"
-                )
-            else:
-                _collision_inject_log(
-                    f"Platform M5 not ready ({n_samples} samples), using slide placeholder"
-                )
-                new_content = new_content.replace(
-                    platform_sentinel, _build_platform_slide_placeholder()
-                )
-        else:
+        if planning_pessimistic_platform:
             _collision_inject_log(
-                f"Platform learning cold start ({n_samples}/{PLATFORM_COLLISION_MIN_SAMPLES} samples)"
-                " — hard stop (bootstrap, no bird state mutation)"
+                "Planning pessimistic platform collision — hard stop for ENHSP "
+                "(forward sim unchanged)"
             )
             new_content = new_content.replace(
-                platform_sentinel, _build_platform_bootstrap_effect()
+                platform_sentinel, PLATFORM_COLLISION_HARD_STOP
             )
+        else:
+            platform_kb = world_model.kb.get("platform_collision", {})
+            n_samples = len(platform_kb.get("states") or [])
+            platform_vars = platform_kb.get("variables") or {}
+            if n_samples >= PLATFORM_COLLISION_MIN_SAMPLES and platform_vars:
+                m5_body = _build_collision_effect_m5(platform_vars, bounce_mode="platform")
+                if m5_body is not None:
+                    new_content = new_content.replace(platform_sentinel, m5_body)
+                    _collision_inject_log(
+                        f"Injected M5 platform collision effect ({n_samples} samples)"
+                    )
+                else:
+                    _collision_inject_log(
+                        f"Platform M5 not ready ({n_samples} samples), using slide placeholder"
+                    )
+                    new_content = new_content.replace(
+                        platform_sentinel, _build_platform_slide_placeholder()
+                    )
+            else:
+                _collision_inject_log(
+                    f"Platform learning cold start ({n_samples}/{PLATFORM_COLLISION_MIN_SAMPLES} samples)"
+                    " — hard stop (bootstrap, no bird state mutation)"
+                )
+                new_content = new_content.replace(
+                    platform_sentinel, _build_platform_bootstrap_effect()
+                )
 
-    # Save modified file
     base_dir = os.path.dirname(path)
     base_name = os.path.splitext(os.path.basename(path))[0]
     output_path = os.path.join(base_dir, f"{base_name}_modified.pddl")
@@ -930,9 +1585,13 @@ def simulate_pddl_shot_plan(
     """
     Forward-simulate flight after pa-twang using base_domain flying + placeholder ground bounce.
 
-    Returns whether the shot path touches ground (y <= 0) before termination, matching
-  collision_ground in the PDDL model when M5 collision is not injected.
-    Also checks platform collisions using PDDL domain margins (1.1 bird_radius multipliers).
+    Returns whether the shot path touches the playfield floor (bird center y <=
+    PLAYFIELD_FLOOR_Y + GROUND_CONTACT_CENTER_SLACK) before termination, aligned with
+    game ground_collision events (segments GROUND_LEVEL + epsilon).
+    Checks pig-kill FIRST each step, then platforms/blocks. Platform contact uses
+    ``PLATFORM_MARGIN_MULT`` (1.0x bird_radius, i.e. bird tangent to surface) so a
+    pig sitting on top of a platform is reachable in the sim just as it is in the
+    domain's collision_pig_kill predicate.
     Uses swept segment tests and extends platform height to the pig stand line on hills.
     When platform_kb has trained models, applies learned post-contact velocities.
     On bootstrap (no KB), platform contact is a hard stop — no slide state mutation.
@@ -1031,7 +1690,29 @@ def simulate_pddl_shot_plan(
         ny = y + vy * dt
         nvy = vy - gravity * dt
 
-        # Platform before pig: swept contact along the integration segment.
+        # Pig-kill BEFORE any obstacle check. When a pig sits on top of a
+        # platform (very common in phy_q templates: single_force_t02_00004,
+        # t02_00023, ...), reaching the pig requires the bird center to
+        # descend into the platform's collision margin at almost the same
+        # integration step. ENHSP's numeric semantics fire (pig_dead) in
+        # that state; the sim must too, otherwise every "pig-on-hill" plan
+        # is falsely rejected as a platform hit. Ordering swap makes this
+        # explicit: any same-step pig contact wins over platform/block.
+        if pig is not None and not pig_killed:
+            effective_r = max(0.0, br + pr - PIG_HIT_EPSILON)
+            for sx, sy in ((x, y), (nx, ny)):
+                dx = sx - px
+                dy = sy - py
+                if effective_r > 0 and (dx * dx + dy * dy) <= effective_r ** 2:
+                    pig_killed = True
+                    x, y = sx, sy
+                    if debug:
+                        print(f"[SIM DEBUG] Step {step}: PIG HIT at ({x:.1f}, {y:.1f})")
+                    break
+            if pig_killed:
+                break
+
+        # Platform / block checks run only if pig-kill did NOT fire this step.
         platform_handled = False
         for plat in platforms:
             if plat["name"] in platforms_responded:
@@ -1098,20 +1779,6 @@ def simulate_pddl_shot_plan(
         if block_collision:
             break
 
-        if pig is not None and not pig_killed:
-            for sx, sy in ((x, y), (nx, ny)):
-                dx = sx - px
-                dy = sy - py
-                effective_r = max(0.0, br + pr - PIG_HIT_EPSILON)
-                if effective_r > 0 and (dx * dx + dy * dy) <= effective_r ** 2:
-                    pig_killed = True
-                    x, y = sx, sy
-                    if debug:
-                        print(f"[SIM DEBUG] Step {step}: PIG HIT at ({x:.1f}, {y:.1f})")
-                    break
-            if pig_killed:
-                break
-
         if platform_handled:
             if step % 5 == 0:
                 trajectory.append((x, y))
@@ -1124,11 +1791,16 @@ def simulate_pddl_shot_plan(
         if step % 5 == 0:
             trajectory.append((x, y))
 
-        if y - br <= 0 and vx > 0:
+        floor_y = PLAYFIELD_FLOOR_Y
+        ground_contact_y = floor_y + GROUND_CONTACT_CENTER_SLACK
+        if y <= ground_contact_y and vx > 0 and vy < -0.5:
             ground_touches += 1
             if debug:
-                print(f"[SIM DEBUG] Step {step}: GROUND at ({x:.1f}, {y:.1f})")
-            y = 0.0
+                print(
+                    f"[SIM DEBUG] Step {step}: GROUND at ({x:.1f}, {y:.1f}), "
+                    f"contact_y={ground_contact_y:.1f}"
+                )
+            y = ground_contact_y
             vy = 0.0
             vx = 0.0
             bounce_count += 1
@@ -1136,9 +1808,9 @@ def simulate_pddl_shot_plan(
             # Placeholder ground effect stops the bird (no M5 bounce in planning sim).
             break
 
-        if y + br <= 0 or (y <= 0 and vy <= 0):
-            # Safety: do not integrate below ground when vx is already zero.
-            y = max(y, 0.0)
+        if y <= ground_contact_y and vy <= 0:
+            # Safety: do not integrate below the playfield when falling or stopped.
+            y = max(y, ground_contact_y)
             vy = 0.0
             vx = 0.0
             trajectory.append((x, y))

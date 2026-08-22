@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy
 import numpy as np
@@ -9,7 +10,6 @@ from agents.pddl.pddl_files.world_model.world_model import WorldModel
 from numpy.polynomial.polynomial import Polynomial
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 
 
 def calculate_current_error(observed: Polynomial, estimated: Polynomial):
@@ -44,8 +44,20 @@ def get_resid(x, y, degree):
     Fit a polynomial and return residual. Handles numerical errors gracefully.
     """
     try:
-        # Diagnostics
-        coeffs, resid, rank, sv, rcond = np.polyfit(x, y, degree, full=True)
+        x_arr = np.asarray(x, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        # Not enough points for the requested degree -> bail out cleanly
+        if len(x_arr) < degree + 1 or np.any(~np.isfinite(x_arr)) or np.any(~np.isfinite(y_arr)):
+            mean_val = float(np.nanmean(y_arr)) if len(y_arr) > 0 else 0.0
+            return float('inf'), Polynomial([mean_val])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            _rank_warning = getattr(np, "RankWarning", None) or getattr(
+                getattr(np, "exceptions", np), "RankWarning", None
+            )
+            if _rank_warning is not None:
+                warnings.simplefilter("ignore", category=_rank_warning)
+            coeffs, resid, rank, sv, rcond = np.polyfit(x_arr, y_arr, degree, full=True)
 
         # Check rank sufficiency
         if rank < degree + 1:
@@ -80,22 +92,25 @@ def get_poly_rank(x, y, max_rank=5, threshold=1):
 
     resids,polys = resids_coeff.T
 
-    resids_diff = - np.diff(resids)
+    resids_arr = np.asarray(resids, dtype=float)
+    # Any degree that failed to fit will have resid=inf; substitute a large finite value
+    # so np.diff / comparisons don't propagate NaN into the rank selection.
+    if not np.all(np.isfinite(resids_arr)):
+        finite_mask = np.isfinite(resids_arr)
+        if np.any(finite_mask):
+            fill = np.max(resids_arr[finite_mask]) * 10.0 + 1.0
+        else:
+            fill = 1.0
+        resids_arr = np.where(finite_mask, resids_arr, fill)
+
+    resids_diff = - np.diff(resids_arr)
+    # Guard: NaN comparisons are always False in numpy but emit a RuntimeWarning; treat
+    # NaN diffs as "no improvement" (i.e. below threshold) so we prefer lower degrees.
+    resids_diff = np.nan_to_num(resids_diff, nan=0.0, posinf=0.0, neginf=0.0)
 
     condition = resids_diff < threshold
 
-    rank = np.argmax(condition) if np.any(condition) else 3
-
-    # Calculate and print goodness metrics
-    poly = polys[rank]
-    y_pred = poly(x)
-    r2 = r2_score(y, y_pred)
-    
-    print(f"  get_poly_rank - Selected degree: {rank}, RSS: {resids[rank]:.4f}, R²: {r2:.6f}")
-    if rank > 0:
-        print(f"  get_poly_rank - Improvement from degree {rank-1} to {rank}: {resids_diff[rank-1]:.4f}")
-    if rank < max_rank - 1:
-        print(f"  get_poly_rank - Next improvement (degree {rank} to {rank+1}): {resids_diff[rank]:.4f}")
+    rank = int(np.argmax(condition)) if np.any(condition) else min(3, len(polys) - 1)
 
     return rank, polys[rank]
 

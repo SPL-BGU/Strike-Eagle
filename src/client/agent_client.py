@@ -369,6 +369,11 @@ class AgentClient:
         self._send_command(RequestCodes.RestartLevel)
         return self._read_from_buff("B")[0]
 
+    def click_in_centre(self):
+        """Dismiss modal popups (e.g. LOST/WON overlay) by clicking screen centre."""
+        self._send_command(RequestCodes.ClickInCentre)
+        return self._read_from_buff("B")[0]
+
     def shoot(self, fx, fy, t1, t2, isPolar):
         code = RequestCodes.Pshoot if isPolar else RequestCodes.Cshoot
         self._send_command(code, "iiii", fx, fy, t1, t2)

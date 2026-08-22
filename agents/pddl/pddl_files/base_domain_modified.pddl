@@ -298,7 +298,6 @@
         )
     )
 
-
     (:event remove_unsupported_block
         :parameters (?bl_bottom - block ?bl_top - block)
         :precondition (and
@@ -387,17 +386,22 @@
             (= (active_bird) (bird_id ?b))
             (> (v_bird ?b) 0)
 
-            ; Collision margins (1.1 multipliers) - reduced from 2.5/3.0 to allow bird to pass closer to platforms
+            ; x-checks keep the 1.1× margin (grazing the side of a platform is
+            ; legitimately hard in the game). y-checks use the true bird radius
+            ; so overhung-pig layouts (pig sitting on a platform with a roof
+            ; platform above) have a real navigable slot — the previous 1.1× y
+            ; margin made template-4 single_force levels systematically report
+            ; "Problem unsolvable" in ENHSP (see _unsolvable_snapshots).
             (<= (- (x_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
             (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (y_bird ?b)  (* (bird_radius ?b) 1.1)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            (<= (- (y_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
         )
         :effect (and
-            (assign (y_bird ?b) (+ 11.6031 (+ (* -0.0231 (x_bird ?b)) (+ (* 0.9219 (y_bird ?b)) (+ (* -0.0066 (vx_bird ?b)) (* 0.0186 (vy_bird ?b)))))))
-            (assign (vx_bird ?b) (+ -118.7922 (+ (* -0.3062 (x_bird ?b)) (+ (* 1.4968 (y_bird ?b)) (+ (* 1.2014 (vx_bird ?b)) (* -0.6299 (vy_bird ?b)))))))
-            (assign (vy_bird ?b) (+ 274.1652 (+ (* -0.4883 (x_bird ?b)) (+ (* -1.4110 (y_bird ?b)) (+ (* -0.3640 (vx_bird ?b)) (* 0.7439 (vy_bird ?b)))))))
-            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
+            (assign (v_bird ?b) 0)
+            (assign (vx_bird ?b) 0)
+            (assign (vy_bird ?b) 0)
+            (assign (bounce_count ?b) 3)
             (assign (mod) 2)
         )
     )

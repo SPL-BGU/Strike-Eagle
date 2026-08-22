@@ -1,16 +1,12 @@
 {
   "summary": {
     "phyq_score": 0.0,
-    "total_levels": 3,
+    "total_levels": 0,
     "total_wins": 0,
-    "total_losses": 3,
+    "total_losses": 0,
     "overall_pass_rate": 0.0,
-    "local_generalization": {
-      "single_force": 0.0
-    },
-    "broad_generalization": {
-      "Force Scenarios": 0.0
-    },
+    "local_generalization": {},
+    "broad_generalization": {},
     "scenarios": {
       "single_force": {
         "scenario": "single_force",
@@ -20,10 +16,10 @@
         "description": "Some target objects can be destroyed with a single force",
         "skill": "Force application",
         "wins": 0,
-        "losses": 3,
-        "total": 3,
+        "losses": 0,
+        "total": 0,
         "pass_rate": 0.0,
-        "avg_attempts": 1.0,
+        "avg_attempts": 0.0,
         "avg_score": 0.0
       },
       "multiple_forces": {
@@ -232,8 +228,8 @@
           "multiple_forces"
         ],
         "wins": 0,
-        "losses": 3,
-        "total": 3,
+        "losses": 0,
+        "total": 0,
         "pass_rate": 0.0
       },
       "Motion Scenarios": {
@@ -271,34 +267,6 @@
       }
     }
   },
-  "results": [
-    {
-      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t06_00068.xml",
-      "scenario": "single_force",
-      "template": 6,
-      "won": false,
-      "attempts": 1,
-      "score": 0,
-      "timestamp": "2026-06-20T15:29:27.626056"
-    },
-    {
-      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t06_00065.xml",
-      "scenario": "single_force",
-      "template": 6,
-      "won": false,
-      "attempts": 1,
-      "score": 0,
-      "timestamp": "2026-06-20T15:30:06.139375"
-    },
-    {
-      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t06_00076.xml",
-      "scenario": "single_force",
-      "template": 6,
-      "won": false,
-      "attempts": 1,
-      "score": 0,
-      "timestamp": "2026-06-20T15:30:43.000105"
-    }
-  ],
-  "timestamp": "2026-06-20T15:30:46.554843"
+  "results": [],
+  "timestamp": "2026-08-08T20:58:26.704084"
 }
