@@ -18,8 +18,49 @@ FORCE_RATE = 0.1
 MAG_MULT = 0.5          # keeps force→velocity in linear regime (force_velocity_curve_05.png)
 FORCE_V_SCALE = MAG_MULT / 5.0   # = 0.1; converts force fraction to find_release_point_partial_power v_portion
 
-# Shrink effective pig hit radius so PDDL requires a deeper hit (avoids top-graze false kills).
-PIG_HIT_EPSILON = 5.5
+# Pig kill when center distance <= bird_radius + pig_radius - PIG_HIT_EPSILON
+# (matches ``collision_pig_kill`` in base_domain.pddl). Same rule for mid-air
+# and platform-contact steps — no separate coincident full-radius path.
+PIG_HIT_EPSILON = 2.0
+
+
+def _pig_center_distance(sx: float, sy: float, px: float, py: float) -> float:
+    return math.hypot(sx - px, sy - py)
+
+
+def _pig_kill_threshold(br: float, pr: float) -> float:
+    """Max center distance for pig kill: ``bird_radius + pig_radius - epsilon``."""
+    return max(0.0, br + pr - PIG_HIT_EPSILON)
+
+
+def _bird_kills_pig(sx: float, sy: float, px: float, py: float,
+                    br: float, pr: float) -> bool:
+    thresh = _pig_kill_threshold(br, pr)
+    if thresh <= 0:
+        return False
+    return _pig_center_distance(sx, sy, px, py) <= thresh
+
+
+def _slide_pig_kill_credible(sx: float, sy: float, vx: float, vy: float,
+                             px: float, py: float, br: float, pr: float) -> bool:
+    """
+    Stricter pig-kill check during post-platform slide (not coincident contact).
+
+    run_20260826/00073: sim predicted slide-into-pig kills that the game did not
+    reproduce — often the bird was geometrically near the pig but moving away,
+    or still too high above the stand line.
+    """
+    if not _bird_kills_pig(sx, sy, px, py, br, pr):
+        return False
+    pig_stand = py - pr
+    if sy > pig_stand + br + 6.0:
+        return False
+    if abs(vx) >= 3.0:
+        if vx > 0.0 and sx > px + pr:
+            return False
+        if vx < 0.0 and sx < px - pr:
+            return False
+    return True
 
 
 def pddl_force_to_v_portion(force: float) -> float:
@@ -79,7 +120,14 @@ PLATFORM_MAX_POST_SPEED = 220.0
 PLATFORM_DEFAULT_SPEED_RATIO = 0.50
 PLATFORM_DEFAULT_VY_RATIO = 0.50
 PLATFORM_SURFACE_RADIUS_FACTOR = 0.35
-PLATFORM_SWEEP_SUBSTEPS = 5
+PLATFORM_SWEEP_SUBSTEPS = 8
+# Match game ``is_platform_collision`` (event_conditions.py): max(bird_dim)/2 + epsilon.
+# The old AABB-overlap test with only ``bird_radius`` (4 px) missed grazing ramp
+# contacts that the game reports (run_20260823_102616: 44× platform sim=NO game=YES).
+PLATFORM_COLLISION_EPSILON = 6.0
+# Extra platform AABB inflation in forward sim only (vision vertices are tight vs
+# game MBR); does not affect ENHSP problem files.
+PLATFORM_SIM_AABB_MARGIN_PX = 2.0
 # Bird-radius multiplier for platform-collision detection in the forward sim.
 # Was 1.1 (10% safety inflation), but that caused "coincident-contact" false
 # negatives: when a pig sits directly on top of a platform, the inflated
@@ -693,16 +741,24 @@ def filter_platforms_for_corridor(problem_data: dict, debug: bool = False) -> di
     return problem_data
 
 
+def _platform_collision_reach(br: float, margin_mult: float = PLATFORM_MARGIN_MULT) -> float:
+    """Effective bird reach for platform contact (aligned with game event detection)."""
+    return (float(br) + PLATFORM_COLLISION_EPSILON) * margin_mult
+
+
 def _bird_overlaps_platform(x: float, y: float, br: float, plat: dict,
                             margin_mult: float = PLATFORM_MARGIN_MULT) -> bool:
+    """
+    Circle-vs-AABB closest-point test — same geometry as ``is_platform_collision``
+    in event_conditions.py (screen coords) after PDDL y-up bounds mapping.
+    """
     left, right, bottom, top = _platform_bounds(plat)
-    margin = br * margin_mult
-    return (
-        x - margin <= right
-        and x + margin >= left
-        and y + margin >= bottom
-        and y - margin <= top
-    )
+    closest_x = max(left, min(x, right))
+    closest_y = max(bottom, min(y, top))
+    dx = x - closest_x
+    dy = y - closest_y
+    reach = _platform_collision_reach(br, margin_mult)
+    return dx * dx + dy * dy <= reach * reach
 
 
 def _sweep_platform_contact(x0: float, y0: float, x1: float, y1: float, br: float, plat: dict):
@@ -763,7 +819,21 @@ def _apply_platform_contact(platform_kb: dict, plat: dict, x: float, y: float,
     """
     predicted = _resolve_platform_post_state(platform_kb, plat, x, y, vx, vy, br, debug=debug)
     if predicted is None:
-        return x, y, vx, vy, False, True
+        # Cold-start KB: the old hard stop rejected every pig-on-hill ENHSP plan
+        # whose arc grazes the ramp before the pig center (run_20260826: t05_00077
+        # @ 66.5° stops at (361,395) with pig at (359.5,387) — 8.6 px short).
+        # Heuristic hill slide lets the sim continue and reach the pig, matching
+        # what the game does when the bird rolls up the stand line.
+        predicted = _default_platform_slide_post_state(plat, x, y, vx, vy, br)
+        if predicted is None:
+            if debug:
+                print(
+                    "[SIM DEBUG]   Bootstrap platform hard stop "
+                    "(slide heuristic unavailable; speed too low)"
+                )
+            return x, y, vx, vy, False, True
+        if debug:
+            print("[SIM DEBUG]   Bootstrap platform slide (KB cold; hill heuristic)")
 
     post_speed = math.hypot(predicted["v_x"], predicted["v_y"])
     slide = post_speed > 5.0
@@ -789,7 +859,7 @@ problem_template = Template("""(define (problem sample_problem)
 
 # Angle bias correction (in degrees) - used inside PDDL domain physics only.
 # Game slingshot execution uses AngleCalibrator (nonlinear pull → measured launch).
-ANGLE_BIAS_DEGREES = 6.0
+ANGLE_BIAS_DEGREES = 0
 DEG_TO_RAD = 0.01745329252
 # Slingshot pull clamp (screen-space aim); separate from ENHSP dial min (may be negative).
 GAME_PULL_MIN = 15.0
@@ -1202,6 +1272,7 @@ def pddl_planned_launch_state(
     force: float,
     v_bird: float,
     force_lr_model=None,
+    speed_at_force=None,
 ) -> dict:
     """
     PDDL launch state immediately after pa-twang — position and velocity the
@@ -1209,7 +1280,10 @@ def pddl_planned_launch_state(
     """
     _, cosine, sinus = _initial_angle_trig(dial_deg)
     launch_x, launch_y = pddl_bird_position_after_pa_twang(ref_x, ref_y, dial_deg)
-    speed = effective_launch_speed(v_bird, force, force_lr_model=force_lr_model)
+    speed = effective_launch_speed(
+        v_bird, force, angle_deg=pddl_flight_angle_deg(dial_deg),
+        speed_at_force=speed_at_force, force_lr_model=force_lr_model,
+    )
     return {
         "launch_x": launch_x,
         "launch_y": launch_y,
@@ -1220,6 +1294,92 @@ def pddl_planned_launch_state(
         "angle_deg": float(dial_deg),
         "force": float(force),
     }
+
+
+# ── Mode B — actuator resolution knob ────────────────────────────────────
+# See agents/pddl/CALIBRATION_MODE_B_ACTUATOR_RESOLUTION.md.
+#
+# The default ``mag = sling.height * 5 * v_portion`` in
+# ``SimpleTrajectoryPlanner.find_release_point_partial_power`` gives only
+# ~0.2 px per degree of angular resolution when ``sling.height`` is 3–4 px
+# (as vision reports for SB6.6). Integer-rounding then discretises the
+# reachable launch angles into ~5° bins.
+#
+# ``MODE_B_MAG_MULTIPLIER`` scales the pullback distance for the PDDL
+# agent only (BaselineAgent still uses the raw formula). Larger values
+# improve angular resolution but risk overshooting the game's max-pull
+# distance — beyond which pulling harder no longer increases velocity
+# (SB6.6 clamps) or worse, becomes an invalid shot.
+#
+# Start at 1.0 (no change). Bump progressively (2 → 4 → 8) and watch
+# [MODE B DIAG] logs for velocity behaviour. When observed ``|v|`` stops
+# tracking ``force`` linearly (i.e., clamped at v_max regardless of
+# multiplier), we've found max_pull; use the largest safe value.
+# 4.0 ≈ 4× finer angular bins vs baseline (run_20260822_190314 used 1.0).
+MODE_B_MAG_MULTIPLIER = 4.0
+# Floor pullback (px) at force=1.0 when vision under-reports sling.height (~3–4 px
+# vs ~18 px observed in [MODE B DIAG] / game DragDetails). Without this, multiplier
+# alone cannot help when base_mag = sling_h * 5 * v_portion collapses to ~2 px.
+MODE_B_MIN_MAG_AT_FULL_FORCE = 90.0
+
+
+def mode_b_scaled_mag(sling_height: float, force: float) -> float:
+    """Pullback magnitude (px) used by ``pddl_shot_to_release_point``."""
+    v_portion = pddl_force_to_v_portion(force)
+    base_mag = float(sling_height) * 5.0 * v_portion
+    force_clamped = max(FORCE_MIN, min(FORCE_MAX, float(force)))
+    return max(
+        base_mag * MODE_B_MAG_MULTIPLIER,
+        MODE_B_MIN_MAG_AT_FULL_FORCE * force_clamped,
+    )
+
+
+def mode_b_angular_resolution_deg(sling_height: float, force: float = 1.0) -> float:
+    """Smallest dial change (°) from a 1 px release-point step at ``scaled_mag``."""
+    mag = mode_b_scaled_mag(sling_height, force)
+    if mag <= 0:
+        return float("inf")
+    return 90.0 / mag
+
+
+def mode_b_dial_collapse_map(sling, dial_min: float, dial_max: float, force: float = 1.0):
+    """
+    Map each integer release pixel to the dials that collapse onto it.
+
+    Returns ``(pixel_to_dials, resolution_deg, scaled_mag)`` for Mode B diagnostics.
+    """
+    from .bambirds_shot_helper import actual_to_launch
+    mag = mode_b_scaled_mag(float(getattr(sling, "height", 0) or 0), force)
+    pixel_to_dials: dict[tuple[int, int], list[float]] = {}
+    step = 0.5
+    d = float(dial_min)
+    while d <= float(dial_max) + 1e-9:
+        flight_rad = math.radians(pddl_flight_angle_deg(d))
+        corrected_rad = actual_to_launch(flight_rad)
+        pt = pddl_release_point_with_mag(sling, corrected_rad, mag)
+        key = (int(pt.X), int(pt.Y))
+        pixel_to_dials.setdefault(key, []).append(round(d, 1))
+        d += step
+    resolution = mode_b_angular_resolution_deg(float(getattr(sling, "height", 0) or 0), force)
+    return pixel_to_dials, resolution, mag
+
+
+def pddl_release_point_with_mag(sling, theta_rad: float, mag_px: float):
+    """
+    Screen release point for a bird with fully-controlled pullback distance.
+
+    Mirrors ``SimpleTrajectoryPlanner.find_release_point_partial_power`` but
+    lets the caller specify ``mag_px`` directly (in pixels) instead of
+    deriving it from ``sling.height * 5 * v_portion``. This is the primary
+    knob for Mode B calibration work — see the constant above and the
+    Mode B design doc.
+    """
+    from utils.point2D import Point2D
+    ref_x = round(sling.X + 0.45 * sling.width)
+    ref_y = round(sling.Y + 0.35 * sling.width)
+    rel_x = round(ref_x - mag_px * math.cos(theta_rad))
+    rel_y = round(ref_y + mag_px * math.sin(theta_rad))
+    return Point2D(rel_x, rel_y)
 
 
 def pddl_shot_to_release_point(tp, sling, dial_deg: float, force: float):
@@ -1233,13 +1393,27 @@ def pddl_shot_to_release_point(tp, sling, dial_deg: float, force: float):
     to fire at compensates for the deficit, and the observed flight matches
     what the PDDL domain simulates.
 
+    Mode B: pullback distance ``mag`` is scaled by
+    ``MODE_B_MAG_MULTIPLIER`` for finer angular resolution.
+
     Reference: BamBirds ShotHelper.actualToLaunch (see bambirds_shot_helper).
     """
     from .bambirds_shot_helper import actual_to_launch
     flight_angle_rad = math.radians(pddl_flight_angle_deg(dial_deg))
     corrected_launch_rad = actual_to_launch(flight_angle_rad)
     v_portion = pddl_force_to_v_portion(force)
-    return tp.find_release_point_partial_power(sling, corrected_launch_rad, v_portion)
+    sling_h = float(getattr(sling, "height", 0) or 0)
+    scaled_mag = mode_b_scaled_mag(sling_h, force)
+    px_per_deg = scaled_mag / 90.0
+    base_mag = sling_h * 5.0 * v_portion
+    force_clamped = max(FORCE_MIN, min(FORCE_MAX, float(force)))
+    print(
+        f"[MODE B DIAG] sling.height={sling_h:.1f}px  v_portion={v_portion:.3f}  "
+        f"base_mag={base_mag:.1f}px  scaled_mag={scaled_mag:.1f}px "
+        f"(x{MODE_B_MAG_MULTIPLIER}, floor={MODE_B_MIN_MAG_AT_FULL_FORCE * force_clamped:.1f})  "
+        f"angular_res={px_per_deg:.2f} px/° (~{mode_b_angular_resolution_deg(sling_h, force):.2f}°/px)"
+    )
+    return pddl_release_point_with_mag(sling, corrected_launch_rad, scaled_mag)
 
 
 def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: WorldModel,
@@ -1554,6 +1728,7 @@ ANGLE_REPLAN_THRESHOLD_DEG = 0.5
 def effective_launch_speed(
     v_full: float,
     force: float,
+    angle_deg: float = None,
     speed_at_force=None,
     force_lr_model=None,
 ) -> float:
@@ -1561,12 +1736,19 @@ def effective_launch_speed(
     Launch speed for a PDDL force fraction (0.2–1.0).
 
     Mirrors base_domain pa-twang: ``v_launch = v_bird * v_bird_multiplier`` (linear in force).
-    Optional ``speed_at_force(v_full, force)`` hook for callers that override the default.
+    Optional ``speed_at_force(v_full, force, angle_deg)`` hook for callers
+    that want angle-aware velocity prediction (e.g., BamBirds' angle-to-
+    velocity polynomial in ``bambirds_shot_helper.py``). The hook may
+    also be called with the legacy 2-arg signature ``(v_full, force)``
+    for backward compatibility.
     """
     force = max(FORCE_MIN, min(FORCE_MAX, float(force)))
     if speed_at_force is not None:
         try:
-            return float(speed_at_force(v_full, force))
+            try:
+                return float(speed_at_force(v_full, force, angle_deg))
+            except TypeError:
+                return float(speed_at_force(v_full, force))
         except Exception:
             pass
     return launch_speed_at_force(v_full, force, force_lr_model=force_lr_model)
@@ -1599,9 +1781,10 @@ def simulate_pddl_shot_plan(
     PLAYFIELD_FLOOR_Y + GROUND_CONTACT_CENTER_SLACK) before termination, aligned with
     game ground_collision events (segments GROUND_LEVEL + epsilon).
     Checks pig-kill FIRST each step, then platforms/blocks. Platform contact uses
-    ``PLATFORM_MARGIN_MULT`` (1.0x bird_radius, i.e. bird tangent to surface) so a
-    pig sitting on top of a platform is reachable in the sim just as it is in the
-    domain's collision_pig_kill predicate.
+    circle-vs-AABB reach ``bird_radius + PLATFORM_COLLISION_EPSILON`` (matches game
+    ``is_platform_collision``) so grazing ramp/stand contacts register before a
+    late-arc false pig-kill. Same-step coincident pig+platform contact still wins
+    via the pig-kill check at platform contact points.
     Uses swept segment tests and extends platform height to the pig stand line on hills.
     When platform_kb has trained models, applies learned post-contact velocities.
     On bootstrap (no KB), platform contact is a hard stop — no slide state mutation.
@@ -1633,7 +1816,8 @@ def simulate_pddl_shot_plan(
     x, y = launch_x, launch_y
     _, cosine, sinus = _initial_angle_trig(angle_deg)
     launch_speed = effective_launch_speed(
-        v, force, speed_at_force=speed_at_force, force_lr_model=force_lr_model,
+        v, force, angle_deg=pddl_flight_angle_deg(angle_deg),
+        speed_at_force=speed_at_force, force_lr_model=force_lr_model,
     )
     vx = launch_speed * cosine
     vy = launch_speed * sinus
@@ -1643,7 +1827,9 @@ def simulate_pddl_shot_plan(
     px = float(pig["x_pig"]) if pig else None
     py = float(pig["y_pig"]) if pig else None
 
-    # Collect platform data
+    # Collect platform data (sim-only AABB margin — game hills use MBR slightly
+    # larger than vision polygon bounds; ENHSP problem file stays unchanged).
+    _sim_plat_pad = PLATFORM_SIM_AABB_MARGIN_PX
     platforms = []
     blocks = []
     for key, val in problem_data.items():
@@ -1652,16 +1838,28 @@ def simulate_pddl_shot_plan(
                 "name": key,
                 "x": float(val["x_platform"]),
                 "y": float(val["y_platform"]),
-                "w": float(val["platform_width"]),
-                "h": float(val["platform_height"]),
+                "w": float(val["platform_width"]) + 2.0 * _sim_plat_pad,
+                "h": float(val["platform_height"]) + 2.0 * _sim_plat_pad,
             })
         elif key.startswith("block_"):
+            # ``damage`` mirrors write_problem_file: sheltering blocks get
+            # BLOCK_SHELTER_DAMAGE, everything else DEFAULT_BIRD_BLOCK_DAMAGE.
+            # ``life`` and ``stability`` default to the same fallbacks used
+            # elsewhere in this module so behaviour is unchanged when the
+            # problem file omits them.
+            _damage = (
+                BLOCK_SHELTER_DAMAGE if val.get("_sheltering_block")
+                else DEFAULT_BIRD_BLOCK_DAMAGE
+            )
             blocks.append({
                 "name": key,
                 "x": float(val["x_block"]),
                 "y": float(val["y_block"]),
                 "w": float(val["block_width"]),
                 "h": float(val["block_height"]),
+                "life": float(val.get("block_life", 0.75)),
+                "stability": float(val.get("block_stability", 1.0)),
+                "damage": float(_damage),
             })
 
     if debug:
@@ -1687,6 +1885,7 @@ def simulate_pddl_shot_plan(
     platform_hit_name = None
     platform_hit_pos = None
     platform_slide_continued = False
+    slide_phase_active = False
     bounce_count = 0
     platforms_responded = set()
     trajectory = [(x, y)]  # Store trajectory for visualization
@@ -1709,16 +1908,23 @@ def simulate_pddl_shot_plan(
         # is falsely rejected as a platform hit. Ordering swap makes this
         # explicit: any same-step pig contact wins over platform/block.
         if pig is not None and not pig_killed:
-            effective_r = max(0.0, br + pr - PIG_HIT_EPSILON)
             for sx, sy in ((x, y), (nx, ny)):
-                dx = sx - px
-                dy = sy - py
-                if effective_r > 0 and (dx * dx + dy * dy) <= effective_r ** 2:
-                    pig_killed = True
-                    x, y = sx, sy
+                if not _bird_kills_pig(sx, sy, px, py, br, pr):
+                    continue
+                if slide_phase_active and not _slide_pig_kill_credible(
+                    sx, sy, vx, vy, px, py, br, pr,
+                ):
                     if debug:
-                        print(f"[SIM DEBUG] Step {step}: PIG HIT at ({x:.1f}, {y:.1f})")
-                    break
+                        print(
+                            f"[SIM DEBUG] Step {step}: slide pig proximity rejected "
+                            f"at ({sx:.1f}, {sy:.1f}) vx={vx:.1f}"
+                        )
+                    continue
+                pig_killed = True
+                x, y = sx, sy
+                if debug:
+                    print(f"[SIM DEBUG] Step {step}: PIG HIT at ({x:.1f}, {y:.1f})")
+                break
             if pig_killed:
                 break
 
@@ -1730,6 +1936,24 @@ def simulate_pddl_shot_plan(
             hit, cx, cy = _sweep_platform_contact(x, y, nx, ny, br, plat)
             if not hit:
                 continue
+
+            # Same contact rule as mid-air and PDDL: dist <= bird_r + pig_r - epsilon.
+            if pig is not None and not pig_killed:
+                if _bird_kills_pig(cx, cy, px, py, br, pr):
+                    pig_killed = True
+                    x, y = cx, cy
+                    platform_hit = True
+                    platform_hit_name = plat["name"]
+                    platform_hit_pos = (cx, cy)
+                    if debug:
+                        print(
+                            f"[SIM DEBUG] Step {step}: COINCIDENT PIG KILL at "
+                            f"platform '{plat['name']}' contact ({x:.1f}, {y:.1f})"
+                        )
+                    break
+
+            if pig_killed:
+                break
 
             platform_hit = True
             platform_hit_name = plat["name"]
@@ -1751,40 +1975,90 @@ def simulate_pddl_shot_plan(
             )
             if hard_stop:
                 bounce_count = 3
+                slide_phase_active = False
                 platform_handled = True
                 break
 
             if slide:
                 platform_slide_continued = True
+                slide_phase_active = True
                 bounce_count += 1
+            else:
+                slide_phase_active = False
             platform_handled = True
+            break
+
+        if pig_killed:
             break
 
         if platform_handled and bounce_count >= 3:
             break
 
-        if not block_collision:
-            for blk in blocks:
-                blk_left = blk["x"] - blk["w"] / 2
-                blk_right = blk["x"] + blk["w"] / 2
-                blk_bottom = blk["y"] - blk["h"] / 2
-                blk_top = blk["y"] + blk["h"] / 2
-                for sx, sy in ((x, y), (nx, ny)):
-                    if (sx - br <= blk_right and
-                            sx + br >= blk_left and
-                            sy + br >= blk_bottom and
-                            sy - br <= blk_top):
-                        block_collision = True
-                        block_hit_name = blk["name"]
-                        if debug:
-                            print(
-                                f"[SIM DEBUG] Step {step}: BLOCK HIT '{blk['name']}' "
-                                f"at bird pos ({sx:.1f}, {sy:.1f})"
-                            )
-                        bounce_count = 3
-                        break
-                if block_collision:
+        # Block collision: replicate base_domain_modified.pddl events
+        # ``collision_block`` (punch-through) and ``collision_block_bounce_off``
+        # (hard stop). The bird punches through when its kinetic energy
+        # exceeds the block's life-squared, scaled by bird_block_damage:
+        #
+        #     life² <= (vx² + vy²) * damage²
+        #
+        # Previously we always treated block overlap as a hard stop; that
+        # made the Python sim reject any ENHSP plan that flies through a
+        # low-life ice/wood block on the way to the pig (see
+        # `[SIM/REAL] MISMATCH: sim predicted miss but level WON`
+        # fingerprint on ~10 wins in run_20260822_190314.log).
+        _hit_this_step = None
+        for blk in blocks:
+            blk_left = blk["x"] - blk["w"] / 2
+            blk_right = blk["x"] + blk["w"] / 2
+            blk_bottom = blk["y"] - blk["h"] / 2
+            blk_top = blk["y"] + blk["h"] / 2
+            for sx, sy in ((x, y), (nx, ny)):
+                if (sx - br <= blk_right and
+                        sx + br >= blk_left and
+                        sy + br >= blk_bottom and
+                        sy - br <= blk_top):
+                    _hit_this_step = (blk, sx, sy)
                     break
+            if _hit_this_step is not None:
+                break
+
+        if _hit_this_step is not None:
+            blk, sx, sy = _hit_this_step
+            life = blk["life"]
+            damage = blk["damage"]
+            ke = vx * vx + vy * vy
+            can_punch = (life * life) <= ke * (damage * damage)
+            if can_punch:
+                # ``collision_block``: block breaks, bird continues with a
+                # velocity penalty. The exact impulse loss isn't in the
+                # domain; ``_v_scale`` of 0.85 drains ~28 % of KE, matching
+                # the "loses some speed" behaviour observers report from
+                # AB physics. Recompute ``nvy`` because gravity was already
+                # applied to the un-damped vy above.
+                _v_scale = 0.85
+                vx *= _v_scale
+                vy *= _v_scale
+                nvy = vy - gravity * dt
+                blocks = [b for b in blocks if b["name"] != blk["name"]]
+                if debug:
+                    print(
+                        f"[SIM DEBUG] Step {step}: BLOCK PUNCH-THROUGH "
+                        f"'{blk['name']}' at ({sx:.1f}, {sy:.1f}) "
+                        f"life={life:.2f}² <= ke={ke:.0f} * dmg²={damage:.2f}² "
+                        f"→ v *= {_v_scale}"
+                    )
+            else:
+                # ``collision_block_bounce_off``: hard stop, matches prior
+                # behaviour so plans that hit heavy stone still fail.
+                block_collision = True
+                block_hit_name = blk["name"]
+                if debug:
+                    print(
+                        f"[SIM DEBUG] Step {step}: BLOCK BOUNCE-OFF '{blk['name']}' "
+                        f"at ({sx:.1f}, {sy:.1f}) "
+                        f"life={life:.2f}² > ke={ke:.0f} * dmg²={damage:.2f}²"
+                    )
+                bounce_count = 3
 
         if block_collision:
             break

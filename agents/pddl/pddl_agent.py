@@ -4,6 +4,7 @@ import os
 import time
 import random
 import pickle
+from typing import Optional, Tuple
 import numpy as np
 from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
@@ -171,8 +172,21 @@ class PDDLAgent(BaselineAgent):
         # each unique level appears exactly once in CSV / phyq_metrics / game_results
         # (WIN on first solve, or ABANDONED after max_train_attempts LOSSes).
         self._finalized_level_paths = set()
-
         self.scenario_filter = scenario_filter
+
+        # Mode B pixel-nudge retry: remember winning release pixels and probe ±1px
+        # around near-misses before large ENHSP dial diversification (run_20260826:
+        # 00023/24/16 regressed when first-shot release drifted by 1–3 px).
+        self._winning_release_by_level: dict = {}
+        self._release_nudge_delta: Optional[Tuple[int, int]] = None
+        self._skip_retry_diversify: bool = False
+        self._retry_anchor_release: Optional[Tuple[int, int]] = None
+        self._near_miss_active: bool = False
+        self._RELEASE_PIXEL_NUDGE_OFFSETS = (
+            (1, 1), (-1, -1),
+            (1, 0), (-1, 0), (0, 1), (0, -1),
+            (1, -1), (-1, 1),
+        )
         self.min_deg = min_deg
         self.max_deg = max_deg
         self.deg_step = deg_step
@@ -267,10 +281,22 @@ class PDDLAgent(BaselineAgent):
             )
         else:
             print("[PDDL] Sim override ENABLED — forward sim may reject ENHSP plans and run sim-search refinement")
-        self.kb_force = []        # list of (force, v_meas) tuples
+        self.kb_force = []        # list of (force, v_meas, flight_angle_deg) tuples
         self.force_lr_model = None
         self.force_lr_r2 = None
         self._force_kb_max_samples = 40
+        # ── BamBirds angle-aware velocity model (Fix #2) ──────────────────
+        # Predicts launch |v| given (flight_angle, force) via
+        # ``bambirds_shot_helper.angle_to_velocity(θ) × bambirds_scale × force``.
+        # ``bambirds_scale`` is the px/s per (BamBirds-unit × force) mapping;
+        # learned online from clean shots via ``recalculate_scaling_factor``.
+        # Starts at None → falls back to the linear LR model until we have
+        # at least one clean (angle, force, v) sample. See analysis in
+        # `run_20260822_190314.log`: linear v = a·force + b hit R²≈0.74
+        # because it ignored angle; L12 lost with perfect angle but |v|
+        # short by 10 % — this fixes that failure mode.
+        self.bambirds_scale = None
+        self.bambirds_scale_n = 0
 
         # Angle selection mode (priority order):
         # 0. debug_mag_comparison=True: Fixed angle, varying mag
@@ -538,8 +564,25 @@ class PDDLAgent(BaselineAgent):
             )
         return True, None
 
-    def _speed_at_force(self, v_full: float, force: float) -> float:
-        """Launch speed hook shared by forward sim (matches domain when no LR model)."""
+    def _speed_at_force(
+        self, v_full: float, force: float, angle_deg: float = None,
+    ) -> float:
+        """Launch speed hook shared by forward sim.
+
+        Prefers the BamBirds angle-aware model
+        (``angle_to_velocity(θ) × bambirds_scale × force``) once we have a
+        calibrated ``bambirds_scale`` from at least one clean shot.
+        Falls back to the linear LR model, and finally to the pa-twang
+        linear formula when nothing is learned yet. ``angle_deg`` is the
+        flight angle (``pddl_flight_angle_deg`` of the dial angle).
+        """
+        if self.bambirds_scale is not None and angle_deg is not None:
+            from agents.pddl.pddl_files.bambirds_shot_helper import angle_to_velocity
+            theta_rad = math.radians(float(angle_deg))
+            speed_units = angle_to_velocity(theta_rad, self.bambirds_scale)
+            v = speed_units * float(force)
+            if 20.0 <= v <= 400.0:
+                return v
         return launch_speed_at_force(v_full, force, force_lr_model=self.force_lr_model)
 
     def _log_execution_mapping(
@@ -554,7 +597,7 @@ class PDDLAgent(BaselineAgent):
         v_bird = self.world_model.hyperparams_values.get(Params.velocity, 180)
         pddl_flight = pddl_flight_angle_deg(exec_angle)
         v_portion = pddl_force_to_v_portion(planned_force)
-        expected_v = self._speed_at_force(v_bird, planned_force)
+        expected_v = self._speed_at_force(v_bird, planned_force, angle_deg=pddl_flight)
         domain_v = float(v_bird) * float(planned_force)
         sling_h = float(getattr(sling, "height", 0) or 0)
         print(
@@ -651,6 +694,7 @@ class PDDLAgent(BaselineAgent):
         flight_err_deg: float = None,
         flight_slack_deg: float = None,
         segment_ok: bool = None,
+        flight_target_deg: float = None,
     ) -> None:
         """Append a (force, v_meas) pair and refit LR model when enough samples exist.
 
@@ -687,10 +731,48 @@ class PDDLAgent(BaselineAgent):
                 f"(v_meas={v_meas:.1f} not trustworthy)"
             )
             return
-        self.kb_force.append((force, v_meas))
+        self.kb_force.append((force, v_meas, flight_target_deg))
         if len(self.kb_force) > self._force_kb_max_samples:
             self.kb_force = self.kb_force[-self._force_kb_max_samples:]
         self._fit_force_model()
+        # BamBirds angle-aware scale calibration (Fix #2). Only clean shots
+        # reach this point (angle-err and segment gates above). We track a
+        # single px-per-(BamBirds-unit × force) scalar
+        # ``bambirds_scale`` such that
+        #     v_pred = angle_to_velocity(θ, scale=1) * bambirds_scale * force
+        # Blended with EMA to smooth jitter. Extreme angles skipped because
+        # the BamBirds polynomial is only calibrated in [~5°, ~83°].
+        if (
+            flight_target_deg is not None and force > 0
+            and 5.0 <= float(flight_target_deg) <= 83.0
+        ):
+            from agents.pddl.pddl_files.bambirds_shot_helper import angle_to_velocity
+            theta_rad = math.radians(float(flight_target_deg))
+            base = angle_to_velocity(theta_rad, 1.0)  # unscaled polynomial output
+            if base > 0:
+                observed_scale = float(v_meas) / (base * float(force))
+                prior = self.bambirds_scale
+                if prior is None:
+                    self.bambirds_scale = observed_scale
+                else:
+                    # Reject wild outliers (>25 % away from prior) to
+                    # protect from bad segment fits that slipped past the
+                    # angle-err gate. Comparable to BamBirds'
+                    # ``recalculateScalingFactor`` guard rails.
+                    if abs(observed_scale - prior) / prior <= 0.25:
+                        alpha = 0.4 if self.bambirds_scale_n < 5 else 0.2
+                        self.bambirds_scale = (
+                            alpha * observed_scale + (1.0 - alpha) * prior
+                        )
+                self.bambirds_scale_n += 1
+                v_check = angle_to_velocity(theta_rad, self.bambirds_scale) * float(force)
+                print(
+                    f"[BAMBIRDS SCALE] θ={float(flight_target_deg):.1f}° "
+                    f"force={force:.3f} v_meas={v_meas:.1f} "
+                    f"(obs_scale={observed_scale:.2f}) → "
+                    f"scale={self.bambirds_scale:.2f} "
+                    f"(n={self.bambirds_scale_n}, predicts |v|={v_check:.1f})"
+                )
 
     def _fit_force_model(self) -> None:
         if len(self.kb_force) < self.force_learning_min_samples:
@@ -699,9 +781,9 @@ class PDDLAgent(BaselineAgent):
         from sklearn.metrics import r2_score
         import numpy as np
 
-        forces_1d = np.array([f for f, _ in self.kb_force])
+        forces_1d = np.array([row[0] for row in self.kb_force])
         forces_2d = forces_1d.reshape(-1, 1)
-        velocities = np.array([v for _, v in self.kb_force])
+        velocities = np.array([row[1] for row in self.kb_force])
         model_lr = LinearRegression()
         model_lr.fit(forces_2d, velocities)
         self.force_lr_model = model_lr
@@ -1150,11 +1232,25 @@ class PDDLAgent(BaselineAgent):
         planned_launch = pddl_planned_launch_state(
             exec_angle, ref_x, ref_y_pddl, planned_force, v_bird,
             force_lr_model=self.force_lr_model,
+            speed_at_force=self._speed_at_force,
         )
         pddl_flight_deg = planned_launch["flight_angle_deg"]
         release_point = pddl_shot_to_release_point(
             self.tp, sling, exec_angle, planned_force,
         )
+        override = getattr(self, "_release_nudge_delta", None)
+        if override is not None:
+            from src.utils.point2D import Point2D
+            dx, dy = override
+            ox = int(release_point.X) + int(dx)
+            oy = int(release_point.Y) + int(dy)
+            print(
+                f"[PIXEL-NUDGE] Nudging ENHSP release "
+                f"({release_point.X}, {release_point.Y}) + ({dx:+d}, {dy:+d}) "
+                f"→ ({ox}, {oy})"
+            )
+            release_point = Point2D(ox, oy)
+            self._release_nudge_delta = None
         # Log the BamBirds correction being applied so we can see the actual
         # game-request angle vs the domain's flight angle.
         from agents.pddl.pddl_files.bambirds_shot_helper import actual_to_launch_deg
@@ -1545,7 +1641,8 @@ class PDDLAgent(BaselineAgent):
                 f"ENHSP target={pddl_flight_deg:.1f}° (err={flight_err:+.1f}°, slack=±{slack:.0f}°)"
             )
         v_expected = self._speed_at_force(
-            self.world_model.hyperparams_values.get(Params.velocity, 180), planned_force,
+            self.world_model.hyperparams_values.get(Params.velocity, 180),
+            planned_force, angle_deg=pddl_flight_deg,
         )
         v_err = launch['v_meas'] - v_expected
         if abs(v_err) > 8.0:
@@ -1561,6 +1658,7 @@ class PDDLAgent(BaselineAgent):
             flight_err_deg=flight_err,
             flight_slack_deg=slack,
             segment_ok=force_sample_seg_ok,
+            flight_target_deg=pddl_flight_deg,
         )
 
         if should_learn:
@@ -1740,7 +1838,7 @@ class PDDLAgent(BaselineAgent):
         if level_finished:
             # Common metadata for both retry and finalize paths
             level_path = self.get_current_level_path()
-            score = self.ar.get_current_score() if game_result else 0
+            score = self.ar.get_current_score()
             scenario = self.phyq_metrics.extract_scenario_from_path(level_path)
             level_name = level_path.split('/')[-1] if '/' in level_path else level_path
             scenario_str = scenario if scenario else "unknown"
@@ -1788,6 +1886,9 @@ class PDDLAgent(BaselineAgent):
             )
 
             if should_retry_level:
+                self._prepare_release_override_for_retry(
+                    level_path, score, this_attempt_number,
+                )
                 # Bump retry counter and signal main loop to restart the same level.
                 self._current_level_retry_index = this_attempt_number
                 # Remember what THIS attempt shot so the next attempt's
@@ -1818,6 +1919,8 @@ class PDDLAgent(BaselineAgent):
                           f"(game replayed the level after finalize).")
                 else:
                     self._finalized_level_paths.add(level_path)
+                    if game_result:
+                        self._record_winning_release(level_path)
 
                     self.wins.append(game_result)
                     self.games_played += 1
@@ -1864,6 +1967,10 @@ class PDDLAgent(BaselineAgent):
                 self._prev_attempt_plan_source = "planner"
                 self._current_level_fallback_history = []
                 self._retry_current_level = False
+                self._release_nudge_delta = None
+                self._skip_retry_diversify = False
+                self._retry_anchor_release = None
+                self._near_miss_active = False
 
             # Reset per-attempt shot counter regardless of retry vs. finalize.
             self._current_level_attempts = 0
@@ -1984,8 +2091,8 @@ class PDDLAgent(BaselineAgent):
         # Fit model if enough samples
         if len(self.kb_force) >= self.force_learning_min_samples:
             from agents.pddl.optimizer import get_poly_rank
-            forces_1d = np.array([f for f, _ in self.kb_force])
-            velocities = np.array([v for _, v in self.kb_force])
+            forces_1d = np.array([row[0] for row in self.kb_force])
+            velocities = np.array([row[1] for row in self.kb_force])
 
             # --- Model B: Best-degree Polynomial (get_poly_rank) ---
             rank, poly = get_poly_rank(forces_1d, velocities, max_rank=5, threshold=1.0)
@@ -2009,7 +2116,7 @@ class PDDLAgent(BaselineAgent):
 
             # Show all data points
             print(f"  [FORCE LEARN] KB: ", end="")
-            print(", ".join(f"({f:.2f},{v:.1f})" for f, v in self.kb_force))
+            print(", ".join(f"({row[0]:.2f},{row[1]:.1f})" for row in self.kb_force))
         else:
             print(f"  [FORCE LEARN] Collecting samples ({len(self.kb_force)}/{self.force_learning_min_samples} needed for model)")
 
@@ -2294,6 +2401,12 @@ class PDDLAgent(BaselineAgent):
     #   - high-arc miss (22, 23, 24) needs LOWER dial (-6 to -12°) or force<1
     # Schedule alternates direction with widening amplitude so all clusters
     # get a shot within 4 retries.
+    _RETRY_NEAR_MISS_SCHEDULE = (
+        (+1.0, 0.0),
+        (-1.0, 0.0),
+        (+2.0, 0.0),
+        (-2.0, 0.0),
+    )
     _RETRY_DIVERSIFY_SCHEDULE = (
         (+6.0, 0.0),
         (-6.0, 0.0),
@@ -2306,6 +2419,78 @@ class PDDLAgent(BaselineAgent):
     # (and lost). Anything else (ballistic_fallback, sim_search, sim_gate,
     # fallback, ...) means the base plan hasn't actually been played yet.
     _PLANNER_PLAN_SOURCES = frozenset({"planner", "planner_diversified"})
+
+    @staticmethod
+    def _level_template_key(level_path: str) -> str:
+        """e.g. single_force_t05_00023 → single_force_t05 (shared geometry family)."""
+        name = level_path.rstrip("/").split("/")[-1].replace(".xml", "")
+        parts = name.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            return parts[0]
+        return name
+
+    def _last_release_screen(self) -> Optional[Tuple[int, int]]:
+        diag = getattr(self, "_last_shot_diag", None)
+        if not diag:
+            return None
+        return (
+            int(round(diag["release_x_screen"])),
+            int(round(diag["release_y_screen"])),
+        )
+
+    def _record_winning_release(self, level_path: str) -> None:
+        rp = self._last_release_screen()
+        if rp is None:
+            return
+        self._winning_release_by_level[level_path] = rp
+        print(
+            f"[PIXEL-NUDGE] Stored winning release {rp} for {level_path} "
+            f"(template {self._level_template_key(level_path)})"
+        )
+
+    def _prepare_release_override_for_retry(
+        self,
+        level_path: str,
+        score: int,
+        failed_attempt_number: int,
+    ) -> None:
+        """
+        Before large dial diversification, probe ±1px release neighbours.
+
+        Only fires on partial-score near-misses (score > 0). Nudge is applied
+        relative to the *current* ENHSP release (not a stale absolute anchor),
+        so calibration drift between attempts does not pull the shot to the
+        wrong pixel (run_20260829: 00015 nudged toward (90,341) while ENHSP
+        release was (82,341)).
+        """
+        self._release_nudge_delta = None
+        self._skip_retry_diversify = False
+        self._near_miss_active = False
+
+        if int(score) <= 0:
+            return
+
+        self._near_miss_active = True
+        slot = max(0, int(failed_attempt_number) - 1)
+        offsets = self._RELEASE_PIXEL_NUDGE_OFFSETS
+        dx, dy = offsets[slot % len(offsets)]
+
+        last_rp = self._last_release_screen()
+        if last_rp is not None and self._retry_anchor_release is None:
+            self._retry_anchor_release = last_rp
+
+        if self._retry_anchor_release is None and last_rp is None:
+            return
+
+        anchor = self._retry_anchor_release or last_rp
+        self._release_nudge_delta = (dx, dy)
+        self._skip_retry_diversify = True
+        print(
+            f"[PIXEL-NUDGE] Retry attempt {failed_attempt_number + 1}: "
+            f"partial score={score} near-miss (anchor {anchor}) — "
+            f"will nudge ENHSP release by ({dx:+d}, {dy:+d}) "
+            f"(skipping dial diversification this attempt)"
+        )
 
     def _diversify_plan_for_retry(
         self,
@@ -2335,6 +2520,11 @@ class PDDLAgent(BaselineAgent):
         retry_index = int(getattr(self, "_current_level_retry_index", 0) or 0)
         if retry_index <= 0:
             return planned_angle, planned_force
+        if getattr(self, "_release_nudge_delta", None) is not None:
+            return planned_angle, planned_force
+        if getattr(self, "_skip_retry_diversify", False):
+            self._skip_retry_diversify = False
+            return planned_angle, planned_force
         prev_source = str(getattr(self, "_prev_attempt_plan_source", "planner") or "planner")
         if prev_source not in self._PLANNER_PLAN_SOURCES:
             print(
@@ -2343,9 +2533,17 @@ class PDDLAgent(BaselineAgent):
                 f"(dial {planned_angle:.1f}°, force {planned_force:.2f})."
             )
             return planned_angle, planned_force
-        dial_delta, force_delta = self._RETRY_DIVERSIFY_SCHEDULE[
-            (retry_index - 1) % len(self._RETRY_DIVERSIFY_SCHEDULE)
-        ]
+
+        schedule = self._RETRY_DIVERSIFY_SCHEDULE
+        slot = retry_index - 1
+        label = "standard"
+        if getattr(self, "_near_miss_active", False) and slot < len(self._RETRY_NEAR_MISS_SCHEDULE):
+            schedule = self._RETRY_NEAR_MISS_SCHEDULE
+            label = "near-miss micro"
+        elif getattr(self, "_near_miss_active", False):
+            slot = slot - len(self._RETRY_NEAR_MISS_SCHEDULE)
+
+        dial_delta, force_delta = schedule[slot % len(schedule)]
         exec_min, exec_max = self._planner_executable_dial_bounds()
         dial_min = max(exec_min, float(self.min_deg))
         dial_max = min(exec_max, float(self.max_deg))
@@ -2355,13 +2553,35 @@ class PDDLAgent(BaselineAgent):
         if abs(new_angle - planned_angle) < 1e-3 and abs(new_force - planned_force) < 1e-3:
             return planned_angle, planned_force
         print(
-            f"[RETRY-DIVERSIFY] Attempt {retry_index + 1}: perturbing ENHSP plan "
+            f"[RETRY-DIVERSIFY] Attempt {retry_index + 1}: {label} perturbation "
             f"(dial {planned_angle:.1f}° → {new_angle:.1f}°, "
             f"force {planned_force:.2f} → {new_force:.2f}; "
-            f"schedule slot {retry_index}/{len(self._RETRY_DIVERSIFY_SCHEDULE)} "
-            f"= dial{dial_delta:+.1f}°, force{force_delta:+.2f})"
+            f"slot {slot + 1} = dial{dial_delta:+.1f}°, force{force_delta:+.2f})"
         )
         return new_angle, new_force
+
+    def _try_retry_relaxed_sim_search(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        hint_force: float = 1.0,
+    ):
+        """
+        On train retries after near-miss or repeated diversified failures, run a
+        relaxed angle×force grid that accepts platform-slide pig kills.
+        """
+        search_angle, search_force = self._search_fallback_by_sim(
+            problem_data, world_model_params, hint_force=hint_force, quiet=True,
+        )
+        if search_angle is None:
+            return None, None, None
+        exec_sim = self._simulate_shot(
+            problem_data, search_angle, world_model_params, force=search_force,
+        )
+        if not exec_sim.get("pig_killed_in_sim"):
+            return None, None, None
+        actions = self._build_shot_actions(search_angle, search_force)
+        return actions, search_angle, search_force
 
     def _search_fallback_by_sim(
         self,
@@ -4184,6 +4404,29 @@ class PDDLAgent(BaselineAgent):
             angle = new_angle
             planned_force = new_force
             self._last_plan_source = "planner_diversified"
+
+        retry_index = int(getattr(self, "_current_level_retry_index", 0) or 0)
+        if (
+            retry_index >= 2
+            and not self.disable_forward_sim
+            and self._current_level_phase() == "train"
+            and getattr(self, "_release_nudge_delta", None) is None
+        ):
+            try_relaxed = (
+                getattr(self, "_near_miss_active", False)
+                or retry_index >= 3
+            )
+            if try_relaxed:
+                relaxed = self._try_retry_relaxed_sim_search(
+                    problem_data, world_model_params, hint_force=planned_force,
+                )
+                if relaxed[0] is not None:
+                    actions, angle, planned_force = relaxed
+                    self._last_plan_source = "sim_search_retry"
+                    print(
+                        f"[RETRY-SIM] Attempt {retry_index + 1}: using relaxed "
+                        f"sim-search plan (dial {angle:.1f}°, force {planned_force:.2f})"
+                    )
 
         sim = self._finalize_plan_metadata(problem_data, angle, world_model_params, force=planned_force)
 
