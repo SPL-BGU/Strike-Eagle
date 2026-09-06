@@ -951,6 +951,13 @@ class AngleCalibrator:
         force: float = 1.0,
     ) -> float:
         """Launch angle the game will produce for this PDDL dial (after pull clamping)."""
+        flight_target = self.pddl_flight_angle(pddl_dial)
+        # Steep SB6.6 lobs: game flight tracks the BamBirds pull angle, not the
+        # PDDL flight target. Shipped bootstrap extrapolates to ~79° for an
+        # 82.5° dial while observed launches are ~87° (multiple_forces 00033).
+        from .bambirds_shot_helper import actual_to_launch_deg, HIGH_ANGLE_BEGIN_RAD
+        if math.radians(flight_target) >= HIGH_ANGLE_BEGIN_RAD:
+            return actual_to_launch_deg(flight_target)
         game_pull = self.game_pull_for_pddl_dial(
             pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
         )
@@ -983,8 +990,8 @@ class AngleCalibrator:
         )
         if abs(game_pull - raw_pull) > 1e-3:
             return False
-        measured = self.measured_flight_for_game_pull(
-            game_pull, min_pull=min_pull, max_pull=max_pull, force=force,
+        measured = self.measured_flight_for_pddl_dial(
+            pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
         )
         return abs(measured - target) <= float(flight_slack)
 
@@ -1048,14 +1055,12 @@ class AngleCalibrator:
         """
         PDDL dial to pass to forward sim so trajectory matches in-game launch.
 
-        Maps ENHSP dial → clamped game pull → measured flight θ → dial for sim
-        (dial = measured θ + ANGLE_BIAS_DEGREES).
+        Delegates to ``measured_flight_for_pddl_dial`` (bootstrap at low/mid
+        angles; BamBirds pull-angle model above ``HIGH_ANGLE_BEGIN_RAD``) so
+        sim and ``pddl_shot_to_release_point`` stay aligned on steep lobs.
         """
-        game_pull = self.game_pull_for_pddl_dial(
+        measured = self.measured_flight_for_pddl_dial(
             pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
-        )
-        measured = self.measured_flight_for_game_pull(
-            game_pull, min_pull=min_pull, max_pull=max_pull, force=force,
         )
         return measured + ANGLE_BIAS_DEGREES
 

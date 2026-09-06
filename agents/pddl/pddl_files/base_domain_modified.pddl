@@ -398,12 +398,10 @@
             (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
         )
         :effect (and
-            (when (< (x_bird ?b) 289.75000000) (assign (y_bird ?b) (+ 13.3174 (+ (* 0.8329 (y_bird ?b)) (* 0.1594 (vy_bird ?b))))))
-            (when (>= (x_bird ?b) 289.75000000) (assign (y_bird ?b) (+ 42.1388 (+ (* 0.1115 (vx_bird ?b)) (* 0.2062 (vy_bird ?b))))))
-            (when (< (x_bird ?b) 289.75000000) (assign (vx_bird ?b) (+ 116.6667 0.0)))
-            (when (>= (x_bird ?b) 289.75000000) (assign (vx_bird ?b) (+ 1.9400 (+ (* 0.1573 (x_bird ?b)) (+ (* 0.5587 (vx_bird ?b)) (* 0.7907 (vy_bird ?b)))))))
-            (assign (vy_bird ?b) (+ 258.9826 (+ (* -1.0466 (x_bird ?b)) (+ (* 0.8542 (y_bird ?b)) (+ (* -0.3620 (vx_bird ?b)) (* -0.7639 (vy_bird ?b)))))))
-            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
+            (assign (v_bird ?b) 0)
+            (assign (vx_bird ?b) 0)
+            (assign (vy_bird ?b) 0)
+            (assign (bounce_count ?b) 3)
             (assign (mod) 2)
         )
     )
@@ -483,6 +481,7 @@
         :effect (and
             (assign (block_life ?bl_near) 0)
             (assign (block_stability ?bl_near) 0)
+        )
         )
     )
 

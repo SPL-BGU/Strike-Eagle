@@ -386,6 +386,8 @@ class CARTEventModel:
 # OLS ('none') and Ridge leaf ('l2') training skipped — only L1 + ElasticNet leaves compete for injection.
 # M5_LEAF_REG_ORDER = ('none', 'l1', 'l2', 'elasticnet')
 M5_LEAF_REG_ORDER = ('l1', 'elasticnet')
+# Retrain collision M5 every N completed train levels (samples still accumulated each shot).
+COLLISION_RETRAIN_EVERY_N_LEVELS = 10
 M5_LEAF_REG_LABELS = {
     'none': 'M5 (no reg / OLS leaves)',
     'l1': 'M5 (L1 / Lasso leaves)',
@@ -1139,27 +1141,34 @@ class EventModelManager:
     
     def train_and_compare(self, event_name, var_name, X, y, pre_states=None):
         """
-        Train General, CART, and M5 trees for leaf reg: L1, ElasticNet (OLS and L2 leaf variants disabled).
+        Train M5 trees for leaf reg: L1, ElasticNet (injected into PDDL).
+
+        General and CART comparison training is disabled for speed — only M5
+        is fitted and selected for injection.
         
         Returns:
-            dict with general_model, cart_model, m5_models (by reg key), m5_stats_by_reg,
-            m5_model / m5_stats (best M5 by LOO-CV among trained leaf regs), winner, etc.
+            dict with m5_models (by reg key), m5_stats_by_reg,
+            m5_model / m5_stats (best M5 by LOO-CV among trained leaf regs), etc.
         """
         n_samples = len(y)
-        
-        config = REGULARIZATION_CONFIG
-        general_model = self._train_general_model(
-            X, y,
-            alpha=config['alpha'],
-            l1_ratio=config['l1_ratio'],
-            regularization=config['type']
-        )
-        general_stats = self._compute_model_stats(general_model, X, y, 'general')
-        
-        cart_model = CARTEventModel(var_name)
-        cart_model.fit(X, y)
-        cart_stats = self._compute_model_stats(cart_model, X, y, 'cart')
-        
+
+        # --- General + CART (disabled — comparison-only, not injected) ---
+        # config = REGULARIZATION_CONFIG
+        # general_model = self._train_general_model(
+        #     X, y,
+        #     alpha=config['alpha'],
+        #     l1_ratio=config['l1_ratio'],
+        #     regularization=config['type']
+        # )
+        # general_stats = self._compute_model_stats(general_model, X, y, 'general')
+        # cart_model = CARTEventModel(var_name)
+        # cart_model.fit(X, y)
+        # cart_stats = self._compute_model_stats(cart_model, X, y, 'cart')
+        general_model = None
+        general_stats = {'loo_cv': float('inf'), 'loo_cv_std': 0, 'train_rmse': float('inf'), 'r2': 0, 'n_samples': n_samples}
+        cart_model = None
+        cart_stats = {'loo_cv': float('inf'), 'loo_cv_std': 0, 'train_rmse': float('inf'), 'r2': 0, 'n_samples': n_samples}
+
         m5_models = {}
         m5_stats_by_reg = {}
         for reg in M5_LEAF_REG_ORDER:
@@ -1175,12 +1184,11 @@ class EventModelManager:
         best_m5_reg = min(M5_LEAF_REG_ORDER, key=_loo_key)
         m5_model = m5_models[best_m5_reg]
         m5_stats = m5_stats_by_reg[best_m5_reg]
-        
-        winner, winner_name, improvement_pct = self._select_winner_m5_suite(
-            general_model, general_stats,
-            cart_model, cart_stats,
-            m5_models, m5_stats_by_reg
-        )
+
+        info = m5_model.get_stats()
+        winner_name = f"{M5_LEAF_REG_LABELS[best_m5_reg]} (d={info['best_depth']}, l={info['n_leaves']})"
+        winner = m5_model
+        improvement_pct = 0.0
         
         result = {
             'winner': winner,
@@ -1194,9 +1202,9 @@ class EventModelManager:
             'm5_model': m5_model,
             'm5_stats': m5_stats,
             'best_m5_leaf_reg': best_m5_reg,
-            'domain_model': cart_model,
-            'domain_stats': cart_stats,
-            'domain_name': 'CART',
+            'domain_model': m5_model,
+            'domain_stats': m5_stats,
+            'domain_name': 'M5',
             'improvement_pct': improvement_pct,
             'n_samples': n_samples
         }
@@ -1929,21 +1937,27 @@ def make_feature_vector(data, include_velocity_ratio=False, include_trig_feature
     return np.array(result)
 
 
-def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_event_state: dict, debug: bool = False):
+def update_model_effects(
+    event_name: str,
+    kb: dict,
+    pre_event_state: dict,
+    post_event_state: dict,
+    train_level: int = None,
+    debug: bool = False,
+):
     """
-    Updates the knowledge base with a new event and retrains variable models based on accumulated data.
-    
-    Uses EventModelManager to:
-    1. Train a General model (always used for PDDL injection)
-    2. Train CART for comparison
-    3. Train M5 model trees for leaf reg in M5_LEAF_REG_ORDER (OLS/L2 variants disabled) for comparison
-    4. Compare all via LOO-CV; CART/M5 are not injected
+    Updates the knowledge base with a new event and retrains M5 collision models.
+
+    Samples are appended every call; full M5 retrain runs on the first sample and
+    then every COLLISION_RETRAIN_EVERY_N_LEVELS completed train levels (at most
+    once per milestone level).
 
     Parameters:
         event_name (str): Name of the event.
         kb (dict): Knowledge base dictionary.
         pre_event_state (dict): Dictionary of features before the event.
         post_event_state (dict): Dictionary of features after the event.
+        train_level (int): Current train level index (1-based phy-q level counter).
         debug (bool): If True, print model comparison debug output.
     
     Returns:
@@ -1964,11 +1978,38 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
             if var in kb[event_name]["variables"]:
                 kb[event_name]["variables"][var]["value"].append(post_event_state[var])
 
+    n_samples = len(kb[event_name]["states"])
+    should_retrain = n_samples == 1
+    if not should_retrain and train_level is not None:
+        last_level = kb.get("_m5_last_retrain_level", -1)
+        if (
+            train_level > 0
+            and train_level % COLLISION_RETRAIN_EVERY_N_LEVELS == 0
+            and train_level != last_level
+        ):
+            should_retrain = True
+    if not should_retrain:
+        defer_note = f"every {COLLISION_RETRAIN_EVERY_N_LEVELS} train levels"
+        if train_level is not None:
+            defer_note += f" (level {train_level})"
+        print(
+            f"[COLLISION-LEARN] {event_name}: stored sample {n_samples}, "
+            f"retrain deferred ({defer_note})"
+        )
+        return EventModelManager()
+
+    if train_level is not None:
+        kb["_m5_last_retrain_level"] = train_level
+
     # Create feature matrix and get pre-states
     states = make_feature_vector(kb[event_name]["states"])
     pre_states = kb[event_name]["states"]
     
-    # Use EventModelManager for training and comparison
+    print(
+        f"[COLLISION-LEARN] {event_name}: retraining M5 on {n_samples} sample(s)"
+    )
+
+    # Use EventModelManager for M5 training
     manager = EventModelManager()
     
     for var_name, variable in kb[event_name]["variables"].items():
@@ -1983,9 +2024,7 @@ def update_model_effects(event_name: str, kb: dict, pre_event_state: dict, post_
             pre_states=pre_states
         )
         
-        # ALWAYS store the General model for PDDL injection
-        # CART is used only for comparison to show if tree-based learning would be better
-        variable["model"] = result['general_model']
+        variable["model"] = result['m5_model']
         variable["model_comparison"] = result
         
         m5_hist_keys = [f"m5_{r}" for r in M5_LEAF_REG_ORDER]

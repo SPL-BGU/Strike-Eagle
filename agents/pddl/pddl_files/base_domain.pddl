@@ -475,6 +475,7 @@
             (assign (block_life ?bl_near) 0)
             (assign (block_stability ?bl_near) 0)
         )
+        )
     )
 
     (:event explode_pig_from_bird

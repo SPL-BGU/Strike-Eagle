@@ -73,6 +73,8 @@ PLAN_PICK_FULL_SEARCH_DEG_STEP = 1.0
 PLAN_PICK_NEAR_SEARCH_HALF_WIDTH_DEG = 15.0
 # Wall-clock cap for plan-pick forward sim only (ENHSP keeps its own timeout). 0 = no cap.
 PLAN_PICK_SEARCH_TIMEOUT_SEC = 60.0
+# ENHSP subprocess wall-clock limit (seconds).
+ENHSP_TIMEOUT_SEC = 120
 
 
 def _extract_force_angle(actions, default_force=1.0):
@@ -570,16 +572,25 @@ class PDDLAgent(BaselineAgent):
         """Launch speed hook shared by forward sim.
 
         Prefers the BamBirds angle-aware model
-        (``angle_to_velocity(θ) × bambirds_scale × force``) once we have a
-        calibrated ``bambirds_scale`` from at least one clean shot.
-        Falls back to the linear LR model, and finally to the pa-twang
-        linear formula when nothing is learned yet. ``angle_deg`` is the
-        flight angle (``pddl_flight_angle_deg`` of the dial angle).
+        (``angle_to_velocity(θ) × scale × force``). Uses learned
+        ``bambirds_scale`` when available, otherwise
+        ``DEFAULT_SCENE_SCALE_SB66`` so cold-start sims aren't stuck at
+        domain ``v_bird×force``. Falls back to the linear LR model when
+        angle is unknown. ``angle_deg`` is the expected in-game flight
+        angle (execution-aligned, not raw ENHSP dial).
         """
-        if self.bambirds_scale is not None and angle_deg is not None:
-            from agents.pddl.pddl_files.bambirds_shot_helper import angle_to_velocity
+        if angle_deg is not None:
+            from agents.pddl.pddl_files.bambirds_shot_helper import (
+                angle_to_velocity,
+                DEFAULT_SCENE_SCALE_SB66,
+            )
+            scale = (
+                self.bambirds_scale
+                if self.bambirds_scale is not None
+                else DEFAULT_SCENE_SCALE_SB66
+            )
             theta_rad = math.radians(float(angle_deg))
-            speed_units = angle_to_velocity(theta_rad, self.bambirds_scale)
+            speed_units = angle_to_velocity(theta_rad, scale)
             v = speed_units * float(force)
             if 20.0 <= v <= 400.0:
                 return v
@@ -628,9 +639,18 @@ class PDDLAgent(BaselineAgent):
         force: float = 1.0,
         debug: bool = False,
     ) -> dict:
+        sim_angle = self.angle_calibrator.sim_dial_for_game_execution(
+            angle, force=force,
+        )
+        if debug and abs(sim_angle - angle) > 0.3:
+            print(
+                f"[SIM EXEC] planner dial {angle:.1f}° → "
+                f"execution-aligned sim {sim_angle:.1f}° "
+                f"(Δ={sim_angle - angle:+.1f}°)"
+            )
         return simulate_pddl_shot_plan(
             problem_data,
-            angle,
+            sim_angle,
             gravity=world_model_params["gravity"],
             force=force,
             debug=debug,
@@ -867,7 +887,11 @@ class PDDLAgent(BaselineAgent):
             # Train collision model only during training phase
             if should_learn:
                 # Learn collision model (ablation disabled)
-                update_model_effects("collision", self.kb, pre_state, post_state, debug=False)
+                update_model_effects(
+                    "collision", self.kb, pre_state, post_state,
+                    train_level=getattr(self, "current_level", None),
+                    debug=False,
+                )
             
             # Only use first collision per trajectory
             break
@@ -931,7 +955,9 @@ class PDDLAgent(BaselineAgent):
 
             if should_learn:
                 update_model_effects(
-                    "platform_collision", self.kb, pre_state, post_state, debug=False
+                    "platform_collision", self.kb, pre_state, post_state,
+                    train_level=getattr(self, "current_level", None),
+                    debug=False,
                 )
                 n = len(self.kb["platform_collision"]["states"])
                 print(f"[PLATFORM LEARN] KB samples: {n}")
@@ -1574,8 +1600,13 @@ class PDDLAgent(BaselineAgent):
                 )
             print(f"[SHOT DIAG POST] verdict: {verdict}")
 
-        if should_learn:
+        if should_learn and len(first_segment) >= 2:
             self.learn_flight_physics(first_segment, force_scale=planned_force)
+        elif should_learn:
+            print(
+                f"[{current_phase.upper()}] Skipping flight physics learning "
+                f"(empty or too-short segment: {len(first_segment)} frames)"
+            )
         else:
             print(f"[{current_phase.upper()}] Skipping flight physics learning (evaluation mode)")
 
@@ -1583,135 +1614,146 @@ class PDDLAgent(BaselineAgent):
         # Trim 2 frames from end of first_segment for cleaner RMSE (avoid noisy impact transition)
         first_segment_trimmed = first_segment[:-2] if len(first_segment) > 5 else first_segment
 
-        gravity = self.world_model.hyperparams_values[Params.gravity]
-        try:
-            n_vel = min(5, max(1, len(first_segment_trimmed) - 2))
-            n_pos = min(3, max(1, len(first_segment_trimmed)))
-            launch = estimate_launch_from_trajectory(
-                first_segment_trimmed, n_vel=n_vel, n_pos=n_pos,
-            )
-        except ValueError:
-            dt = 0.02
-            release = np.asarray(first_segment_trimmed[0], dtype=float)
-            if len(first_segment_trimmed) > 1:
-                launch = {
-                    "release": release,
-                    "vx": (first_segment_trimmed[1, 0] - first_segment_trimmed[0, 0]) / dt,
-                    "vy": (first_segment_trimmed[1, 1] - first_segment_trimmed[0, 1]) / dt,
-                    "v_meas": self.world_model.hyperparams_values[Params.velocity],
-                    "theta_deg": angle,
-                }
-                launch["v_meas"] = float(np.hypot(launch["vx"], launch["vy"]))
-                launch["theta_deg"] = float(np.degrees(np.arctan2(launch["vy"], launch["vx"])))
-            else:
-                v = self.world_model.hyperparams_values[Params.velocity]
-                rad = math.radians(angle)
-                launch = {
-                    "release": release,
-                    "vx": v * math.cos(rad),
-                    "vy": v * math.sin(rad),
-                    "v_meas": v,
-                    "theta_deg": angle,
-                }
-            print("[LAUNCH ESTIMATE] Short segment — using fallback velocity estimate")
-
-        release = launch["release"]
-
-        print(f"\n[LAUNCH ESTIMATE] release=({release[0]:.2f}, {release[1]:.2f}) "
-              f"v=({launch['vx']:.1f}, {launch['vy']:.1f}) |v|={launch['v_meas']:.1f} "
-              f"θ_meas={launch['theta_deg']:.1f}° (exec angle={exec_angle:.1f}°, planned={angle:.1f}°, "
-              f"pddl flight θ={pddl_flight_deg:.1f}°, "
-              f"θ_err={launch['theta_deg'] - pddl_flight_deg:+.1f}°)")
-
-        self._log_sim_vs_game_comparison(
-            event_indexes_by_event,
-            exec_angle=exec_angle,
-            planned_angle=angle,
-            planned_force=planned_force,
-            pddl_flight_deg=pddl_flight_deg,
-            launch=launch,
-            phase="execution",
-        )
-
-        flight_err = launch['theta_deg'] - pddl_flight_deg
-        slack = self._execution_slack_deg(getattr(self, '_last_problem_data', {}))
-        if abs(flight_err) > slack:
+        if len(first_segment_trimmed) == 0:
             print(
-                f"[EXEC MAP] ANGLE MISMATCH: measured flight={launch['theta_deg']:.1f}° vs "
-                f"ENHSP target={pddl_flight_deg:.1f}° (err={flight_err:+.1f}°, slack=±{slack:.0f}°)"
+                "[SEGMENT 0 DEBUG] Empty trimmed segment — skipping launch estimate, "
+                "RMSE, and force-sample recording"
             )
-        v_expected = self._speed_at_force(
-            self.world_model.hyperparams_values.get(Params.velocity, 180),
-            planned_force, angle_deg=pddl_flight_deg,
-        )
-        v_err = launch['v_meas'] - v_expected
-        if abs(v_err) > 8.0:
-            print(
-                f"[EXEC MAP] SPEED MISMATCH: measured |v|={launch['v_meas']:.1f} vs "
-                f"expected={v_expected:.1f} (err={v_err:+.1f})"
+            self.rmse.append(float('inf'))
+            self.suggested_rmse.append(float('inf'))
+            self.impact_rmse.append(float('inf'))
+            self.impact_trajectories.append(None)
+        else:
+            gravity = self.world_model.hyperparams_values[Params.gravity]
+            try:
+                n_vel = min(5, max(1, len(first_segment_trimmed) - 2))
+                n_pos = min(3, max(1, len(first_segment_trimmed)))
+                launch = estimate_launch_from_trajectory(
+                    first_segment_trimmed, n_vel=n_vel, n_pos=n_pos,
+                )
+            except ValueError:
+                dt = 0.02
+                if len(first_segment_trimmed) > 1:
+                    release = np.asarray(first_segment_trimmed[0], dtype=float)
+                    launch = {
+                        "release": release,
+                        "vx": (first_segment_trimmed[1, 0] - first_segment_trimmed[0, 0]) / dt,
+                        "vy": (first_segment_trimmed[1, 1] - first_segment_trimmed[0, 1]) / dt,
+                        "v_meas": self.world_model.hyperparams_values[Params.velocity],
+                        "theta_deg": angle,
+                    }
+                    launch["v_meas"] = float(np.hypot(launch["vx"], launch["vy"]))
+                    launch["theta_deg"] = float(np.degrees(np.arctan2(launch["vy"], launch["vx"])))
+                else:
+                    release = np.asarray(first_segment_trimmed[0], dtype=float)
+                    v = self.world_model.hyperparams_values[Params.velocity]
+                    rad = math.radians(angle)
+                    launch = {
+                        "release": release,
+                        "vx": v * math.cos(rad),
+                        "vy": v * math.sin(rad),
+                        "v_meas": v,
+                        "theta_deg": angle,
+                    }
+                print("[LAUNCH ESTIMATE] Short segment — using fallback velocity estimate")
+
+            release = launch["release"]
+
+            print(f"\n[LAUNCH ESTIMATE] release=({release[0]:.2f}, {release[1]:.2f}) "
+                  f"v=({launch['vx']:.1f}, {launch['vy']:.1f}) |v|={launch['v_meas']:.1f} "
+                  f"θ_meas={launch['theta_deg']:.1f}° (exec angle={exec_angle:.1f}°, planned={angle:.1f}°, "
+                  f"pddl flight θ={pddl_flight_deg:.1f}°, "
+                  f"θ_err={launch['theta_deg'] - pddl_flight_deg:+.1f}°)")
+
+            self._log_sim_vs_game_comparison(
+                event_indexes_by_event,
+                exec_angle=exec_angle,
+                planned_angle=angle,
+                planned_force=planned_force,
+                pddl_flight_deg=pddl_flight_deg,
+                launch=launch,
+                phase="execution",
             )
 
-        force_sample_seg_ok, _ = self._flight_velocity_segment_quality_ok(first_segment)
-        self._record_force_sample(
-            planned_force,
-            launch["v_meas"],
-            flight_err_deg=flight_err,
-            flight_slack_deg=slack,
-            segment_ok=force_sample_seg_ok,
-            flight_target_deg=pddl_flight_deg,
-        )
+            flight_err = launch['theta_deg'] - pddl_flight_deg
+            slack = self._execution_slack_deg(getattr(self, '_last_problem_data', {}))
+            if abs(flight_err) > slack:
+                print(
+                    f"[EXEC MAP] ANGLE MISMATCH: measured flight={launch['theta_deg']:.1f}° vs "
+                    f"ENHSP target={pddl_flight_deg:.1f}° (err={flight_err:+.1f}°, slack=±{slack:.0f}°)"
+                )
+            v_expected = self._speed_at_force(
+                self.world_model.hyperparams_values.get(Params.velocity, 180),
+                planned_force, angle_deg=pddl_flight_deg,
+            )
+            v_err = launch['v_meas'] - v_expected
+            if abs(v_err) > 8.0:
+                print(
+                    f"[EXEC MAP] SPEED MISMATCH: measured |v|={launch['v_meas']:.1f} vs "
+                    f"expected={v_expected:.1f} (err={v_err:+.1f})"
+                )
 
-        if should_learn:
-            v_old = self.world_model.hyperparams_values[Params.velocity]
-            seg_ok, seg_reason = self._flight_velocity_segment_quality_ok(first_segment)
-            v_sane, v_sane_reason = self._velocity_update_acceptable(launch["v_meas"], v_old)
-            # Update v_bird EMA from any near-full-force shot with enough frames
-            # to give a stable launch-velocity read. Nearly-flat trajectories are
-            # accepted because launch |v| is a 1st-derivative quantity — only the
-            # sanity band + ±35 EMA delta guard against outliers.
-            if planned_force >= 0.95 and seg_ok and v_sane:
-                v_new = 0.85 * v_old + 0.15 * launch["v_meas"]
-                self.world_model.hyperparams_values[Params.velocity] = v_new
-                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_new:.2f} "
-                      f"(EMA updated, v_meas={launch['v_meas']:.2f}, force={planned_force:.3f})")
-            elif planned_force >= 0.95 and not seg_ok:
-                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
-                      f"(EMA skipped, bad segment: {seg_reason})")
-            elif planned_force >= 0.95 and not v_sane:
-                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
-                      f"(EMA skipped, v_meas={launch['v_meas']:.2f} rejected: {v_sane_reason})")
-            else:
-                print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
-                      f"(EMA skipped, partial force={planned_force:.3f}, v_meas={launch['v_meas']:.2f})")
+            force_sample_seg_ok, _ = self._flight_velocity_segment_quality_ok(first_segment)
+            self._record_force_sample(
+                planned_force,
+                launch["v_meas"],
+                flight_err_deg=flight_err,
+                flight_slack_deg=slack,
+                segment_ok=force_sample_seg_ok,
+                flight_target_deg=pddl_flight_deg,
+            )
 
-        limit = np.max(first_segment_trimmed, axis=0)[0]
-        estimated_trajectory = construct_trajectory_from_velocity(
-            release, launch["vx"], launch["vy"], gravity, limit,
-            prt=False, integration_method='rk4', stop_at_ground=True,
-        )
+            if should_learn:
+                v_old = self.world_model.hyperparams_values[Params.velocity]
+                seg_ok, seg_reason = self._flight_velocity_segment_quality_ok(first_segment)
+                v_sane, v_sane_reason = self._velocity_update_acceptable(launch["v_meas"], v_old)
+                # Update v_bird EMA from any near-full-force shot with enough frames
+                # to give a stable launch-velocity read. Nearly-flat trajectories are
+                # accepted because launch |v| is a 1st-derivative quantity — only the
+                # sanity band + ±35 EMA delta guard against outliers.
+                if planned_force >= 0.95 and seg_ok and v_sane:
+                    v_new = 0.85 * v_old + 0.15 * launch["v_meas"]
+                    self.world_model.hyperparams_values[Params.velocity] = v_new
+                    print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_new:.2f} "
+                          f"(EMA updated, v_meas={launch['v_meas']:.2f}, force={planned_force:.3f})")
+                elif planned_force >= 0.95 and not seg_ok:
+                    print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
+                          f"(EMA skipped, bad segment: {seg_reason})")
+                elif planned_force >= 0.95 and not v_sane:
+                    print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
+                          f"(EMA skipped, v_meas={launch['v_meas']:.2f} rejected: {v_sane_reason})")
+                else:
+                    print(f"[LAUNCH ESTIMATE] v_bird: {v_old:.2f} -> {v_old:.2f} "
+                          f"(EMA skipped, partial force={planned_force:.3f}, v_meas={launch['v_meas']:.2f})")
 
-        model_for_suggested = getattr(self, 'learned_transition_world_model', None) or self.world_model
-        suggested_gravity = model_for_suggested.hyperparams_values[Params.gravity]
-        suggested_trajectory = construct_trajectory_from_velocity(
-            release, launch["vx"], launch["vy"], suggested_gravity, limit,
-            prt=False, integration_method='rk4', stop_at_ground=True,
-        )
+            limit = np.max(first_segment_trimmed, axis=0)[0]
+            estimated_trajectory = construct_trajectory_from_velocity(
+                release, launch["vx"], launch["vy"], gravity, limit,
+                prt=False, integration_method='rk4', stop_at_ground=True,
+            )
 
-        current_rmse = calculate_rmse(first_segment_trimmed, estimated_trajectory, trim_start_percent=0, trim_end_percent=0, apply_bias_correction=False)
-        self.rmse.append(current_rmse)
-        self.suggested_rmse.append(calculate_rmse(first_segment_trimmed, suggested_trajectory))
-        
-        # === SEGMENT 0 TRAJECTORY VISUALIZATION ===
-        # Visualize observed vs estimated trajectory for segment 0 (flight physics)
-        world_model_params = {
-            'gravity': self.world_model.hyperparams_values.get(Params.gravity, 85),
-            'velocity': self.world_model.hyperparams_values.get(Params.velocity, 180)
-        }
-        
-        print(f"\n[SEGMENT 0 PHYSICS] Current World Model:")
-        print(f"  Gravity: {world_model_params['gravity']:.2f}")
-        print(f"  Velocity: {world_model_params['velocity']:.2f}")
-        print(f"  RMSE: {current_rmse:.2f}")
+            model_for_suggested = getattr(self, 'learned_transition_world_model', None) or self.world_model
+            suggested_gravity = model_for_suggested.hyperparams_values[Params.gravity]
+            suggested_trajectory = construct_trajectory_from_velocity(
+                release, launch["vx"], launch["vy"], suggested_gravity, limit,
+                prt=False, integration_method='rk4', stop_at_ground=True,
+            )
+
+            current_rmse = calculate_rmse(first_segment_trimmed, estimated_trajectory, trim_start_percent=0, trim_end_percent=0, apply_bias_correction=False)
+            self.rmse.append(current_rmse)
+            self.suggested_rmse.append(calculate_rmse(first_segment_trimmed, suggested_trajectory))
+            
+            # === SEGMENT 0 TRAJECTORY VISUALIZATION ===
+            # Visualize observed vs estimated trajectory for segment 0 (flight physics)
+            world_model_params = {
+                'gravity': self.world_model.hyperparams_values.get(Params.gravity, 85),
+                'velocity': self.world_model.hyperparams_values.get(Params.velocity, 180)
+            }
+            
+            print(f"\n[SEGMENT 0 PHYSICS] Current World Model:")
+            print(f"  Gravity: {world_model_params['gravity']:.2f}")
+            print(f"  Velocity: {world_model_params['velocity']:.2f}")
+            print(f"  RMSE: {current_rmse:.2f}")
         
         # Display expected-vs-actual trajectory comparison after every level (blocks until window closed)
         # try:
@@ -1747,70 +1789,70 @@ class PDDLAgent(BaselineAgent):
         # except Exception as e:
         #     print(f"[START OFFSET VIZ] Visualization error (non-fatal): {e}")
         
-        # Record result in angle protocol (if using)
-        if self.use_angle_protocol and self.angle_protocol is not None:
-            self.angle_protocol.record_result(
-                angle=angle,
-                phase=current_phase,
-                rmse=current_rmse,
-                gravity=self.world_model.hyperparams_values.get(Params.gravity),
-                velocity=self.world_model.hyperparams_values.get(Params.velocity),
-                n_collisions=len(collisions)
-            )
-        
-        # Store full trajectory data for visualization
-        self.full_trajectories.append({
-            'observed': bird_observed_trajectory.copy(),
-            'estimated': estimated_trajectory.copy(),
-            'suggested': suggested_trajectory.copy(),
-            'event_indexes': event_indexes.copy(),
-            'event_indexes_by_event': {k: list(v) for k, v in event_indexes_by_event.items()},
-            'angle': angle,
-            'phase': current_phase,
-            'should_learn': should_learn
-        })
-        
-        # Track impact zone metrics (use first event as primary impact)
-        if len(event_indexes) > 0:
-            first_impact_idx = event_indexes[0]
+            # Record result in angle protocol (if using)
+            if self.use_angle_protocol and self.angle_protocol is not None:
+                self.angle_protocol.record_result(
+                    angle=angle,
+                    phase=current_phase,
+                    rmse=current_rmse,
+                    gravity=self.world_model.hyperparams_values.get(Params.gravity),
+                    velocity=self.world_model.hyperparams_values.get(Params.velocity),
+                    n_collisions=len(collisions)
+                )
             
-            # Create extended estimated trajectory that reaches the impact zone
-            # Use the full observed trajectory's x-range as limit
-            bird_traj_array = np.array(bird_observed_trajectory)
-            impact_limit = np.max(bird_traj_array[:first_impact_idx + 21, 0]) if first_impact_idx + 21 < len(bird_traj_array) else np.max(bird_traj_array[:, 0])
-            extended_estimated = construct_trajectory_from_velocity(
-                release, launch["vx"], launch["vy"], gravity, impact_limit,
-                prt=False, integration_method='rk4', stop_at_ground=False,
-            )
-            
-            impact_result = calculate_impact_rmse(
-                bird_observed_trajectory, extended_estimated, 
-                first_impact_idx, frames_before=10, frames_after=20
-            )
-            # Show both RMSE methods side by side
-            rmse_x = impact_result.get('rmse_x_aligned', impact_result['rmse'])
-            rmse_t = impact_result.get('rmse_time_aligned', impact_result['rmse'])
-            method = impact_result.get('method_used', 'x_aligned')
-            x_per_frame = impact_result.get('x_per_frame', 0)
-            
-            print(f"[IMPACT DEBUG] Impact at frame {first_impact_idx}")
-            print(f"[IMPACT DEBUG] RMSE Comparison: x_aligned={rmse_x:.2f} | time_aligned={rmse_t:.2f} | selected={method} (x/frame={x_per_frame:.2f})")
-            print(f"[IMPACT DEBUG] Observed window: {len(impact_result['observed_window'])} frames, Estimated window: {len(impact_result['estimated_window'])} frames")
-            
-            # Use the adaptively selected RMSE
-            self.impact_rmse.append(impact_result['rmse'])
-            self.impact_trajectories.append({
-                'observed_window': impact_result['observed_window'].copy(),
-                'estimated_window': impact_result['estimated_window'].copy(),
-                'impact_idx': first_impact_idx,
-                'impact_idx_in_window': impact_result['impact_idx_in_window'],
-                'attempt': len(self.impact_rmse)
+            # Store full trajectory data for visualization
+            self.full_trajectories.append({
+                'observed': bird_observed_trajectory.copy(),
+                'estimated': estimated_trajectory.copy(),
+                'suggested': suggested_trajectory.copy(),
+                'event_indexes': event_indexes.copy(),
+                'event_indexes_by_event': {k: list(v) for k, v in event_indexes_by_event.items()},
+                'angle': angle,
+                'phase': current_phase,
+                'should_learn': should_learn
             })
-        else:
-            # No impact detected, use inf for RMSE
-            print(f"[IMPACT DEBUG] No events detected, setting RMSE=inf")
-            self.impact_rmse.append(float('inf'))
-            self.impact_trajectories.append(None)
+            
+            # Track impact zone metrics (use first event as primary impact)
+            if len(event_indexes) > 0:
+                first_impact_idx = event_indexes[0]
+                
+                # Create extended estimated trajectory that reaches the impact zone
+                # Use the full observed trajectory's x-range as limit
+                bird_traj_array = np.array(bird_observed_trajectory)
+                impact_limit = np.max(bird_traj_array[:first_impact_idx + 21, 0]) if first_impact_idx + 21 < len(bird_traj_array) else np.max(bird_traj_array[:, 0])
+                extended_estimated = construct_trajectory_from_velocity(
+                    release, launch["vx"], launch["vy"], gravity, impact_limit,
+                    prt=False, integration_method='rk4', stop_at_ground=False,
+                )
+                
+                impact_result = calculate_impact_rmse(
+                    bird_observed_trajectory, extended_estimated, 
+                    first_impact_idx, frames_before=10, frames_after=20
+                )
+                # Show both RMSE methods side by side
+                rmse_x = impact_result.get('rmse_x_aligned', impact_result['rmse'])
+                rmse_t = impact_result.get('rmse_time_aligned', impact_result['rmse'])
+                method = impact_result.get('method_used', 'x_aligned')
+                x_per_frame = impact_result.get('x_per_frame', 0)
+                
+                print(f"[IMPACT DEBUG] Impact at frame {first_impact_idx}")
+                print(f"[IMPACT DEBUG] RMSE Comparison: x_aligned={rmse_x:.2f} | time_aligned={rmse_t:.2f} | selected={method} (x/frame={x_per_frame:.2f})")
+                print(f"[IMPACT DEBUG] Observed window: {len(impact_result['observed_window'])} frames, Estimated window: {len(impact_result['estimated_window'])} frames")
+                
+                # Use the adaptively selected RMSE
+                self.impact_rmse.append(impact_result['rmse'])
+                self.impact_trajectories.append({
+                    'observed_window': impact_result['observed_window'].copy(),
+                    'estimated_window': impact_result['estimated_window'].copy(),
+                    'impact_idx': first_impact_idx,
+                    'impact_idx_in_window': impact_result['impact_idx_in_window'],
+                    'attempt': len(self.impact_rmse)
+                })
+            else:
+                # No impact detected, use inf for RMSE
+                print(f"[IMPACT DEBUG] No events detected, setting RMSE=inf")
+                self.impact_rmse.append(float('inf'))
+                self.impact_trajectories.append(None)
 
         # Show combined learning dashboard every 10 attempts (DISABLED)
         # if len(self.full_trajectories) % 10 == 0:
@@ -3033,6 +3075,50 @@ class PDDLAgent(BaselineAgent):
         )
 
     @staticmethod
+    def _plan_is_ground_bounce_miss(sim: dict, problem_data: dict) -> bool:
+        """
+        Sim predicts a ground-bounce / ground-collision plan with no pig kill.
+
+        ENHSP often emits high-angle ``uses_ground_collision=True`` plans that
+        skip over or past the pig; forward sim flags them as unacceptable but
+        planner-only mode kept them anyway (run_20260906_110654: 00033/00045/
+        00055 train + 00017/00022/00048 test — dominant single_force failure).
+        """
+        if sim.get("pig_killed_in_sim"):
+            return False
+        if sim.get("platform_collision") and not sim.get("platform_slide_continued"):
+            return False
+        if sim.get("block_collision"):
+            return False
+        return bool(sim.get("uses_ground_collision")) or int(sim.get("ground_touches") or 0) > 0
+
+    def _sim_kill_is_untrusted_low_shot(
+        self, angle: float, force: float, problem_data: dict,
+    ) -> bool:
+        """
+        Reject sim-search pig kills at dial floor + partial force when blocks
+        are present — sim often misses block absorption (run_20260906_110654
+        #00054: 5°/0.6 sim kill, game hit 13 blocks, score 430).
+        """
+        at_floor = float(angle) <= float(self.min_deg) + float(self.deg_step) * 0.51
+        partial = float(force) < 1.0 - 1e-6
+        has_blocks = any(k.startswith("block_") for k in problem_data)
+        return at_floor and partial and has_blocks
+
+    def _sim_search_plan_is_acceptable(
+        self,
+        exec_sim: dict,
+        angle: float,
+        force: float,
+        problem_data: dict,
+    ) -> bool:
+        if not self._sim_plan_is_acceptable(exec_sim):
+            return False
+        if self._sim_kill_is_untrusted_low_shot(angle, force, problem_data):
+            return False
+        return True
+
+    @staticmethod
     def _level_has_platforms(problem_data: dict) -> bool:
         return any(k.startswith("platform_") for k in problem_data)
 
@@ -3220,7 +3306,9 @@ class PDDLAgent(BaselineAgent):
                 exec_sim, planned, exec_angle, _, _ = self._simulate_planned_shot(
                     problem_data, angle, world_model_params, force=planned_force,
                 )
-                if not self._sim_plan_is_acceptable(exec_sim):
+                if not self._sim_search_plan_is_acceptable(
+                    exec_sim, angle, planned_force, problem_data,
+                ):
                     angle += step
                     continue
                 if not self._sim_plan_robust_to_execution_error(
@@ -3631,7 +3719,9 @@ class PDDLAgent(BaselineAgent):
         exec_sim, _, _, _, _ = self._simulate_planned_shot(
             problem_data, search_angle, world_model_params, force=search_force,
         )
-        if not self._sim_plan_is_acceptable(exec_sim):
+        if not self._sim_search_plan_is_acceptable(
+            exec_sim, search_angle, search_force, problem_data,
+        ):
             return None, None, None
         if search_force < 1.0:
             actions = [("set_force", search_force), ("shoot", search_angle)]
@@ -3659,6 +3749,18 @@ class PDDLAgent(BaselineAgent):
         the calibrator can still snap the executed dial post-planning.
         """
         return float(self.min_deg)
+
+    @staticmethod
+    def _enhsp_clamped_to_planner_min(
+        raw_angle: float, clamped_angle: float, planner_min: float,
+    ) -> bool:
+        """True when ENHSP wanted a dial below the floor and we snapped to min."""
+        if raw_angle is None or clamped_angle is None:
+            return False
+        return (
+            float(raw_angle) < float(planner_min) - 1e-6
+            and abs(float(clamped_angle) - float(planner_min)) < 1e-6
+        )
 
     def _current_level_phase(self):
         """Return current level phase ("train"/"test") if generalization is active, else None."""
@@ -3789,6 +3891,9 @@ class PDDLAgent(BaselineAgent):
         has_platforms = any(k.startswith("platform_") for k in problem_data)
         shelter_applicable = has_platforms and block_sheltered_layout(problem_data)
 
+        self._last_enhsp_clamped_to_min = False
+        self._last_enhsp_raw_angle = None
+
         actions, planner_output = self._run_enhsp_planner_single(
             problem_data,
             agent_world_model,
@@ -3897,7 +4002,7 @@ class PDDLAgent(BaselineAgent):
             ]
             enhsp_env = os.environ.copy()
             enhsp_env['_JAVA_OPTIONS'] = ''
-            print("[PDDL DEBUG] Running ENHSP planner (timeout=200s)...")
+            print(f"[PDDL DEBUG] Running ENHSP planner (timeout={ENHSP_TIMEOUT_SEC}s)...")
             print(f"[PDDL DEBUG] Command: {' '.join(enhsp_cmd)}")
             try:
                 import hashlib as _hl
@@ -3919,7 +4024,7 @@ class PDDLAgent(BaselineAgent):
             result = subprocess.run(
                 enhsp_cmd,
                 env=enhsp_env,
-                timeout=200,
+                timeout=ENHSP_TIMEOUT_SEC,
                 capture_output=True,
                 text=True,
             )
@@ -3964,6 +4069,7 @@ class PDDLAgent(BaselineAgent):
             planned_force_ext, planned_angle = _extract_force_angle(actions)
             planned_force_check = float(planned_force_ext) if planned_force_ext is not None else 1.0
             if planned_angle is not None:
+                raw_angle = float(planned_angle)
                 clamped = align_dial_to_planner_grid(
                     planned_angle, planner_max, self.deg_step, planner_min, planner_max,
                 )
@@ -3973,6 +4079,11 @@ class PDDLAgent(BaselineAgent):
                         f"{planned_angle:.1f}° → {clamped:.1f}° "
                         f"(grid [{planner_min:.1f}°, {planner_max:.1f}°])"
                     )
+                    if self._enhsp_clamped_to_planner_min(
+                        raw_angle, clamped, planner_min,
+                    ):
+                        self._last_enhsp_clamped_to_min = True
+                        self._last_enhsp_raw_angle = raw_angle
                     actions = self._enforce_planner_angle_on_actions(actions, clamped)
                     planned_angle = clamped
                 if not self.disable_forward_sim:
@@ -4480,25 +4591,48 @@ class PDDLAgent(BaselineAgent):
                     and not bool(sim.get("pig_killed_in_sim"))
                     and not bool(sim.get("platform_slide_continued"))
                 )
-                if short_gate or shelter_gate or platform_miss_gate:
-                    if short_gate:
+                ground_bounce_gate = (
+                    not short_gate
+                    and not shelter_gate
+                    and not platform_miss_gate
+                    and self._plan_is_ground_bounce_miss(sim, problem_data)
+                )
+                clamp_min_gate = bool(getattr(self, "_last_enhsp_clamped_to_min", False))
+                if (
+                    short_gate or shelter_gate or platform_miss_gate
+                    or ground_bounce_gate or clamp_min_gate
+                ):
+                    if clamp_min_gate:
+                        raw = getattr(self, "_last_enhsp_raw_angle", None)
+                        raw_s = f"{raw:.1f}°" if raw is not None else "?"
+                        reason = (
+                            f"ENHSP dial clamped to minimum "
+                            f"(planner wanted {raw_s}, exec floor {self.min_deg:.1f}°)"
+                        )
+                    elif short_gate:
                         reason = "platform-hit-short (bird stops in front of pig)"
                     elif shelter_gate:
                         reason = "block-shelter miss (block absorbs shot short of pig)"
+                    elif ground_bounce_gate:
+                        reason = "ground-bounce miss (sim ground path, no pig kill)"
                     else:
                         reason = "platform-miss (sim hits platform, no pig kill)"
                     print(
-                        "[SIM-GATE] Train-mode narrow gate: sim predicts "
+                        "[SIM-GATE] Planner-only gate: "
                         f"{reason} — invoking sim search for a viable alternative"
                     )
                     sim_actions, sim_angle, sim_force = self._try_sim_search_plan(
                         problem_data, world_model_params, planned_force=planned_force
                     )
                     if sim_actions is not None:
-                        if short_gate:
+                        if clamp_min_gate:
+                            self._last_plan_source = "sim_gate_clamp_min"
+                        elif short_gate:
                             self._last_plan_source = "sim_gate_short"
                         elif shelter_gate:
                             self._last_plan_source = "sim_gate_shelter"
+                        elif ground_bounce_gate:
+                            self._last_plan_source = "sim_gate_ground"
                         else:
                             self._last_plan_source = "sim_gate_platform_miss"
                         actions = sim_actions
@@ -4509,13 +4643,13 @@ class PDDLAgent(BaselineAgent):
                         )
                         replaced_by_sim = True
                         print(
-                            f"[PDDL DEBUG] Train-mode narrow-gate ({reason}): "
+                            f"[PDDL DEBUG] Planner-only gate ({reason}): "
                             f"planner plan replaced by sim search "
                             f"(force={sim_force:.2f}, angle={sim_angle:.1f}°)"
                         )
                     else:
                         print(
-                            f"[PDDL DEBUG] Train-mode narrow-gate ({reason}): "
+                            f"[PDDL DEBUG] Planner-only gate ({reason}): "
                             "no viable sim alternative — keeping ENHSP plan"
                         )
             phase = self._current_level_phase()
@@ -4523,7 +4657,7 @@ class PDDLAgent(BaselineAgent):
             if replaced_by_sim:
                 print(
                     f"[PDDL DEBUG] Planner-only mode{phase_tag} — "
-                    "replaced ENHSP plan via train narrow gate"
+                    "replaced ENHSP plan via planner-only gate"
                 )
             else:
                 print(
