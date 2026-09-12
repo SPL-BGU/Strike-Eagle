@@ -1,4 +1,5 @@
 from string import Template
+from typing import Optional
 
 import math
 import numpy as np
@@ -109,17 +110,39 @@ def _collision_inject_log(msg: str) -> None:
         print(f"[COLLISION-INJECT] {msg}")
 
 
-_COLLISION_VAR_ORDER = ("y", "v_x", "v_y")
-_COLLISION_PDDL_FLUENT = {"y": "y_bird", "v_x": "vx_bird", "v_y": "vy_bird"}
+_COLLISION_VAR_ORDER = ("y", "v_x", "v_y", "x")
+_COLLISION_PDDL_FLUENT = {"y": "y_bird", "v_x": "vx_bird", "v_y": "vy_bird", "x": "x_bird"}
 _PDDL_AFFINE_VARS = ("x_bird", "y_bird", "vx_bird", "vy_bird")
+ROLLING_LR_MIN_SAMPLES = 3
+ROLLING_LR_OUTPUT_VARS = ("x", "y", "v_x", "v_y")
+PDDL_PLATFORM_LR_MIN_VX_R2 = 0.35
+PDDL_PLATFORM_LR_FALLBACK_MIN_VX_R2 = 0.12
+PDDL_SIM_LR_MIN_VX_R2 = 0.35
+PDDL_PLATFORM_M5_MIN_SAMPLES = 21
+PDDL_PLATFORM_LR_OVERFIT_R2 = 0.99
 
 PLATFORM_COLLISION_MIN_SAMPLES = 5
 PLATFORM_MAX_POST_SPEED = 220.0
+ROLLING_LR_MAX_V = PLATFORM_MAX_POST_SPEED * 2
+ROLLING_LR_MAX_POS = 5000.0
+ROLLING_LR_MAX_FEATURE = 1e6
 # Observed platform slides (Template 4): post_speed varies; use conservative 50% for
 # cold-start planning so ENHSP does not assume aggressive shallow slides reach the pig.
 PLATFORM_DEFAULT_SPEED_RATIO = 0.50
 PLATFORM_DEFAULT_VY_RATIO = 0.50
 PLATFORM_SURFACE_RADIUS_FACTOR = 0.35
+# Continuous platform-slide integrator (forward sim): bird stays on surface at vy≈0.
+PLATFORM_SLIDE_MIN_SPEED = 3.0
+PLATFORM_SLIDE_EDGE_MARGIN = 0.35  # fraction of bird_radius beyond platform x span
+PLATFORM_SLIDE_FRICTION_PER_S = 0.0  # game slides at ~constant vx after landing
+# One-shot horizontal advance appended to PDDL platform/ground slide effects so
+# ENHSP can reach pigs that require multi-frame slide (not modeled as a process).
+PLATFORM_PLANNING_SLIDE_SEC = 0.45
+# Ground slide: first contact applies LR/heuristic once; no per-step re-fire (run_20260909_175413).
+GROUND_SLIDE_MIN_SPEED = 3.0
+GROUND_SLIDE_FRICTION_PER_S = 0.0
+GROUND_SLIDE_STUCK_EPS = 0.05  # px/step — learned post-state can stall x advance
+GROUND_SLIDE_STUCK_MAX_STEPS = 10
 PLATFORM_SWEEP_SUBSTEPS = 8
 # Match game ``is_platform_collision`` (event_conditions.py): max(bird_dim)/2 + epsilon.
 # The old AABB-overlap test with only ``bird_radius`` (4 px) missed grazing ramp
@@ -170,28 +193,75 @@ PLATFORM_COLLISION_HARD_STOP = (
 )
 
 
+def _planning_slide_x_advance_effect() -> str:
+    sec = PLATFORM_PLANNING_SLIDE_SEC
+    return f"(increase (x_bird ?b) (* (vx_bird ?b) {sec}))"
+
+
+def _append_planning_slide_x_advance(body: str) -> str:
+    """Add optimistic post-contact x advance when the effect lacks x_bird mutation."""
+    if not body or "x_bird ?b)" in body:
+        return body
+    return _append_extra_planning_slide_x(body)
+
+
+def _append_extra_planning_slide_x(
+    body: str,
+    extra_sec: float = None,
+) -> str:
+    """Append an extra vx-scaled x bump before (assign (mod) 2)."""
+    if not body:
+        return body
+    sec = PLATFORM_PLANNING_SLIDE_SEC if extra_sec is None else float(extra_sec)
+    bump = f"(increase (x_bird ?b) (* (vx_bird ?b) {sec}))"
+    mod = "(assign (mod) 2)"
+    if mod not in body:
+        return f"{body}\n            {bump}\n            {mod}"
+    return body.replace(mod, f"{bump}\n            {mod}", 1)
+
+
+def _build_surface_roll_effect(y_assign_expr: str, *, planning_x_advance: bool = True) -> str:
+    """
+    Shared PDDL effect for bird rolling/sliding along a surface (platform or ground).
+    Retains horizontal speed; v_bird unchanged — vx/vy drive continued motion.
+
+    Does not increment bounce_count: slide contacts can fire every integration step
+    while the bird stays on the surface; counting them made explode_bird (>= 3)
+    terminate flight after ~3 frames instead of allowing slide-to-pig plans.
+    """
+    ratio = PLATFORM_DEFAULT_SPEED_RATIO
+    vy_ratio = PLATFORM_DEFAULT_VY_RATIO
+    lines = [
+        f"(assign (y_bird ?b) {y_assign_expr})",
+        f"(assign (vx_bird ?b) (* (vx_bird ?b) {ratio}))",
+        f"(assign (vy_bird ?b) (* (vy_bird ?b) {vy_ratio}))",
+    ]
+    if planning_x_advance:
+        lines.append(_planning_slide_x_advance_effect())
+    lines.append("(assign (mod) 2)")
+    return "\n            ".join(lines)
+
+
 def _build_platform_bootstrap_effect() -> str:
     """PDDL effect when platform KB is cold — end flight, no bird state mutation."""
     return PLATFORM_COLLISION_BOOTSTRAP
 
 
 def _build_platform_slide_placeholder() -> str:
-    """
-    PDDL effect when platform KB has samples but M5 is not ready yet.
-    Bird lands on platform top, retains ~50% horizontal/vertical speed components.
-    v_bird is left unchanged (no sqrt in ENHSP); vx/vy drive continued flight.
-    """
-    ratio = PLATFORM_DEFAULT_SPEED_RATIO
-    vy_ratio = PLATFORM_DEFAULT_VY_RATIO
+    """PDDL rolling effect after platform contact (KB has samples but M5 not ready)."""
     surf = PLATFORM_SURFACE_RADIUS_FACTOR
-    return (
-        f"(assign (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) "
-        f"(* (bird_radius ?b) {surf})))\n            "
-        f"(assign (vx_bird ?b) (* (vx_bird ?b) {ratio}))\n            "
-        f"(assign (vy_bird ?b) (* (vy_bird ?b) {vy_ratio}))\n            "
-        f"(assign (bounce_count ?b) (+ (bounce_count ?b) 1))\n            "
-        f"(assign (mod) 2)"
+    y_expr = (
+        f"(+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) "
+        f"(* (bird_radius ?b) {surf}))"
     )
+    return _build_surface_roll_effect(y_expr)
+
+
+def _build_ground_roll_placeholder() -> str:
+    """PDDL rolling effect after ground contact — same speed retention as platform slide."""
+    surf = PLATFORM_SURFACE_RADIUS_FACTOR
+    y_expr = f"(* (bird_radius ?b) {surf})"
+    return _build_surface_roll_effect(y_expr)
 # Terrain surface in PDDL coords (640 - screen_y); matches segments.GROUND_LEVEL and
 # event is_ground_collision (relative y = pddl_y - PLAYFIELD_FLOOR_Y).
 PLAYFIELD_FLOOR_Y = 360.0
@@ -233,9 +303,239 @@ def format_affine_assign_rhs(coefs, intercept, bird_var="?b", threshold=1e-8, pr
     return nested_terms if nested_terms else "0.0"
 
 
+def _rolling_lr_ready(lr_models: dict, min_samples: int = ROLLING_LR_MIN_SAMPLES) -> bool:
+    if not isinstance(lr_models, dict):
+        return False
+    return all(var in lr_models for var in ROLLING_LR_OUTPUT_VARS)
+
+
+def _rolling_lr_vx_r2(lr_models: dict) -> Optional[float]:
+    entry = (lr_models or {}).get("v_x") or {}
+    r2 = entry.get("r2")
+    if r2 is None:
+        return None
+    try:
+        return float(r2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rolling_lr_good_for_pddl(
+    lr_models: dict,
+    min_vx_r2: float = PDDL_PLATFORM_LR_MIN_VX_R2,
+    n_samples: int = 0,
+) -> bool:
+    if not _rolling_lr_ready(lr_models):
+        return False
+    r2 = _rolling_lr_vx_r2(lr_models)
+    if r2 is None or r2 < min_vx_r2:
+        return False
+    if (
+        n_samples > 0
+        and n_samples < PDDL_PLATFORM_M5_MIN_SAMPLES
+        and r2 >= PDDL_PLATFORM_LR_OVERFIT_R2
+    ):
+        return False
+    return True
+
+
+def _sanitize_rolling_lr_inputs(x: float, y_pddl: float, vx: float, vy: float):
+    if not all(math.isfinite(v) for v in (x, y_pddl, vx, vy)):
+        return None
+    return (
+        float(np.clip(x, -ROLLING_LR_MAX_POS, ROLLING_LR_MAX_POS)),
+        float(np.clip(y_pddl, -ROLLING_LR_MAX_POS, ROLLING_LR_MAX_POS)),
+        float(np.clip(vx, -ROLLING_LR_MAX_V, ROLLING_LR_MAX_V)),
+        float(np.clip(vy, -ROLLING_LR_MAX_V, ROLLING_LR_MAX_V)),
+    )
+
+
+def _rolling_lr_predict_safe(lr_models: dict, pre: dict) -> Optional[dict]:
+    from agents.pddl.pddl_files.events.learn_events import make_rolling_lr_feature_vector
+
+    X = make_rolling_lr_feature_vector([pre], lr_models)
+    if X.ndim == 1:
+        X = X.reshape(1, -1)
+    X = np.nan_to_num(
+        X, nan=0.0, posinf=ROLLING_LR_MAX_FEATURE, neginf=-ROLLING_LR_MAX_FEATURE,
+    )
+    X = np.clip(X, -ROLLING_LR_MAX_FEATURE, ROLLING_LR_MAX_FEATURE)
+    if not np.all(np.isfinite(X)):
+        return None
+
+    predicted = {}
+    try:
+        for var in ROLLING_LR_OUTPUT_VARS:
+            model = lr_models[var]["model"]
+            val = float(model.predict(X)[0])
+            if not math.isfinite(val):
+                return None
+            if var == "y":
+                val = _learning_y_to_pddl(val)
+            predicted[var] = val
+    except (ValueError, OverflowError, FloatingPointError):
+        return None
+    return predicted
+
+
+def _rolling_lr_models_for_pddl(kb: dict) -> dict:
+    """Prefer base 4-feature LR for PDDL; fall back to sim models if base-only."""
+    models, _ = _planning_surface_lr_models(kb)
+    return models or {}
+
+
+def _planning_surface_lr_models(kb: dict, n_samples: int = 0):
+    """
+    4-feature LR models shared by ENHSP inject and forward-sim one-shot contact.
+
+    Primary gate: lr_models_pddl v_x R² ≥ PDDL_PLATFORM_LR_MIN_VX_R2.
+    Fallback gate (split): pddl v_x R² ≥ PDDL_PLATFORM_LR_FALLBACK_MIN_VX_R2 and
+    extended sim lr_models v_x R² ≥ PDDL_SIM_LR_MIN_VX_R2.
+    """
+    if not isinstance(kb, dict):
+        return None, None
+    n_samples = n_samples or len(kb.get("states") or [])
+    pddl_models = kb.get("lr_models_pddl") or {}
+    if not _rolling_lr_ready(pddl_models):
+        sim_models = kb.get("lr_models") or {}
+        from agents.pddl.pddl_files.events.learn_events import rolling_lr_uses_extended_features
+        if _rolling_lr_ready(sim_models) and not rolling_lr_uses_extended_features(sim_models):
+            pddl_models = sim_models
+        else:
+            return None, None
+
+    if _rolling_lr_good_for_pddl(pddl_models, n_samples=n_samples):
+        return pddl_models, "lr_pddl"
+
+    sim_models = kb.get("lr_models") or {}
+    pddl_vx_r2 = _rolling_lr_vx_r2(pddl_models)
+    sim_vx_r2 = _rolling_lr_vx_r2(sim_models)
+    if (
+        pddl_vx_r2 is not None
+        and pddl_vx_r2 >= PDDL_PLATFORM_LR_FALLBACK_MIN_VX_R2
+        and sim_vx_r2 is not None
+        and sim_vx_r2 >= PDDL_SIM_LR_MIN_VX_R2
+        and not (
+            n_samples > 0
+            and n_samples < PDDL_PLATFORM_M5_MIN_SAMPLES
+            and pddl_vx_r2 >= PDDL_PLATFORM_LR_OVERFIT_R2
+        )
+    ):
+        return pddl_models, "lr_pddl_sim_fallback"
+
+    return None, None
+
+
+def _m5_kb_ready(kb: dict, m5_min_samples: int = 0) -> bool:
+    """True when M5 trees exist and optional sample count is satisfied."""
+    if not isinstance(kb, dict):
+        return False
+    n_samples = len(kb.get("states") or [])
+    if m5_min_samples > 0 and n_samples < m5_min_samples:
+        return False
+    variables = kb.get("variables") or {}
+    if not variables:
+        return False
+    for vn in _COLLISION_VAR_ORDER:
+        mc = variables.get(vn, {}).get("model_comparison")
+        m5 = mc.get("m5_model") if isinstance(mc, dict) else None
+        if not m5_collision_leaves_for_pddl(m5, debug=False, var_label=vn):
+            return False
+    return True
+
+
+def _surface_physics_kind(kb: dict, m5_min_samples: int = 0):
+    """
+    Aligned LR → M5 → placeholder priority for inject and forward sim.
+    Returns (kind, meta) where kind is 'lr', 'm5', or 'placeholder'.
+    """
+    n_samples = len((kb or {}).get("states") or [])
+    lr_models, lr_tag = _planning_surface_lr_models(kb, n_samples)
+    if lr_models is not None and _build_rolling_lr_effect(lr_models) is not None:
+        return "lr", {
+            "lr_models": lr_models,
+            "lr_tag": lr_tag,
+            "n_samples": n_samples,
+            "vx_r2": _rolling_lr_vx_r2(lr_models),
+        }
+    if _m5_kb_ready(kb, m5_min_samples=m5_min_samples):
+        return "m5", {"n_samples": n_samples}
+    return "placeholder", {"n_samples": n_samples}
+
+
+def _build_rolling_lr_effect(lr_models: dict) -> Optional[str]:
+    """Build PDDL collision effect from linear rolling models (affine per fluent)."""
+    if not _rolling_lr_ready(lr_models):
+        return None
+    from agents.pddl.pddl_files.events.learn_events import rolling_lr_uses_extended_features
+
+    # Extended LR uses speed/trig features ENHSP cannot express in collision effects.
+    if rolling_lr_uses_extended_features(lr_models):
+        return None
+    lines = []
+    for var in ROLLING_LR_OUTPUT_VARS:
+        fluent = _COLLISION_PDDL_FLUENT[var]
+        entry = lr_models[var]
+        coef = entry.get("coef")
+        intercept = entry.get("intercept")
+        if coef is None or intercept is None:
+            model = entry.get("model")
+            if model is None:
+                return None
+            coef = model.coef_
+            intercept = float(model.intercept_)
+        rhs = format_affine_assign_rhs(coef, intercept)
+        lines.append(f"(assign ({fluent} ?b) {rhs})")
+    lines.append("(assign (mod) 2)")
+    return "\n            ".join(lines)
+
+
+def _predict_rolling_lr_post_state_from_models(
+    lr_models: dict, x: float, y_pddl: float, vx: float, vy: float,
+):
+    """Predict post-contact state from explicit 4-feature LR models."""
+    if not _rolling_lr_ready(lr_models):
+        return None
+
+    sanitized = _sanitize_rolling_lr_inputs(x, y_pddl, vx, vy)
+    if sanitized is None:
+        return None
+    x, y_pddl, vx, vy = sanitized
+
+    pre = {
+        "x": float(x),
+        "y": _pddl_y_to_learning(y_pddl),
+        "v_x": float(vx),
+        "v_y": float(vy),
+    }
+    predicted = _rolling_lr_predict_safe(lr_models, pre)
+    if predicted is None:
+        return None
+
+    out_vx, out_vy = _clamp_platform_post_velocity(
+        predicted["v_x"], predicted["v_y"], float(vx), float(vy),
+    )
+    predicted["v_x"] = out_vx
+    predicted["v_y"] = out_vy
+    return predicted
+
+
+def predict_rolling_lr_post_state(kb: dict, x: float, y_pddl: float, vx: float, vy: float):
+    """
+    Predict post-contact bird state using the same LR selection as ENHSP inject.
+    Returns dict with x, y, v_x, v_y in PDDL coordinates, or None if unavailable.
+    """
+    if not kb:
+        return None
+    lr_models, _ = _planning_surface_lr_models(kb)
+    if lr_models is None:
+        return None
+    return _predict_rolling_lr_post_state_from_models(lr_models, x, y_pddl, vx, vy)
+
+
 def _build_collision_ground_effect_m5(collision_vars):
-    """Backward-compatible alias for ground bounce M5 injection."""
-    return _build_collision_effect_m5(collision_vars, bounce_mode="ground")
+    """Ground rolling uses the same post-contact semantics as platform slide."""
+    return _build_collision_effect_m5(collision_vars, bounce_mode="platform")
 
 
 def _build_collision_effect_m5(collision_vars, bounce_mode="ground"):
@@ -243,8 +543,8 @@ def _build_collision_effect_m5(collision_vars, bounce_mode="ground"):
     Build M5 piecewise collision effect for PDDL injection.
 
     bounce_mode:
-      - 'ground': increment bounce_count (bird may continue after bounce)
-      - 'platform': increment bounce_count + update v_bird magnitude (slide, not hard stop)
+      - 'ground' / 'platform': surface roll — retain vx/vy, no bounce_count bump
+        (slide contacts must not count toward explode_bird's >= 3 limit).
 
     Returns effect body string, or None if M5 models not available yet.
     """
@@ -276,10 +576,7 @@ def _build_collision_effect_m5(collision_vars, bounce_mode="ground"):
     if bounce_mode == "platform":
         # Do not assign v_bird here — ENHSP numeric fluents have no sqrt(); prior v_bird
         # stays > 0 so the bird can keep flying on vx/vy (same as ground M5).
-        lines.append("(assign (bounce_count ?b) (+ (bounce_count ?b) 1))")
         lines.append("(assign (mod) 2)")
-    else:
-        lines.append("(assign (bounce_count ?b) (+ (bounce_count ?b) 1))")
 
     body = "\n            ".join(lines)
     _collision_inject_log(f"M5 {bounce_mode} injection: {len(lines)} statements")
@@ -330,13 +627,27 @@ def _clamp_platform_post_velocity(vx: float, vy: float, pre_vx: float, pre_vy: f
     return vx, vy
 
 
-def predict_platform_collision_post_state(platform_kb: dict, x: float, y_pddl: float,
-                                          vx: float, vy: float):
+def predict_surface_collision_post_state(
+    kb: dict,
+    x: float,
+    y_pddl: float,
+    vx: float,
+    vy: float,
+    m5_min_samples: int = PDDL_PLATFORM_M5_MIN_SAMPLES,
+):
     """
-    Predict post-platform-contact state using General models from platform_collision KB.
+    Predict post-contact state using the same LR → M5 priority as ENHSP inject.
     Inputs/outputs use PDDL coordinates for y and vy.
     """
-    if not _platform_kb_has_models(platform_kb):
+    kind, meta = _surface_physics_kind(kb, m5_min_samples=m5_min_samples)
+    if kind == "lr":
+        lr_pred = _predict_rolling_lr_post_state_from_models(
+            meta["lr_models"], x, y_pddl, vx, vy,
+        )
+        if lr_pred is not None:
+            return lr_pred
+
+    if kind != "m5" or not _platform_kb_has_models(kb):
         return None
 
     pre_vx, pre_vy = float(vx), float(vy)
@@ -349,7 +660,7 @@ def predict_platform_collision_post_state(platform_kb: dict, x: float, y_pddl: f
     X = make_feature_vector([pre])
     predicted = {}
     for var in _COLLISION_VAR_ORDER:
-        model = platform_kb["variables"][var]["model"]
+        model = kb["variables"][var]["model"]
         if hasattr(model, "poly_features"):
             X_in = model.poly_features.transform(X)
             val = float(model.predict(X_in)[0])
@@ -367,6 +678,15 @@ def predict_platform_collision_post_state(platform_kb: dict, x: float, y_pddl: f
     return predicted
 
 
+def predict_platform_collision_post_state(platform_kb: dict, x: float, y_pddl: float,
+                                          vx: float, vy: float):
+    """Platform contact prediction (M5 gated at PDDL_PLATFORM_M5_MIN_SAMPLES)."""
+    return predict_surface_collision_post_state(
+        platform_kb, x, y_pddl, vx, vy,
+        m5_min_samples=PDDL_PLATFORM_M5_MIN_SAMPLES,
+    )
+
+
 def _platform_bounds(plat: dict):
     half_w = plat["w"] / 2
     half_h = plat["h"] / 2
@@ -376,6 +696,22 @@ def _platform_bounds(plat: dict):
         plat["y"] - half_h,
         plat["y"] + half_h,
     )
+
+
+def _platform_surface_y(plat: dict, br: float) -> float:
+    """Bird center y when resting on platform top (matches collision_platform guard)."""
+    _, _, _, top = _platform_bounds(plat)
+    return top + br * PLATFORM_SURFACE_RADIUS_FACTOR
+
+
+def _bird_on_platform_span(x: float, br: float, plat: dict) -> bool:
+    left, right, _, _ = _platform_bounds(plat)
+    margin = br * PLATFORM_SLIDE_EDGE_MARGIN
+    return (left - margin) <= x <= (right + margin)
+
+
+def _ground_surface_y(br: float) -> float:
+    return PLAYFIELD_FLOOR_Y + br * PLATFORM_SURFACE_RADIUS_FACTOR
 
 
 def _rotated_aabb_extents(width: float, height: float, angle_deg: float):
@@ -794,6 +1130,60 @@ def _default_platform_slide_post_state(plat: dict, x: float, y: float,
     return {"y": surface_y, "v_x": out_vx, "v_y": out_vy}
 
 
+def _default_ground_roll_post_state(x: float, y: float, vx: float, vy: float, br: float):
+    """
+    Heuristic ground roll when platform/ground KB is cold.
+    Same speed retention as platform slide (_default_platform_slide_post_state).
+    """
+    pre_speed = math.hypot(vx, vy)
+    if pre_speed < 5.0:
+        return None
+
+    ratio = PLATFORM_DEFAULT_SPEED_RATIO
+    out_vx = vx * ratio
+    out_vy = vy * PLATFORM_DEFAULT_VY_RATIO
+    if abs(out_vx) < 8.0:
+        out_vx = math.copysign(max(pre_speed * ratio, 8.0), vx if abs(vx) > 1e-6 else 1.0)
+    surface_y = PLAYFIELD_FLOOR_Y + br * PLATFORM_SURFACE_RADIUS_FACTOR
+    out_vx, out_vy = _clamp_platform_post_velocity(out_vx, out_vy, vx, vy)
+    return {"y": surface_y, "v_x": out_vx, "v_y": out_vy}
+
+
+def _apply_ground_contact(collision_kb: dict, x: float, y: float,
+                          vx: float, vy: float, br: float, debug: bool = False):
+    """
+    Apply ground contact as surface rolling — LR first, then M5/heuristic fallback.
+    Returns (new_x, new_y, new_vx, new_vy, roll_continued, hard_stop).
+    """
+    predicted = predict_surface_collision_post_state(
+        collision_kb or {}, x, y, vx, vy, m5_min_samples=0,
+    )
+    if predicted is None:
+        predicted = _default_ground_roll_post_state(x, y, vx, vy, br)
+        if predicted is None:
+            if debug:
+                print("[SIM DEBUG]   Ground hard stop (roll unavailable; speed too low)")
+            return x, y, vx, vy, False, True
+        if debug:
+            print("[SIM DEBUG]   Bootstrap ground roll (KB cold; surface heuristic)")
+    elif debug:
+        post_speed = math.hypot(predicted["v_x"], predicted["v_y"])
+        print(
+            f"[SIM DEBUG]   Learned post-ground roll: y={predicted['y']:.1f}, "
+            f"vx={predicted['v_x']:.1f}, vy={predicted['v_y']:.1f}, speed={post_speed:.1f}"
+        )
+
+    post_speed = math.hypot(predicted["v_x"], predicted["v_y"])
+    roll = post_speed > 5.0
+    out_x = predicted.get("x", x)
+    out_vx = predicted["v_x"]
+    out_vy = predicted["v_y"]
+    # Learned one-shot samples often carry vy>0; rolling phase uses horizontal slide only.
+    if roll:
+        out_vy = 0.0
+    return out_x, predicted["y"], out_vx, out_vy, roll, not roll
+
+
 def _resolve_platform_post_state(platform_kb: dict, plat: dict, x: float, y: float,
                                vx: float, vy: float, br: float, debug: bool = False):
     predicted = predict_platform_collision_post_state(platform_kb, x, y, vx, vy)
@@ -837,7 +1227,8 @@ def _apply_platform_contact(platform_kb: dict, plat: dict, x: float, y: float,
 
     post_speed = math.hypot(predicted["v_x"], predicted["v_y"])
     slide = post_speed > 5.0
-    return x, predicted["y"], predicted["v_x"], predicted["v_y"], slide, not slide
+    out_x = predicted.get("x", x)
+    return out_x, predicted["y"], predicted["v_x"], predicted["v_y"], slide, not slide
 
 problem_template = Template("""(define (problem sample_problem)
     (:domain angry_birds_scaled)
@@ -1505,42 +1896,107 @@ def write_problem_file(path: str, problem_data: dict, init_angle: float, angel_r
         file.write(problem)
 
 
+def _inject_surface_sentinel(
+    content: str,
+    sentinel: str,
+    kb: dict,
+    *,
+    placeholder_body: str,
+    m5_min_samples: int = 0,
+    m5_bounce_mode: str = "platform",
+    planning_optimistic_slide: bool = False,
+):
+    """Inject LR → M5 → placeholder at sentinel. Returns (content, inject_label)."""
+    if sentinel not in content:
+        return content, "skipped"
+
+    kind, meta = _surface_physics_kind(kb, m5_min_samples=m5_min_samples)
+    n_samples = meta.get("n_samples", 0)
+
+    if kind == "lr":
+        body = _build_rolling_lr_effect(meta["lr_models"])
+        vx_r2 = meta.get("vx_r2")
+        tag = meta.get("lr_tag", "lr")
+        _collision_inject_log(
+            f"Injected LR {m5_bounce_mode} rolling effect ({n_samples} samples, "
+            f"{tag}, v_x R²={vx_r2:.3f})"
+            if vx_r2 is not None
+            else f"Injected LR {m5_bounce_mode} rolling effect ({n_samples} samples, {tag})"
+        )
+        if planning_optimistic_slide and m5_bounce_mode == "platform" and body:
+            body = _append_extra_planning_slide_x(body)
+            _collision_inject_log(
+                f"Appended optimistic slide x-advance (+{PLATFORM_PLANNING_SLIDE_SEC}s·vx)"
+            )
+        return content.replace(sentinel, body), "lr"
+
+    if kind == "m5":
+        variables = (kb or {}).get("variables") or {}
+        m5_body = _build_collision_effect_m5(variables, bounce_mode=m5_bounce_mode)
+        if m5_body is not None:
+            _collision_inject_log(
+                f"Injected M5 {m5_bounce_mode} collision effect ({n_samples} samples)"
+            )
+            if planning_optimistic_slide and m5_bounce_mode == "platform":
+                m5_body = _append_extra_planning_slide_x(m5_body)
+                _collision_inject_log(
+                    f"Appended optimistic slide x-advance (+{PLATFORM_PLANNING_SLIDE_SEC}s·vx)"
+                )
+            return content.replace(sentinel, m5_body), "m5"
+
+    _log_surface_placeholder_reason(kb, n_samples, m5_min_samples)
+    if planning_optimistic_slide and m5_bounce_mode == "platform":
+        placeholder_body = _append_extra_planning_slide_x(placeholder_body)
+    return content.replace(sentinel, placeholder_body), "placeholder"
+
+
+def _log_surface_placeholder_reason(kb: dict, n_samples: int, m5_min_samples: int):
+    pddl_lr = (kb or {}).get("lr_models_pddl") or {}
+    lr_vx_r2 = _rolling_lr_vx_r2(pddl_lr)
+    if _rolling_lr_ready(pddl_lr) and lr_vx_r2 is not None:
+        if lr_vx_r2 >= PDDL_PLATFORM_LR_OVERFIT_R2 and n_samples < PDDL_PLATFORM_M5_MIN_SAMPLES:
+            reason = f"overfit at n={n_samples} (v_x R²={lr_vx_r2:.3f})"
+        else:
+            sim_vx_r2 = _rolling_lr_vx_r2((kb or {}).get("lr_models") or {})
+            reason = (
+                f"pddl v_x R²={lr_vx_r2:.3f} < {PDDL_PLATFORM_LR_MIN_VX_R2}"
+                f" (sim v_x R²={sim_vx_r2:.3f})"
+                if sim_vx_r2 is not None
+                else f"pddl v_x R²={lr_vx_r2:.3f} < {PDDL_PLATFORM_LR_MIN_VX_R2}"
+            )
+        _collision_inject_log(f"Platform/ground LR rejected ({reason}) — slide placeholder")
+    elif m5_min_samples > 0 and n_samples < m5_min_samples:
+        _collision_inject_log(
+            f"M5 deferred ({n_samples}/{m5_min_samples} samples) — slide placeholder"
+        )
+    elif n_samples > 0:
+        _collision_inject_log(f"M5 not ready ({n_samples} samples) — slide placeholder")
+    else:
+        _collision_inject_log("LR/M5 not available yet — slide placeholder")
+
+
 def inject_domain_file(
     path: str,
     world_model: WorldModel,
     defer_ground_m5: bool = False,
     planning_pessimistic_platform: bool = False,
+    planning_optimistic_slide: bool = False,
 ):
     """
-    Inject learned M5 collision models into the PDDL domain file.
+    Inject learned collision models into the PDDL domain file.
 
-    Ground bounce: kb['collision'] → {SE-collision-ground-effect}
-    Platform contact: kb['platform_collision'] → {SE-collision-platform-effect}
+    Ground: kb['collision'] → {SE-collision-ground-effect}
+    Platform: kb['platform_collision'] → {SE-collision-platform-effect}
 
-    When defer_ground_m5 is True (e.g. hill levels during planning), skip ground M5
-    injection to keep ENHSP search tractable.
-
-    When planning_pessimistic_platform is True, inject PLATFORM_COLLISION_HARD_STOP
-    for ENHSP instead of the learned slide/bounce M5. Forward sim still uses the
-    Python platform_kb slide model; only the planner domain becomes pessimistic so
-    ENHSP avoids hill-graze trajectories that fail in game (run_20260815 test
-    #26/#28/#29). Intentional slide-to-kill paths remain available to forward sim
-    and sim_search.
+    Priority (aligned with forward sim): LR → M5 → slide placeholder.
+    Returns inject labels {'ground': ..., 'platform': ...} for logging.
     """
     _collision_inject_log(f"inject_domain_file input={path!r}")
 
-    # T3.1 was reverted after run_20260822_104751: dropping the
-    # `(<= (pig_life ?p) (v_bird ?b))` guard theoretically helped AIBR but
-    # empirically produced 3 wins vs 5 baseline on the same bucket because
-    # ENHSP began preferring partial-force / shallow-dial plans that arrive
-    # too weak to score in-game (t04_00015/00008/00055 regressed).
-
-    ground_placeholder = (
-        "(assign (y_bird ?b) 0.0)\n            "
-        "(assign (vy_bird ?b) 0.0)\n            "
-        "(assign (vx_bird ?b) 0.0)\n            "
-        "(assign (bounce_count ?b) (+ (bounce_count ?b) 1))"
-    )
+    ground_roll_placeholder = _build_ground_roll_placeholder()
+    collision_kb = world_model.kb.get("collision") or {}
+    platform_kb = world_model.kb.get("platform_collision") or {}
+    inject_labels = {"ground": "skipped", "platform": "skipped"}
 
     with open(path, "r") as file:
         new_content = file.read()
@@ -1548,17 +2004,20 @@ def inject_domain_file(
     ground_sentinel = "{SE-collision-ground-effect}"
     if ground_sentinel in new_content:
         if defer_ground_m5:
-            _collision_inject_log("Deferring ground M5 for planning (platform level)")
-            new_content = new_content.replace(ground_sentinel, ground_placeholder)
+            _collision_inject_log(
+                "Deferring ground M5/LR for planning — using ground roll placeholder"
+            )
+            new_content = new_content.replace(ground_sentinel, ground_roll_placeholder)
+            inject_labels["ground"] = "deferred"
         else:
-            collision_vars = world_model.kb["collision"]["variables"]
-            m5_body = _build_collision_ground_effect_m5(collision_vars)
-            if m5_body is not None:
-                new_content = new_content.replace(ground_sentinel, m5_body)
-                _collision_inject_log("Injected M5 piecewise ground collision effect")
-            else:
-                _collision_inject_log("Ground M5 not available yet, using placeholder 0.0")
-                new_content = new_content.replace(ground_sentinel, ground_placeholder)
+            new_content, inject_labels["ground"] = _inject_surface_sentinel(
+                new_content,
+                ground_sentinel,
+                collision_kb,
+                placeholder_body=ground_roll_placeholder,
+                m5_min_samples=0,
+                m5_bounce_mode="platform",
+            )
 
     platform_sentinel = "{SE-collision-platform-effect}"
     if platform_sentinel in new_content:
@@ -1570,32 +2029,17 @@ def inject_domain_file(
             new_content = new_content.replace(
                 platform_sentinel, PLATFORM_COLLISION_HARD_STOP
             )
+            inject_labels["platform"] = "hard_stop"
         else:
-            platform_kb = world_model.kb.get("platform_collision", {})
-            n_samples = len(platform_kb.get("states") or [])
-            platform_vars = platform_kb.get("variables") or {}
-            if n_samples >= PLATFORM_COLLISION_MIN_SAMPLES and platform_vars:
-                m5_body = _build_collision_effect_m5(platform_vars, bounce_mode="platform")
-                if m5_body is not None:
-                    new_content = new_content.replace(platform_sentinel, m5_body)
-                    _collision_inject_log(
-                        f"Injected M5 platform collision effect ({n_samples} samples)"
-                    )
-                else:
-                    _collision_inject_log(
-                        f"Platform M5 not ready ({n_samples} samples), using slide placeholder"
-                    )
-                    new_content = new_content.replace(
-                        platform_sentinel, _build_platform_slide_placeholder()
-                    )
-            else:
-                _collision_inject_log(
-                    f"Platform learning cold start ({n_samples}/{PLATFORM_COLLISION_MIN_SAMPLES} samples)"
-                    " — hard stop (bootstrap, no bird state mutation)"
-                )
-                new_content = new_content.replace(
-                    platform_sentinel, _build_platform_bootstrap_effect()
-                )
+            new_content, inject_labels["platform"] = _inject_surface_sentinel(
+                new_content,
+                platform_sentinel,
+                platform_kb,
+                placeholder_body=_build_platform_slide_placeholder(),
+                m5_min_samples=PDDL_PLATFORM_M5_MIN_SAMPLES,
+                m5_bounce_mode="platform",
+                planning_optimistic_slide=planning_optimistic_slide,
+            )
 
     base_dir = os.path.dirname(path)
     base_name = os.path.splitext(os.path.basename(path))[0]
@@ -1605,6 +2049,7 @@ def inject_domain_file(
         file.write(new_content)
 
     _collision_inject_log(f"Saved to {output_path}")
+    return inject_labels
 
 
 def inject_learned_transitions(path: str, world_model: WorldModel):
@@ -1776,6 +2221,7 @@ def simulate_pddl_shot_plan(
     max_steps: int = 10000,
     debug: bool = False,
     platform_kb: dict = None,
+    ground_kb: dict = None,
     speed_at_force=None,
     force_lr_model=None,
 ):
@@ -1891,6 +2337,9 @@ def simulate_pddl_shot_plan(
     platform_hit_pos = None
     platform_slide_continued = False
     slide_phase_active = False
+    slide_platform = None
+    ground_slide_active = False
+    ground_slide_stuck_steps = 0
     bounce_count = 0
     platforms_responded = set()
     trajectory = [(x, y)]  # Store trajectory for visualization
@@ -1899,6 +2348,110 @@ def simulate_pddl_shot_plan(
     for step in range(max_steps):
         if x > 800 or bounce_count >= 3:
             break
+
+        # Continuous ground slide after first ground impulse (no LR/M5 re-fire per step).
+        if ground_slide_active:
+            nx = x + vx * dt
+            surface_y = _ground_surface_y(br)
+            ny = surface_y
+
+            if pig is not None and not pig_killed:
+                for sx, sy in ((x, y), (nx, ny)):
+                    if not _bird_kills_pig(sx, sy, px, py, br, pr):
+                        continue
+                    if not _slide_pig_kill_credible(
+                        sx, sy, vx, vy, px, py, br, pr,
+                    ):
+                        continue
+                    pig_killed = True
+                    x, y = sx, sy
+                    if debug:
+                        print(
+                            f"[SIM DEBUG] Step {step}: PIG HIT (ground slide) "
+                            f"at ({x:.1f}, {y:.1f})"
+                        )
+                    break
+                if pig_killed:
+                    break
+
+            if abs(nx - x) < GROUND_SLIDE_STUCK_EPS:
+                ground_slide_stuck_steps += 1
+            else:
+                ground_slide_stuck_steps = 0
+
+            if (
+                abs(vx) >= GROUND_SLIDE_MIN_SPEED
+                and ground_slide_stuck_steps < GROUND_SLIDE_STUCK_MAX_STEPS
+                and nx <= 800
+            ):
+                x, y = nx, surface_y
+                vy = 0.0
+                if GROUND_SLIDE_FRICTION_PER_S > 0.0:
+                    vx *= max(0.0, 1.0 - GROUND_SLIDE_FRICTION_PER_S * dt)
+                if step % 5 == 0:
+                    trajectory.append((x, y))
+                continue
+
+            ground_slide_active = False
+            if debug:
+                print(
+                    f"[SIM DEBUG] Step {step}: ground slide ended at x={x:.1f}, "
+                    f"vx={vx:.1f}, stuck_steps={ground_slide_stuck_steps}"
+                )
+            bounce_count = 3
+            break
+
+        # Continuous platform slide: horizontal motion on surface (vy≈0), not ballistic arc.
+        if slide_phase_active and slide_platform is not None:
+            nx = x + vx * dt
+            surface_y = _platform_surface_y(slide_platform, br)
+            ny = surface_y
+
+            if pig is not None and not pig_killed:
+                for sx, sy in ((x, y), (nx, ny)):
+                    if not _bird_kills_pig(sx, sy, px, py, br, pr):
+                        continue
+                    if not _slide_pig_kill_credible(
+                        sx, sy, vx, vy, px, py, br, pr,
+                    ):
+                        if debug:
+                            print(
+                                f"[SIM DEBUG] Step {step}: slide pig proximity rejected "
+                                f"at ({sx:.1f}, {sy:.1f}) vx={vx:.1f}"
+                            )
+                        continue
+                    pig_killed = True
+                    x, y = sx, sy
+                    if debug:
+                        print(f"[SIM DEBUG] Step {step}: PIG HIT (slide) at ({x:.1f}, {y:.1f})")
+                    break
+                if pig_killed:
+                    break
+
+            on_span = _bird_on_platform_span(nx, br, slide_platform)
+            if on_span and abs(vx) >= PLATFORM_SLIDE_MIN_SPEED:
+                x, y = nx, surface_y
+                vy = 0.0
+                if PLATFORM_SLIDE_FRICTION_PER_S > 0.0:
+                    vx *= max(0.0, 1.0 - PLATFORM_SLIDE_FRICTION_PER_S * dt)
+                if step % 5 == 0:
+                    trajectory.append((x, y))
+                continue
+
+            slide_phase_active = False
+            slide_platform = None
+            x, y = nx, surface_y
+            vy = 0.0
+            if debug and not on_span:
+                print(
+                    f"[SIM DEBUG] Step {step}: left platform slide at x={x:.1f}, "
+                    f"vx={vx:.1f}"
+                )
+            elif debug:
+                print(
+                    f"[SIM DEBUG] Step {step}: platform slide stopped at x={x:.1f}, "
+                    f"vx={vx:.1f}"
+                )
 
         nx = x + vx * dt
         ny = y + vy * dt
@@ -1981,22 +2534,23 @@ def simulate_pddl_shot_plan(
             if hard_stop:
                 bounce_count = 3
                 slide_phase_active = False
+                slide_platform = None
                 platform_handled = True
                 break
 
             if slide:
                 platform_slide_continued = True
                 slide_phase_active = True
-                bounce_count += 1
+                slide_platform = plat
+                y = _platform_surface_y(plat, br)
+                vy = 0.0
             else:
                 slide_phase_active = False
+                slide_platform = None
             platform_handled = True
             break
 
         if pig_killed:
-            break
-
-        if platform_handled and bounce_count >= 3:
             break
 
         # Block collision: replicate base_domain_modified.pddl events
@@ -2071,7 +2625,8 @@ def simulate_pddl_shot_plan(
         if platform_handled:
             if step % 5 == 0:
                 trajectory.append((x, y))
-            continue
+            if slide_phase_active:
+                continue
 
         x = nx
         y = ny
@@ -2080,22 +2635,45 @@ def simulate_pddl_shot_plan(
         if step % 5 == 0:
             trajectory.append((x, y))
 
-        floor_y = PLAYFIELD_FLOOR_Y
-        ground_contact_y = floor_y + GROUND_CONTACT_CENTER_SLACK
-        if y <= ground_contact_y and vx > 0 and vy < -0.5:
+        ground_contact_y = _ground_surface_y(br)
+        on_ground = y <= ground_contact_y + GROUND_CONTACT_CENTER_SLACK
+        if (
+            on_ground
+            and not ground_slide_active
+            and math.hypot(vx, vy) > 5.0
+            and vy < 0.5
+        ):
             ground_touches += 1
             if debug:
                 print(
-                    f"[SIM DEBUG] Step {step}: GROUND at ({x:.1f}, {y:.1f}), "
-                    f"contact_y={ground_contact_y:.1f}"
+                    f"[SIM DEBUG] Step {step}: GROUND roll contact at ({x:.1f}, {y:.1f}), "
+                    f"surface_y={ground_contact_y:.1f}"
                 )
-            y = ground_contact_y
-            vy = 0.0
-            vx = 0.0
-            bounce_count += 1
+            x, y, vx, vy, roll, hard_stop = _apply_ground_contact(
+                ground_kb or platform_kb or {}, x, y, vx, vy, br, debug=debug
+            )
             trajectory.append((x, y))
-            # Placeholder ground effect stops the bird (no M5 bounce in planning sim).
-            break
+            if hard_stop:
+                bounce_count = 3
+                slide_phase_active = False
+                slide_platform = None
+                break
+            if roll:
+                platform_slide_continued = True
+                slide_phase_active = False
+                slide_platform = None
+                ground_slide_active = True
+                ground_slide_stuck_steps = 0
+                y = ground_contact_y
+                vy = 0.0
+            else:
+                slide_phase_active = False
+                slide_platform = None
+                bounce_count = 3
+                break
+            if step % 5 == 0:
+                trajectory.append((x, y))
+            continue
 
         if y <= ground_contact_y and vy <= 0:
             # Safety: do not integrate below the playfield when falling or stopped.

@@ -1937,6 +1937,106 @@ def make_feature_vector(data, include_velocity_ratio=False, include_trig_feature
     return np.array(result)
 
 
+ROLLING_LR_MIN_SAMPLES = 3
+ROLLING_LR_OUTPUT_VARS = ("x", "y", "v_x", "v_y")
+# Extended inputs: impact angle (ratio + trig) and kinetic (speed, v_x², v_y²).
+ROLLING_LR_FEATURE_FLAGS = {
+    "include_velocity_ratio": True,
+    "include_trig_features": True,
+    "include_kinetic_features": True,
+}
+# Base 4-feature LR — injectable into PDDL (ENHSP cannot express extended features).
+ROLLING_LR_PDDL_FEATURE_FLAGS = {
+    "include_velocity_ratio": False,
+    "include_trig_features": False,
+    "include_kinetic_features": False,
+}
+
+
+def rolling_lr_feature_flags(lr_models: dict = None) -> dict:
+    """Feature flags for rolling LR X matrix; stored models override defaults."""
+    if isinstance(lr_models, dict):
+        stored = lr_models.get("_feature_flags")
+        if isinstance(stored, dict):
+            return stored
+    return ROLLING_LR_FEATURE_FLAGS.copy()
+
+
+def rolling_lr_uses_extended_features(lr_models: dict = None) -> bool:
+    flags = rolling_lr_feature_flags(lr_models)
+    return any(
+        flags.get(key)
+        for key in (
+            "include_velocity_ratio",
+            "include_trig_features",
+            "include_kinetic_features",
+        )
+    )
+
+
+def make_rolling_lr_feature_vector(states, lr_models: dict = None):
+    flags = rolling_lr_feature_flags(lr_models)
+    return make_feature_vector(states, **flags)
+
+
+def train_rolling_lr(
+    kb_event: dict,
+    min_samples: int = ROLLING_LR_MIN_SAMPLES,
+    feature_flags: dict = None,
+):
+    """
+    Fit linear regression for surface rolling.
+
+    X = [x, y, v_x, v_y] plus optional impact-angle and kinetic derived features.
+    Y = post-contact x, y, v_x, v_y (one model per output).
+    """
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import r2_score
+
+    states = kb_event.get("states") or []
+    variables = kb_event.get("variables") or {}
+    if len(states) < min_samples:
+        return None
+
+    if feature_flags is None:
+        feature_flags = rolling_lr_feature_flags()
+    else:
+        feature_flags = feature_flags.copy()
+    X = make_feature_vector(states, **feature_flags)
+    lr_models = {"_feature_flags": feature_flags.copy()}
+    for var_name in ROLLING_LR_OUTPUT_VARS:
+        if var_name not in variables:
+            return None
+        y = np.array(variables[var_name]["value"])
+        if len(y) != len(X):
+            return None
+        model = LinearRegression()
+        model.fit(X, y)
+        r2 = float(r2_score(y, model.predict(X)))
+        lr_models[var_name] = {
+            "model": model,
+            "r2": r2,
+            "coef": model.coef_.tolist(),
+            "intercept": float(model.intercept_),
+            "n_features": int(X.shape[1]),
+        }
+
+    if len([k for k in lr_models if k in ROLLING_LR_OUTPUT_VARS]) != len(ROLLING_LR_OUTPUT_VARS):
+        return None
+    return lr_models
+
+
+def train_rolling_lr_dual(kb_event: dict, min_samples: int = ROLLING_LR_MIN_SAMPLES):
+    """Train extended LR for forward sim and base 4-feature LR for PDDL injection."""
+    sim_models = train_rolling_lr(
+        kb_event, min_samples, feature_flags=ROLLING_LR_FEATURE_FLAGS.copy(),
+    )
+    pddl_models = train_rolling_lr(
+        kb_event, min_samples, feature_flags=ROLLING_LR_PDDL_FEATURE_FLAGS.copy(),
+    )
+    return sim_models, pddl_models
+
+
 def update_model_effects(
     event_name: str,
     kb: dict,
@@ -1974,11 +2074,40 @@ def update_model_effects(
         }
     else:
         kb[event_name]["states"].append(pre_event_state)
+        for var in ROLLING_LR_OUTPUT_VARS:
+            if var not in kb[event_name]["variables"]:
+                kb[event_name]["variables"][var] = {
+                    "value": [], "model": None, "model_comparison": None
+                }
         for var in post_event_state:
             if var in kb[event_name]["variables"]:
                 kb[event_name]["variables"][var]["value"].append(post_event_state[var])
 
     n_samples = len(kb[event_name]["states"])
+
+    sim_lr, pddl_lr = train_rolling_lr_dual(kb[event_name])
+    if sim_lr:
+        kb[event_name]["lr_models"] = sim_lr
+        r2_parts = ", ".join(
+            f"{var}={sim_lr[var]['r2']:.3f}" for var in ROLLING_LR_OUTPUT_VARS
+        )
+        n_feat = sim_lr.get("x", {}).get("n_features", 4)
+        feat_note = "extended" if rolling_lr_uses_extended_features(sim_lr) else "base"
+        print(
+            f"[ROLL LR] {event_name}: n={n_samples}  feats={n_feat} ({feat_note})  "
+            f"R²=({r2_parts})"
+        )
+    if pddl_lr:
+        kb[event_name]["lr_models_pddl"] = pddl_lr
+        pddl_r2 = ", ".join(
+            f"{var}={pddl_lr[var]['r2']:.3f}" for var in ROLLING_LR_OUTPUT_VARS
+        )
+        n_pddl_feat = pddl_lr.get("x", {}).get("n_features", 4)
+        print(
+            f"[ROLL LR PDDL] {event_name}: n={n_samples}  feats={n_pddl_feat} (base)  "
+            f"R²=({pddl_r2})"
+        )
+
     should_retrain = n_samples == 1
     if not should_retrain and train_level is not None:
         last_level = kb.get("_m5_last_retrain_level", -1)

@@ -163,10 +163,11 @@
 
         )
         :effect (and
-            (assign (y_bird ?b) 0.0)
-            (assign (vy_bird ?b) 0.0)
-            (assign (vx_bird ?b) 0.0)
-            (assign (bounce_count ?b) (+ (bounce_count ?b) 1))
+            (assign (x_bird ?b) (+ 4.1340 (+ (* 0.9953 (x_bird ?b)) (+ (* -0.5033 (y_bird ?b)) (+ (* 0.0300 (vx_bird ?b)) (* 0.0073 (vy_bird ?b)))))))
+            (assign (y_bird ?b) (+ 3.2475 (+ (* 0.0051 (x_bird ?b)) (+ (* -0.5657 (y_bird ?b)) (+ (* -0.0027 (vx_bird ?b)) (* 0.0064 (vy_bird ?b)))))))
+            (assign (vx_bird ?b) (+ 115.7343 (+ (* -0.2329 (x_bird ?b)) (+ (* -2.9719 (y_bird ?b)) (+ (* 0.5864 (vx_bird ?b)) (* 0.2103 (vy_bird ?b)))))))
+            (assign (vy_bird ?b) (+ -8.6262 (+ (* -0.0474 (x_bird ?b)) (+ (* 3.8766 (y_bird ?b)) (+ (* -0.0179 (vx_bird ?b)) (* -0.3937 (vy_bird ?b)))))))
+            (assign (mod) 2)
         )
     )
 
@@ -396,12 +397,19 @@
             (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
             (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
             (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            ; First contact only: while sliding, the bird stays inside this AABB every
+            ; integration step — without this guard the platform effect (and formerly
+            ; bounce_count) re-fired each frame, ending flight after ~3 steps.
+            (> (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
         )
         :effect (and
-            (assign (v_bird ?b) 0)
-            (assign (vx_bird ?b) 0)
-            (assign (vy_bird ?b) 0)
-            (assign (bounce_count ?b) 3)
+            (assign (y_bird ?b) (+ 3.1394 (+ (* 0.9726 (y_bird ?b)) (* -0.0029 (vx_bird ?b)))))
+            (when (< (y_bird ?b) 70.00000000) (assign (vx_bird ?b) (+ -448.7560 (+ (* 0.7393 (x_bird ?b)) (+ (* 0.3590 (vx_bird ?b)) (* -1.3208 (vy_bird ?b)))))))
+            (when (>= (y_bird ?b) 70.00000000) (assign (vx_bird ?b) (+ -72.9729 (+ (* 0.4581 (x_bird ?b)) (+ (* -0.7020 (y_bird ?b)) (* 0.2284 (vx_bird ?b)))))))
+            (when (< (vx_bird ?b) 83.33334000) (assign (vy_bird ?b) (+ 408.9779 (+ (* 0.2652 (x_bird ?b)) (+ (* 1.0504 (y_bird ?b)) (+ (* -7.2120 (vx_bird ?b)) (* 0.8908 (vy_bird ?b))))))))
+            (when (>= (vx_bird ?b) 83.33334000) (assign (vy_bird ?b) (+ 25.9936 (+ (* -0.2053 (x_bird ?b)) (+ (* 0.0405 (vx_bird ?b)) (* -0.6300 (vy_bird ?b)))))))
+            (when (< (y_bird ?b) 70.00000000) (assign (x_bird ?b) (+ -64.4212 (+ (* 1.1241 (x_bird ?b)) (+ (* -0.0282 (y_bird ?b)) (* -0.2173 (vy_bird ?b)))))))
+            (when (>= (y_bird ?b) 70.00000000) (assign (x_bird ?b) (+ -22.8342 (+ (* 1.1016 (x_bird ?b)) (+ (* -0.0811 (y_bird ?b)) (* 0.0357 (vx_bird ?b)))))))
             (assign (mod) 2)
         )
     )

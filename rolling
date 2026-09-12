@@ -1,0 +1,88 @@
+C:\Users\Sagiv.M\PycharmProjects\Strike-Eagle\venv\Scripts\python.exe C:/Users/Sagiv.M/PycharmProjects/Strike-Eagle/compute_phyq_scores.py
+================================================================================
+PHY-Q SCORES BY TEMPLATE - PDDL AGENT (single_force)
+================================================================================
+Source: pddl_agent_results.csv (40 levels)
+
+## Per-Template Performance
+--------------------------------------------------------------------------------
+ Template  |  Train Win%  |  Test Win%   |  Gen Gap   | Train N  |  Test N
+--------------------------------------------------------------------------------
+    5      |     56.2    % |     50.0    % |    +6.2   % |    32    |    8
+--------------------------------------------------------------------------------
+ OVERALL   |     56.2    % |     50.0    % |    +6.2   % |    32    |    8
+================================================================================
+
+## PHY-Q SCORE SUMMARY (PDDL Agent)
+================================================================================
+Overall Accuracy (all levels):     55.0%
+Train Performance:                 56.2% (32 levels)
+Test Performance (Generalization): 50.0% (8 levels)
+Generalization Gap:                +6.2%
+
+================================================================================
+COMPARISON WITH OTHER AGENTS (Phy-Q Benchmark)
+================================================================================
+
+## Pass Rate by Template (All Agents)
+----------------------------------------------------------------------------------------------------
+Agent                |     T5     |  Overall
+----------------------------------------------------------------------------------------------------
+PDDL Agent           |   55.0%    |   55.0%
+Bambirds             |   58.0%    |   58.0%
+D-DDQN-Image         |   22.5%    |   22.5%
+D-DDQN-Symbolic      |   30.0%    |   30.0%
+Datalab              |   89.0%    |   89.0%
+Eagle’s Wing         |   61.5%    |   61.5%
+Human                |   96.3%    |   96.3%
+Pig Shooter          |   87.3%    |   87.3%
+Random Agent         |    8.5%    |    8.5%
+Relational-Image     |    5.0%    |    5.0%
+Relational-Symbolic  |   37.5%    |   37.5%
+----------------------------------------------------------------------------------------------------
+
+## Overall Performance Ranking (single_force scenario)
+------------------------------------------------------------
+ Rank  | Agent                     |  Pass Rate
+------------------------------------------------------------
+  1    | Human                     |     96.3    %
+  2    | Datalab                   |     89.0    %
+  3    | Pig Shooter               |     87.3    %
+  4    | Eagle’s Wing              |     61.5    %
+  5    | Bambirds                  |     58.0    %
+  6    | PDDL Agent                |     55.0    % <-- Our Agent
+  7    | Relational-Symbolic       |     37.5    %
+  8    | D-DDQN-Symbolic           |     30.0    %
+  9    | D-DDQN-Image              |     22.5    %
+  10   | Random Agent              |     8.5     %
+  11   | Relational-Image          |     5.0     %
+------------------------------------------------------------
+
+PDDL Agent Rank: 6/11
+
+## Comparison vs Key Baselines
+------------------------------------------------------------
+vs Human               : -41.3% (WORSE)
+vs Datalab             : -34.0% (WORSE)
+vs Bambirds            : -3.0% (WORSE)
+vs Random Agent        : +46.5% (BETTER)
+================================================================================
+
+## Per-Template Comparison: PDDL Agent vs Human
+--------------------------------------------------------------------------------
+ Template  |     PDDL     |    Human     |     Diff     |   Status
+--------------------------------------------------------------------------------
+    5      |     55.0    % |     96.3    % |    -41.3    % |   WORSE
+--------------------------------------------------------------------------------
+
+================================================================================
+SUMMARY EXPORT
+================================================================================
+ Template Train Win% Test Win% Gen Gap  Train N  Test N
+        5      56.2%     50.0%   +6.2%       32       8
+
+Saved detailed scores to: phyq_scores_by_template.csv
+
+Saved report to: phyq_scores_report.txt
+
+Process finished with exit code 0

@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 import numpy as np
 from agents import BaselineAgent
 from agents.pddl.optimizer import grid_search, get_poly_rank, get_param_values, calculate_aggregative_erros, \
-    get_params_sensitivity, compute_derivatives, fit_state_transition
+    get_params_sensitivity, compute_derivatives, fit_state_transition, ConstantPredictModel
 from agents.pddl.pddl_files.events.learn_events import update_model_effects, update_model_effects_with_ablation
 from agents.pddl.pddl_files.pddl_objects import get_birds, get_pigs, get_blocks, get_platforms
 from agents.pddl.pddl_files.segments import getSegmentsPelt, getSegmentsEvents
@@ -55,6 +55,7 @@ from agents.pddl.pddl_files.pddl_parser import (
     iter_force_grid,
     ANGLE_EXECUTION_SLACK_DEG, GAP_CLEARANCE_ANGLE_NUDGE_DEG,
     PLATFORM_EXECUTION_SLACK_DEG, PLANNER_FLIGHT_SLACK_DEG,
+    PLAYFIELD_FLOOR_Y,
     pddl_flight_angle_deg, pddl_planned_launch_state, pddl_shot_to_release_point,
 )
 from src.client.agent_client import GameState
@@ -125,6 +126,7 @@ class PDDLAgent(BaselineAgent):
                  # Force -> velocity learning mode
                  force_learning_mode: bool = False,
                  force_learning_min_samples: int = 5,
+                 platform_aim_override: bool = False,
                  disable_sim_override: bool = False,
                  planner_only: bool = True,
                  disable_forward_sim: bool = False,
@@ -132,7 +134,9 @@ class PDDLAgent(BaselineAgent):
                  plan_pick_fast: bool = True,
                  plan_pick_timeout_sec: float = PLAN_PICK_SEARCH_TIMEOUT_SEC,
                  sim_gate_test_only: bool = True,
-                 max_train_attempts: int = 5):
+                 max_train_attempts: int = 5,
+                 world_model_load: str = None,
+                 world_model_save: str = None):
         super().__init__(
             agent_ind=agent_ind,
             agent_configs=agent_configs)
@@ -231,6 +235,7 @@ class PDDLAgent(BaselineAgent):
         # Force -> velocity learning state
         self.force_learning_mode = force_learning_mode
         self.force_learning_min_samples = force_learning_min_samples
+        self.platform_aim_override = platform_aim_override
         self.planner_only = planner_only
         self.disable_sim_override = disable_sim_override
         self.disable_forward_sim = disable_forward_sim
@@ -258,6 +263,13 @@ class PDDLAgent(BaselineAgent):
             print(
                 f"[PDDL] Prefer-sim-plan [{mode}{timeout_note}] — after ENHSP, pick best "
                 "forward-sim score among planner / local refine / sim search"
+            )
+        elif self.force_learning_mode:
+            print("[PDDL] Force-learning mode — random angle+force, fit v=f(force)")
+        elif self.platform_aim_override:
+            print(
+                "[PDDL] Platform-aim override ON — ENHSP skipped; "
+                "ballistic aim at platform top (or ground fallback)"
             )
         elif self.planner_only:
             if self.disable_forward_sim:
@@ -417,6 +429,10 @@ class PDDLAgent(BaselineAgent):
             "collision": {
                 "states": [],
                 "variables": {
+                    "x": {
+                        "value": [],
+                        "model": None
+                    },
                     "v_x": {
                         "value": [],
                         "model": None
@@ -435,6 +451,7 @@ class PDDLAgent(BaselineAgent):
             "platform_collision": {
                 "states": [],
                 "variables": {
+                    "x": {"value": [], "model": None},
                     "v_x": {"value": [], "model": None},
                     "v_y": {"value": [], "model": None},
                     "y": {"value": [], "model": None},
@@ -444,6 +461,10 @@ class PDDLAgent(BaselineAgent):
         }
         # Always use base_domain_modified.pddl (not domain.pddl) for ENHSP
         self.world_model.kb = self.kb
+        self.world_model_load_path = world_model_load
+        self.world_model_save_path = world_model_save
+        if world_model_save:
+            print(f"[WORLD-MODEL] Will save checkpoints to {world_model_save}")
         self.x =0
 
         # Storage for learned state transition functions
@@ -456,6 +477,9 @@ class PDDLAgent(BaselineAgent):
             "xddot": None,  # {"model": regression_model, "polynomial": Polynomial, "string": str, "initial_value": float}
             "yddot": None   # {"model": regression_model, "polynomial": Polynomial, "string": str, "initial_value": float}
         }
+        if world_model_load:
+            from agents.pddl.world_model_persistence import load_world_model
+            load_world_model(self, world_model_load)
 
         # metrics
         self.rmse = list()
@@ -482,6 +506,16 @@ class PDDLAgent(BaselineAgent):
             output_path=comparison_csv_path,
             human_baseline_path=human_baseline_path
         )
+
+    def _save_world_model_checkpoint(self, reason: str = "") -> None:
+        path = getattr(self, "world_model_save_path", None)
+        if not path:
+            return
+        from agents.pddl.world_model_persistence import save_world_model
+        try:
+            save_world_model(self, path, reason=reason)
+        except Exception as exc:
+            print(f"[WORLD-MODEL] Save failed ({reason}): {exc}")
 
     # Minimum segment quality for trusting flight-physics learning.
     # Gravity needs the 2nd derivative of y, which requires visible arc curvature
@@ -655,6 +689,7 @@ class PDDLAgent(BaselineAgent):
             force=force,
             debug=debug,
             platform_kb=self.kb.get("platform_collision"),
+            ground_kb=self.kb.get("collision"),
             speed_at_force=self._speed_at_force,
             force_lr_model=self.force_lr_model,
         )
@@ -842,7 +877,7 @@ class PDDLAgent(BaselineAgent):
         FRAME_RATE = 0.02  # 50 fps
         VELOCITY_FRAMES = 3  # Use 3 frames for velocity calculation
         POST_OFFSET = 2  # Skip frames where bird is still at ground level
-        MIN_BOUNCE_VELOCITY = 60  # Minimum velocity for a "real" bounce
+        MIN_ROLL_SPEED = 25.0
         
         for collision_index in collisions:
             # Need enough frames before collision for velocity calculation
@@ -875,9 +910,18 @@ class PDDLAgent(BaselineAgent):
             post_state['v_x'] = (post_features_end['x'] - post_features_start['x']) / post_dt
             post_state['v_y'] = (post_features_end['y'] - post_features_start['y']) / post_dt
             
-            # Filter: only learn from significant bounces
-            if abs(pre_state['v_y']) < MIN_BOUNCE_VELOCITY:
+            # Filter: only learn from significant surface contacts (rolling/slide)
+            pre_speed = math.hypot(pre_state["v_x"], pre_state["v_y"])
+            if pre_speed < MIN_ROLL_SPEED:
                 continue
+
+            print(
+                f"[ROLL LEARN] ground @ frame {collision_index} "
+                f"pre=({pre_state['x']:.1f},{pre_state['y']:.1f},"
+                f"{pre_state['v_x']:.1f},{pre_state['v_y']:.1f}) → "
+                f"post=({post_state['x']:.1f},{post_state['y']:.1f},"
+                f"{post_state['v_x']:.1f},{post_state['v_y']:.1f})"
+            )
             
             # Record collision sample for algorithm comparison (always, regardless of phase)
             # Only record first valid collision per trajectory for consistent sample counts
@@ -913,29 +957,48 @@ class PDDLAgent(BaselineAgent):
         FRAME_RATE = 0.02
         VELOCITY_FRAMES = 3
         POST_OFFSET = 2
+        SLIDE_SETTLE_OFFSETS = (10, 12, 8, 15, 6, 5, POST_OFFSET)
         MIN_PLATFORM_SPEED = 25.0
 
         first_hit = hit_frames[0] if hit_frames else None
+        n_frames = len(bird_observed_features)
+
+        def _velocity_at(idx):
+            prev = bird_observed_features[idx - VELOCITY_FRAMES]
+            cur = bird_observed_features[idx]
+            dt = VELOCITY_FRAMES * FRAME_RATE
+            return (
+                (cur["x"] - prev["x"]) / dt,
+                (cur["y"] - prev["y"]) / dt,
+            )
+
+        def _pick_settle_frame(contact_idx):
+            """Post-contact target during steady slide (frames +5…+15), not landing impulse."""
+            for offset in SLIDE_SETTLE_OFFSETS:
+                cand = contact_idx + offset
+                if cand < VELOCITY_FRAMES or cand + VELOCITY_FRAMES >= n_frames:
+                    continue
+                if first_hit is not None and cand >= first_hit:
+                    continue
+                return cand
+            return None
 
         for collision_index in platform_collisions:
             if first_hit is not None and collision_index >= first_hit:
                 continue
             if collision_index < VELOCITY_FRAMES:
                 continue
-            if collision_index + POST_OFFSET + VELOCITY_FRAMES >= len(bird_observed_features):
+
+            settle_idx = _pick_settle_frame(collision_index)
+            if settle_idx is None:
                 continue
 
             pre_features = bird_observed_features[collision_index]
-            prev_features = bird_observed_features[collision_index - VELOCITY_FRAMES]
-            post_start = collision_index + POST_OFFSET
-            post_end = post_start + VELOCITY_FRAMES
-            post_features_start = bird_observed_features[post_start]
-            post_features_end = bird_observed_features[post_end]
+            post_features_start = bird_observed_features[settle_idx]
+            post_features_end = bird_observed_features[settle_idx + VELOCITY_FRAMES]
 
             pre_state = pre_features.copy()
-            pre_dt = VELOCITY_FRAMES * FRAME_RATE
-            pre_state["v_x"] = (pre_features["x"] - prev_features["x"]) / pre_dt
-            pre_state["v_y"] = (pre_features["y"] - prev_features["y"]) / pre_dt
+            pre_state["v_x"], pre_state["v_y"] = _velocity_at(collision_index)
 
             post_state = post_features_start.copy()
             post_dt = VELOCITY_FRAMES * FRAME_RATE
@@ -947,9 +1010,19 @@ class PDDLAgent(BaselineAgent):
                 continue
 
             post_speed = math.hypot(post_state["v_x"], post_state["v_y"])
+            settle_note = (
+                "settled" if settle_idx > collision_index + POST_OFFSET else "impulse"
+            )
             print(
-                f"[PLATFORM LEARN] frame={collision_index} pre_speed={pre_speed:.1f} "
-                f"post_speed={post_speed:.1f} pre=({pre_state['x']:.1f},{pre_state['y']:.1f}) "
+                f"[ROLL LEARN] platform contact={collision_index} {settle_note}={settle_idx} "
+                f"pre=({pre_state['x']:.1f},{pre_state['y']:.1f},"
+                f"{pre_state['v_x']:.1f},{pre_state['v_y']:.1f}) → "
+                f"post=({post_state['x']:.1f},{post_state['y']:.1f},"
+                f"{post_state['v_x']:.1f},{post_state['v_y']:.1f})"
+            )
+            print(
+                f"[PLATFORM LEARN] contact={collision_index} settle={settle_idx} "
+                f"pre_speed={pre_speed:.1f} post_speed={post_speed:.1f} "
                 f"post_v=({post_state['v_x']:.1f},{post_state['v_y']:.1f})"
             )
 
@@ -1111,6 +1184,8 @@ class PDDLAgent(BaselineAgent):
         print(f"[DEBUG]   determinism_test_mode={self.determinism_test_mode}")
         print(f"[DEBUG]   override_angle={self.override_angle}")
         
+        print(f"[DEBUG]   platform_aim_override={self.platform_aim_override}")
+        
         # Force learning mode (highest priority)
         if self.force_learning_mode:
             return self._solve_force_learning(sling)
@@ -1121,9 +1196,33 @@ class PDDLAgent(BaselineAgent):
         
         # Default force for non-PDDL branches (determinism test, override angle, etc.)
         planned_force = FORCE_MAX
+        angle = None
+
+        # Platform-aim override: skip ENHSP, ballistic aim at platform top
+        if self.platform_aim_override:
+            if self.use_generalization_protocol and self.generalization_protocol is not None:
+                current_phase, should_learn = self.generalization_protocol.get_phase_for_level(
+                    self.current_level
+                )
+                if current_phase == "complete":
+                    print("\n[GENERALIZATION] Protocol complete (platform-aim mode).")
+                    self.phyq_metrics.print_report()
+                    self.phyq_metrics.save("phyq_generalization_results.json")
+                    self._save_world_model_checkpoint("protocol_complete")
+                    import sys
+                    sys.exit(0)
+            angle, planned_force = self._compute_platform_aim_shot(sling, vision)
+            self._allow_gap_clearance_nudge = False
+            problem_data, _, _ = self._gather_problem_data(
+                vision, sling, self.world_model, ref_angle_guess=float(angle or 45.0),
+            )
+            self._last_problem_data = problem_data
+            if not (self.use_generalization_protocol and self.generalization_protocol is not None):
+                current_phase = "train"
+                should_learn = True
 
         # Phy-Q Generalization Protocol (takes priority if enabled)
-        if self.use_generalization_protocol and self.generalization_protocol is not None:
+        elif self.use_generalization_protocol and self.generalization_protocol is not None:
             # Get phase based on current level index
             current_phase, should_learn = self.generalization_protocol.get_phase_for_level(self.current_level)
             self._allow_gap_clearance_nudge = (current_phase != "test")
@@ -1162,6 +1261,7 @@ class PDDLAgent(BaselineAgent):
                 # Save results
                 self.phyq_metrics.save("phyq_generalization_results.json")
                 print(f"\n[PHY-Q] Results saved to phyq_generalization_results.json")
+                self._save_world_model_checkpoint("protocol_complete")
                 
                 print("\n[GENERALIZATION] Exiting - protocol finished.")
                 import sys
@@ -1198,6 +1298,7 @@ class PDDLAgent(BaselineAgent):
                 # Save Phy-Q results to file
                 self.phyq_metrics.save("phyq_results.json")
                 print(f"\n[PHY-Q] Results saved to phyq_results.json")
+                self._save_world_model_checkpoint("protocol_complete")
                 
                 print("\n[PROTOCOL] Exiting - training protocol finished.")
                 import sys
@@ -1229,6 +1330,10 @@ class PDDLAgent(BaselineAgent):
             planned_force, angle = _extract_force_angle(actions)
             print(f"\n[PDDL] Planner selected angle: {angle}°, force: {planned_force}")
 
+        if angle is None:
+            angle = 45.0
+            print("[PLATFORM AIM] WARNING: angle unset — using 45° fallback")
+
         # 2. Execute shot — use PDDL flight angle and launch position directly.
         exec_angle = angle
         gap_nudge = 0.0
@@ -1243,7 +1348,7 @@ class PDDLAgent(BaselineAgent):
         elif not self.disable_sim_override and not self.disable_forward_sim:
             last_sim = getattr(self, "_last_probe_sim", None) or getattr(self, "_last_sim_result", None) or {}
             gap_nudge = self._gap_clearance_execution_nudge(
-                getattr(self, "_last_problem_data", {}), last_sim
+                getattr(self, "_last_problem_data", None) or {}, last_sim
             )
             if gap_nudge != 0.0:
                 exec_angle = max(self.min_deg, min(self.max_deg, angle + gap_nudge))
@@ -1490,7 +1595,7 @@ class PDDLAgent(BaselineAgent):
         if ENABLE_COLLISION_LEARNING:
             # Always record collision samples (for alpha validation), but only train during train phase
             self.learn_collision_effects(collisions, bird_observed_features, phase=current_phase, should_learn=should_learn)
-            if platform_collisions and hits:
+            if platform_collisions:
                 self.learn_platform_effects(
                     platform_collisions,
                     bird_observed_features,
@@ -1676,7 +1781,7 @@ class PDDLAgent(BaselineAgent):
             )
 
             flight_err = launch['theta_deg'] - pddl_flight_deg
-            slack = self._execution_slack_deg(getattr(self, '_last_problem_data', {}))
+            slack = self._execution_slack_deg(getattr(self, '_last_problem_data', None) or {})
             if abs(flight_err) > slack:
                 print(
                     f"[EXEC MAP] ANGLE MISMATCH: measured flight={launch['theta_deg']:.1f}° vs "
@@ -2033,6 +2138,7 @@ class PDDLAgent(BaselineAgent):
             # Update world model with learned parameters
             self.world_model = self.learned_transition_world_model
             self.world_model.kb = self.kb
+            self._save_world_model_checkpoint("post_train_shot")
         else:
             print(f"[{current_phase.upper()}] World model NOT updated (evaluation mode)")
             print(f"Current World Model: {self.world_model.hyperparams_values}")
@@ -2053,6 +2159,109 @@ class PDDLAgent(BaselineAgent):
 
         if not should_retry_level:
             time.sleep(3)
+
+    def _aim_angle_at_point(self, ref_x, ref_y, target_x, target_y, force):
+        """Iteratively solve ballistic angle from pa-twang launch point to target."""
+        v_bird = float(self.world_model.hyperparams_values.get(Params.velocity, 180))
+        gravity = float(self.world_model.hyperparams_values.get(Params.gravity, 85))
+        angle = 45.0
+        for _ in range(4):
+            launch = pddl_planned_launch_state(
+                angle, ref_x, ref_y, force, v_bird,
+                force_lr_model=self.force_lr_model,
+                speed_at_force=self._speed_at_force,
+            )
+            new_angle = ballistic_angle_to_target(
+                launch["launch_x"],
+                launch["launch_y"],
+                target_x,
+                target_y,
+                launch["speed"],
+                gravity,
+            )
+            if new_angle is None:
+                break
+            if abs(new_angle - angle) < 0.05:
+                angle = new_angle
+                break
+            angle = new_angle
+        return max(self.min_deg, min(self.max_deg, angle))
+
+    def _compute_platform_aim_shot(self, sling, vision):
+        """
+        Override ENHSP: aim at the top of the nearest platform (or ground fallback).
+        Returns (angle_deg, force).
+        """
+        platform_objects = get_platforms(vision, sling, self.tp)
+        force = FORCE_MAX
+        ref = self.tp.get_reference_point(sling)
+        ref_x, ref_y = float(ref.X), float(640 - ref.Y)
+
+        if platform_objects:
+            target_key = min(
+                platform_objects.keys(),
+                key=lambda k: float(platform_objects[k]["x_platform"]),
+            )
+            plat = platform_objects[target_key]
+            target_x = float(plat["x_platform"])
+            target_y = (
+                float(plat["y_platform"]) + float(plat["platform_height"]) / 2.0
+            )
+            print(
+                f"[PLATFORM AIM] Target {target_key} top=({target_x:.1f}, {target_y:.1f})"
+            )
+        else:
+            target_x = ref_x + 200.0
+            target_y = PLAYFIELD_FLOOR_Y + 4.0
+            print(
+                f"[PLATFORM AIM] No platform — ground target=({target_x:.1f}, {target_y:.1f})"
+            )
+
+        angle = self._aim_angle_at_point(ref_x, ref_y, target_x, target_y, force)
+        print(f"[PLATFORM AIM] Ballistic angle={angle:.1f}° force={force:.2f}")
+        return angle, force
+
+    def _platform_ballistic_fallback_angle(
+        self,
+        problem_data: dict,
+        bird_objects: dict,
+        *,
+        sling=None,
+        vision=None,
+        ref_angle_guess: float = 45.0,
+    ):
+        """
+        When ENHSP is unsolvable on a platform level, aim at platform top (~42°)
+        instead of a low direct pig line. Returns angle or None if no platform.
+        """
+        platform_keys = [k for k in (problem_data or {}) if k.startswith("platform_")]
+        if not platform_keys:
+            return None
+        if sling is not None and vision is not None:
+            angle, _force = self._compute_platform_aim_shot(sling, vision)
+            print(
+                f"[PLATFORM FALLBACK] ENHSP unsolvable — platform-top aim {angle:.1f}°"
+            )
+            return self._clamp_planner_dial(angle, problem_data)
+
+        target_key = min(
+            platform_keys,
+            key=lambda k: float(problem_data[k]["x_platform"]),
+        )
+        plat = problem_data[target_key]
+        target_x = float(plat["x_platform"])
+        target_y = float(plat["y_platform"]) + float(plat["platform_height"]) / 2.0
+        if not bird_objects:
+            return None
+        bird = list(bird_objects.values())[0]
+        ref_x = float(bird["x_bird"])
+        ref_y = float(bird["y_bird"])
+        angle = self._aim_angle_at_point(ref_x, ref_y, target_x, target_y, FORCE_MAX)
+        print(
+            f"[PLATFORM FALLBACK] ENHSP unsolvable — {target_key} top "
+            f"({target_x:.1f}, {target_y:.1f}) → {angle:.1f}°"
+        )
+        return self._clamp_planner_dial(angle, problem_data)
 
     def _solve_force_learning(self, sling):
         """
@@ -2455,6 +2664,10 @@ class PDDLAgent(BaselineAgent):
         (+12.0, -0.15),
         (-12.0, -0.15),
     )
+    # Probed after ENHSP parse to retain planner plans that sim can execute.
+    _PRE_SIM_GATE_DIAL_DELTAS = (
+        +3.0, -3.0, +6.0, -6.0, +9.0, -9.0, +12.0, -12.0,
+    )
 
     # Plan sources that count as "the raw ENHSP plan has been fired" — retry
     # diversification only makes sense once such a shot has already been tried
@@ -2602,6 +2815,122 @@ class PDDLAgent(BaselineAgent):
         )
         return new_angle, new_force
 
+    def _planner_only_gate_would_reject(
+        self,
+        sim: dict,
+        problem_data: dict,
+        *,
+        ignore_clamp_min: bool = False,
+    ) -> bool:
+        """True when planner-only sim-gate would replace this plan with sim_search."""
+        short_gate = self._plan_is_platform_hit_short(sim, problem_data)
+        shelter_gate = (
+            not short_gate
+            and self._plan_is_block_shelter_miss(sim, problem_data)
+        )
+        platform_miss_gate = (
+            not short_gate
+            and not shelter_gate
+            and bool(sim.get("platform_collision"))
+            and not bool(sim.get("pig_killed_in_sim"))
+            and not bool(sim.get("platform_slide_continued"))
+        )
+        ground_bounce_gate = (
+            not short_gate
+            and not shelter_gate
+            and not platform_miss_gate
+            and self._plan_is_ground_bounce_miss(sim, problem_data)
+        )
+        clamp_min_gate = (
+            not ignore_clamp_min
+            and bool(getattr(self, "_last_enhsp_clamped_to_min", False))
+        )
+        return (
+            short_gate or shelter_gate or platform_miss_gate
+            or ground_bounce_gate or clamp_min_gate
+        )
+
+    def _score_enhsp_sim_plan(
+        self,
+        sim: dict,
+        problem_data: dict,
+        *,
+        ignore_clamp_min: bool = False,
+    ) -> int:
+        """
+        Rank forward-sim outcomes for ENHSP plan retention.
+        0=gate reject, 1=acceptable miss, 2=slide continues, 3=pig kill.
+        """
+        if self._planner_only_gate_would_reject(
+            sim, problem_data, ignore_clamp_min=ignore_clamp_min,
+        ):
+            return 0
+        if sim.get("pig_killed_in_sim"):
+            return 3
+        if sim.get("platform_slide_continued"):
+            return 2
+        return 1
+
+    def _try_pre_sim_gate_diversify(
+        self,
+        problem_data: dict,
+        world_model_params: dict,
+        angle: float,
+        force: float,
+    ) -> tuple:
+        """
+        Probe nearby dials when the ENHSP plan sim is weak (gate reject or no pig
+        kill) and pick the best-scoring candidate before sim_search replacement.
+        Returns (angle, force, diversified_bool).
+        """
+        if self.disable_forward_sim or not self._planner_only_effective():
+            return angle, force, False
+
+        base_sim = self._simulate_shot(
+            problem_data, angle, world_model_params, force=force,
+        )
+        base_score = self._score_enhsp_sim_plan(base_sim, problem_data)
+        if base_score >= 3:
+            return angle, force, False
+
+        exec_min, exec_max = self._planner_executable_dial_bounds()
+        dial_min = max(exec_min, float(self.min_deg))
+        dial_max = min(exec_max, float(self.max_deg))
+
+        best_angle = float(angle)
+        best_score = base_score
+
+        for delta in self._PRE_SIM_GATE_DIAL_DELTAS:
+            cand_angle = max(dial_min, min(dial_max, float(angle) + delta))
+            if abs(cand_angle - angle) < 1e-3:
+                continue
+            sim = self._simulate_shot(
+                problem_data, cand_angle, world_model_params, force=force,
+            )
+            score = self._score_enhsp_sim_plan(
+                sim, problem_data, ignore_clamp_min=True,
+            )
+            if score < best_score:
+                continue
+            if score == best_score and abs(cand_angle - angle) >= abs(best_angle - angle):
+                continue
+            best_score = score
+            best_angle = cand_angle
+
+        if best_score <= base_score:
+            return angle, force, False
+
+        delta = best_angle - float(angle)
+        best_sim = self._simulate_shot(
+            problem_data, best_angle, world_model_params, force=force,
+        )
+        print(
+            f"[PRE-SIM-DIVERSIFY] ENHSP dial {angle:.1f}° sim score {base_score} — "
+            f"using {best_angle:.1f}° instead (Δ={delta:+.0f}°, score={best_score}, "
+            f"pig={best_sim.get('pig_killed_in_sim')})"
+        )
+        return best_angle, force, True
+
     def _try_retry_relaxed_sim_search(
         self,
         problem_data: dict,
@@ -2612,18 +2941,25 @@ class PDDLAgent(BaselineAgent):
         On train retries after near-miss or repeated diversified failures, run a
         relaxed angle×force grid that accepts platform-slide pig kills.
         """
-        search_angle, search_force = self._search_fallback_by_sim(
-            problem_data, world_model_params, hint_force=hint_force, quiet=True,
-        )
-        if search_angle is None:
-            return None, None, None
-        exec_sim = self._simulate_shot(
-            problem_data, search_angle, world_model_params, force=search_force,
-        )
-        if not exec_sim.get("pig_killed_in_sim"):
-            return None, None, None
-        actions = self._build_shot_actions(search_angle, search_force)
-        return actions, search_angle, search_force
+        owned_budget = self._plan_pick_deadline is None
+        if owned_budget:
+            self._begin_plan_pick_search_budget()
+        try:
+            search_angle, search_force = self._search_fallback_by_sim(
+                problem_data, world_model_params, hint_force=hint_force, quiet=True,
+            )
+            if search_angle is None:
+                return None, None, None
+            exec_sim = self._simulate_shot(
+                problem_data, search_angle, world_model_params, force=search_force,
+            )
+            if not exec_sim.get("pig_killed_in_sim"):
+                return None, None, None
+            actions = self._build_shot_actions(search_angle, search_force)
+            return actions, search_angle, search_force
+        finally:
+            if owned_budget:
+                self._clear_plan_pick_search_budget()
 
     def _search_fallback_by_sim(
         self,
@@ -2779,6 +3115,8 @@ class PDDLAgent(BaselineAgent):
         world_model_params: dict,
         ref_angle_guess: float,
         problem_data: dict = None,
+        sling=None,
+        vision=None,
     ) -> tuple[float, float]:
         """Return (angle, force) for planner failure fallback.
 
@@ -2817,16 +3155,26 @@ class PDDLAgent(BaselineAgent):
                 angle = self._clamp_planner_dial(angle, problem_data)
                 force = force if force is not None else 1.0
             else:
+                angle = self._platform_ballistic_fallback_angle(
+                    problem_data, bird_objects,
+                    sling=sling, vision=vision, ref_angle_guess=ref_angle_guess,
+                )
+                if angle is None:
+                    angle = self._calculate_fallback_ballistic_angle(
+                        pigs_objects, bird_objects, world_model_params,
+                        ref_angle_guess, problem_data,
+                    )
+                force = 1.0
+        else:
+            angle = self._platform_ballistic_fallback_angle(
+                problem_data, bird_objects,
+                sling=sling, vision=vision, ref_angle_guess=ref_angle_guess,
+            )
+            if angle is None:
                 angle = self._calculate_fallback_ballistic_angle(
                     pigs_objects, bird_objects, world_model_params,
                     ref_angle_guess, problem_data,
                 )
-                force = 1.0
-        else:
-            angle = self._calculate_fallback_ballistic_angle(
-                pigs_objects, bird_objects, world_model_params,
-                ref_angle_guess, problem_data,
-            )
             force = 1.0
 
         # Record for future retries on this level.
@@ -2939,6 +3287,7 @@ class PDDLAgent(BaselineAgent):
         """Fallback: coarse angle×force grid, re-gather bird ref, refine only (no second grid)."""
         fallback_angle, fallback_force = self._calculate_fallback_shot(
             pigs_objects, bird_objects, world_model_params, ref_guess, problem_data,
+            sling=sling, vision=vision,
         )
         problem_data, bird_objects, pigs_objects = self._gather_problem_data(
             vision, sling, agent_world_model, ref_angle_guess=fallback_angle,
@@ -3120,6 +3469,8 @@ class PDDLAgent(BaselineAgent):
 
     @staticmethod
     def _level_has_platforms(problem_data: dict) -> bool:
+        if not problem_data:
+            return False
         return any(k.startswith("platform_") for k in problem_data)
 
     def _sim_plan_robust_to_execution_error(
@@ -3711,23 +4062,30 @@ class PDDLAgent(BaselineAgent):
         planned_force: float = 1.0,
     ):
         """Run joint (angle, force) sim search; return (actions, angle, force) or (None, None, None)."""
-        search_angle, search_force = self._search_shot_by_sim(
-            problem_data, world_model_params, hint_force=planned_force
-        )
-        if search_angle is None:
-            return None, None, None
-        exec_sim, _, _, _, _ = self._simulate_planned_shot(
-            problem_data, search_angle, world_model_params, force=search_force,
-        )
-        if not self._sim_search_plan_is_acceptable(
-            exec_sim, search_angle, search_force, problem_data,
-        ):
-            return None, None, None
-        if search_force < 1.0:
-            actions = [("set_force", search_force), ("shoot", search_angle)]
-        else:
-            actions = [("set_force", 1.0), ("shoot", search_angle)]
-        return actions, search_angle, search_force
+        owned_budget = self._plan_pick_deadline is None
+        if owned_budget:
+            self._begin_plan_pick_search_budget()
+        try:
+            search_angle, search_force = self._search_shot_by_sim(
+                problem_data, world_model_params, hint_force=planned_force
+            )
+            if search_angle is None:
+                return None, None, None
+            exec_sim, _, _, _, _ = self._simulate_planned_shot(
+                problem_data, search_angle, world_model_params, force=search_force,
+            )
+            if not self._sim_search_plan_is_acceptable(
+                exec_sim, search_angle, search_force, problem_data,
+            ):
+                return None, None, None
+            if search_force < 1.0:
+                actions = [("set_force", search_force), ("shoot", search_angle)]
+            else:
+                actions = [("set_force", 1.0), ("shoot", search_angle)]
+            return actions, search_angle, search_force
+        finally:
+            if owned_budget:
+                self._clear_plan_pick_search_budget()
 
     def _executable_dial_bounds(self, flight_slack: float = None) -> tuple:
         """PDDL angle range used for planning (direct execution, no pull table)."""
@@ -3875,13 +4233,11 @@ class PDDLAgent(BaselineAgent):
         """Write problem/domain, run ENHSP. Returns (actions or None, planner_output).
 
         Two-pass strategy:
-          A. Pessimistic platform hard-stop + raw block geometry (t01/t02 sweet
-             spot; also historically solved t04 platform-slide levels like
-             00008/00025).
-          B. Shelter mode — slide/M5 platform + tightened block AABB / weakened
-             block_life so ENHSP prefers collapse plans (needed for t04
-             block-collapse levels like 00030/00068). Only entered when Pass A
-             returns unsolvable.
+          A. Platform slide (retain vx/vy) + raw block geometry — default for
+             pig-on-platform / rolling paths (t05 and similar).
+          B. Shelter mode — tightened block AABB / weakened block_life so ENHSP
+             prefers collapse plans (needed for t04 block-collapse levels like
+             00030/00068). Only entered when Pass A returns unsolvable.
         """
         from agents.pddl.pddl_files.pddl_parser import (
             apply_block_shelter_adjustments,
@@ -3897,13 +4253,30 @@ class PDDLAgent(BaselineAgent):
         actions, planner_output = self._run_enhsp_planner_single(
             problem_data,
             agent_world_model,
-            pessimistic_platform=has_platforms,
-            pass_label="A: pessimistic platform, raw blocks",
+            pessimistic_platform=False,
+            planning_optimistic_slide=False,
+            pass_label="A: slide platform, raw blocks",
         )
         if actions is not None:
             return actions, planner_output
 
         unsolvable = "unsolvable" in (planner_output or "").lower()
+        if unsolvable and has_platforms:
+            print(
+                "[PDDL DEBUG] Pass A unsolvable — retrying with optimistic "
+                "platform slide x-advance"
+            )
+            actions, planner_output = self._run_enhsp_planner_single(
+                problem_data,
+                agent_world_model,
+                pessimistic_platform=False,
+                planning_optimistic_slide=True,
+                pass_label="A2: optimistic slide x-advance",
+            )
+            if actions is not None:
+                return actions, planner_output
+            unsolvable = "unsolvable" in (planner_output or "").lower()
+
         if not (unsolvable and shelter_applicable):
             return actions, planner_output
 
@@ -3917,6 +4290,7 @@ class PDDLAgent(BaselineAgent):
             shelter_data,
             agent_world_model,
             pessimistic_platform=False,
+            planning_optimistic_slide=True,
             pass_label="B: slide/M5 platform, sheltered blocks",
         )
 
@@ -3926,6 +4300,7 @@ class PDDLAgent(BaselineAgent):
         agent_world_model: WorldModel,
         *,
         pessimistic_platform: bool,
+        planning_optimistic_slide: bool = False,
         pass_label: str,
     ):
         """Single ENHSP invocation. Called by _run_enhsp_planner for each pass."""
@@ -3963,15 +4338,17 @@ class PDDLAgent(BaselineAgent):
         print("[PDDL DEBUG] Problem file written")
 
         print("[PDDL DEBUG] Injecting base_domain.pddl (collision + learned physics)...")
-        has_platforms = any(k.startswith("platform_") for k in problem_data)
-        if has_platforms:
-            mode = "pessimistic hard-stop" if pessimistic_platform else "slide/M5"
-            print(f"[PDDL DEBUG] ENHSP platform model: {mode}")
-        inject_domain_file(
+        inject_labels = inject_domain_file(
             'agents/pddl/pddl_files/base_domain.pddl',
             agent_world_model,
-            defer_ground_m5=has_platforms,
+            defer_ground_m5=False,
             planning_pessimistic_platform=pessimistic_platform,
+            planning_optimistic_slide=planning_optimistic_slide,
+        )
+        ground_model = inject_labels.get("ground", "skipped")
+        platform_model = inject_labels.get("platform", "skipped")
+        print(
+            f"[PDDL DEBUG] ENHSP inject: ground={ground_model}, platform={platform_model}"
         )
         print("[PDDL DEBUG] Domain file injected")
         print(f"[PDDL DEBUG] Using domain: {domain_path}")
@@ -4457,14 +4834,21 @@ class PDDLAgent(BaselineAgent):
                         return sim_actions
                 print(
                     "[PDDL DEBUG] Planner failed — fallback grid disabled; "
-                    "using ballistic angle"
+                    "using platform-top or pig ballistic angle"
                 )
-                fallback_angle = self._calculate_fallback_ballistic_angle(
-                    pigs_objects, bird_objects, world_model_params, ref_guess, problem_data,
+                fallback_angle = self._platform_ballistic_fallback_angle(
+                    problem_data, bird_objects,
+                    sling=sling, vision=vision, ref_angle_guess=ref_guess,
                 )
+                if fallback_angle is not None:
+                    self._last_plan_source = "platform_ballistic_fallback"
+                else:
+                    fallback_angle = self._calculate_fallback_ballistic_angle(
+                        pigs_objects, bird_objects, world_model_params, ref_guess, problem_data,
+                    )
+                    self._last_plan_source = "ballistic_fallback"
                 fallback_angle = self._clamp_planner_dial(fallback_angle, problem_data)
                 fallback_force = 1.0
-                self._last_plan_source = "ballistic_fallback"
                 actions = self._build_shot_actions(fallback_angle, fallback_force)
                 self._finalize_plan_metadata(
                     problem_data, fallback_angle, world_model_params, force=fallback_force,
@@ -4514,6 +4898,15 @@ class PDDLAgent(BaselineAgent):
             actions = self._build_shot_actions(new_angle, new_force)
             angle = new_angle
             planned_force = new_force
+            self._last_plan_source = "planner_diversified"
+
+        pre_angle, pre_force, pre_div = self._try_pre_sim_gate_diversify(
+            problem_data, world_model_params, angle, planned_force,
+        )
+        if pre_div:
+            actions = self._build_shot_actions(pre_angle, pre_force)
+            angle = pre_angle
+            planned_force = pre_force
             self._last_plan_source = "planner_diversified"
 
         retry_index = int(getattr(self, "_current_level_retry_index", 0) or 0)
@@ -4575,15 +4968,6 @@ class PDDLAgent(BaselineAgent):
                     not short_gate
                     and self._plan_is_block_shelter_miss(sim, problem_data)
                 )
-                # Broadened planner-only gate (added after run_20260822_104751):
-                # any planner shot whose sim predicts platform_collision with no
-                # pig kill is worth trying to replace via sim_search. The old
-                # 30 px pig-neighborhood restriction let through the "planner
-                # shoots at wrong platform / into hillside" failures we saw
-                # (t04_00015/00008 lost with platform_hit far from pig, no
-                # kill). If sim_search finds nothing we still keep the ENHSP
-                # plan, so the downside vs. the narrow gate is only extra
-                # sim_search cost.
                 platform_miss_gate = (
                     not short_gate
                     and not shelter_gate
@@ -4598,10 +4982,11 @@ class PDDLAgent(BaselineAgent):
                     and self._plan_is_ground_bounce_miss(sim, problem_data)
                 )
                 clamp_min_gate = bool(getattr(self, "_last_enhsp_clamped_to_min", False))
-                if (
+                gate_reject = (
                     short_gate or shelter_gate or platform_miss_gate
                     or ground_bounce_gate or clamp_min_gate
-                ):
+                )
+                if gate_reject:
                     if clamp_min_gate:
                         raw = getattr(self, "_last_enhsp_raw_angle", None)
                         raw_s = f"{raw:.1f}°" if raw is not None else "?"
@@ -4929,18 +5314,9 @@ class PDDLAgent(BaselineAgent):
             # xddot should be 0 (no horizontal acceleration)
             xddot_constant = 0.0
             
-            # Create a constant model for xddot
-            class ConstantXddotModel:
-                def __init__(self, constant_value):
-                    self.constant_value = constant_value
-                def predict(self, X):
-                    if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
-                        return np.full(len(X), self.constant_value)
-                    return np.array([self.constant_value])
-            
             constant_poly = Polynomial([xddot_constant])
             self.learned_transitions["xddot"] = {
-                "model": ConstantXddotModel(xddot_constant),
+                "model": ConstantPredictModel(xddot_constant),
                 "polynomial": constant_poly
             }
             
@@ -4971,18 +5347,9 @@ class PDDLAgent(BaselineAgent):
                 yddot_constant = -90.0
                 print(f"[GRAVITY LEARNING] No qualifying trajectories, using default gravity: {yddot_constant}")
             
-            # Create a constant model for yddot
-            class ConstantYddotModel:
-                def __init__(self, constant_value):
-                    self.constant_value = constant_value
-                def predict(self, X):
-                    if hasattr(X, '__len__') and not isinstance(X, (str, bytes)):
-                        return np.full(len(X), self.constant_value)
-                    return np.array([self.constant_value])
-            
             constant_poly = Polynomial([yddot_constant])
             self.learned_transitions["yddot"] = {
-                "model": ConstantYddotModel(yddot_constant),
+                "model": ConstantPredictModel(yddot_constant),
                 "polynomial": constant_poly
             }
             

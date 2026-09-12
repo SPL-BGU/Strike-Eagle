@@ -12,6 +12,30 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 
 
+class ConstantPredictModel:
+    """Pickle-safe constant predictor for learned transition models."""
+
+    def __init__(self, constant_value):
+        self.constant_value = float(constant_value)
+
+    def predict(self, X):
+        if hasattr(X, "__len__") and not isinstance(X, (str, bytes)):
+            return np.full(len(X), self.constant_value)
+        return np.array([self.constant_value])
+
+
+class PolynomialPredictModel:
+    """Pickle-safe wrapper that evaluates a numpy Polynomial."""
+
+    def __init__(self, polynomial):
+        self.polynomial = polynomial
+
+    def predict(self, X):
+        if isinstance(X, np.ndarray) and X.ndim > 1:
+            X = X.flatten()
+        return np.array([self.polynomial(x) for x in X])
+
+
 def calculate_current_error(observed: Polynomial, estimated: Polynomial):
     domain = [
         max(observed.domain[0], estimated.domain[0]),
@@ -346,11 +370,7 @@ def fit_state_transition(state_current: np.ndarray, state_previous: np.ndarray, 
         print("Warning: Empty input data in fit_state_transition. Returning constant model.")
         mean_val = np.nanmean(state_current) if len(state_current) > 0 else 0.0
         constant_poly = Polynomial([mean_val])
-        # Create a simple wrapper model for single-feature case
-        class ConstantModel:
-            def predict(self, X):
-                return np.full(len(X), mean_val)
-        return {"model": ConstantModel(), "polynomial": constant_poly}
+        return {"model": ConstantPredictModel(mean_val), "polynomial": constant_poly}
     
     # Check for NaN or inf values
     if np.any(np.isnan(state_current)) or np.any(np.isnan(state_previous)) or \
@@ -358,10 +378,7 @@ def fit_state_transition(state_current: np.ndarray, state_previous: np.ndarray, 
         print("Warning: NaN or inf values detected in fit_state_transition. Returning constant model.")
         mean_val = np.nanmean(state_current)
         constant_poly = Polynomial([mean_val])
-        class ConstantModel:
-            def predict(self, X):
-                return np.full(len(X), mean_val)
-        return {"model": ConstantModel(), "polynomial": constant_poly}
+        return {"model": ConstantPredictModel(mean_val), "polynomial": constant_poly}
     
     # Ensure state_previous is 2D
     if state_previous.ndim == 1:
@@ -374,23 +391,12 @@ def fit_state_transition(state_current: np.ndarray, state_previous: np.ndarray, 
         x_input = state_previous.flatten()
         try:
             rank, poly = get_poly_rank(x_input, state_current, max_rank=max_degree, threshold=threshold)
-            # Create a wrapper model that uses the polynomial for prediction
-            class PolynomialModel:
-                def __init__(self, polynomial):
-                    self.polynomial = polynomial
-                def predict(self, X):
-                    if isinstance(X, np.ndarray) and X.ndim > 1:
-                        X = X.flatten()
-                    return np.array([self.polynomial(x) for x in X])
-            return {"model": PolynomialModel(poly), "polynomial": poly}
+            return {"model": PolynomialPredictModel(poly), "polynomial": poly}
         except Exception as e:
             print(f"Error in fit_state_transition (single feature): {e}. Returning constant model.")
             mean_val = np.nanmean(state_current)
             constant_poly = Polynomial([mean_val])
-            class ConstantModel:
-                def predict(self, X):
-                    return np.full(len(X) if hasattr(X, '__len__') else 1, mean_val)
-            return {"model": ConstantModel(), "polynomial": constant_poly}
+            return {"model": ConstantPredictModel(mean_val), "polynomial": constant_poly}
     else:
         # Multiple features: use sklearn's PolynomialFeatures with degree selection
         # Try different degrees and select the best one based on residual
@@ -452,11 +458,7 @@ def fit_state_transition(state_current: np.ndarray, state_previous: np.ndarray, 
                 print("Warning: Could not fit polynomial model. Returning constant model.")
                 mean_val = np.nanmean(state_current)
                 constant_poly = Polynomial([mean_val])
-                class ConstantModel:
-                    def predict(self, X):
-                        n = len(X) if hasattr(X, '__len__') and not isinstance(X, (str, bytes)) else 1
-                        return np.full(n, mean_val)
-                return {"model": ConstantModel(), "polynomial": constant_poly}
+                return {"model": ConstantPredictModel(mean_val), "polynomial": constant_poly}
             
             # Store poly_features in the model for later use
             best_model.poly_features = best_poly_features
@@ -510,8 +512,4 @@ def fit_state_transition(state_current: np.ndarray, state_previous: np.ndarray, 
             print(f"Error in fit_state_transition (multi-feature): {e}. Returning constant model.")
             mean_val = np.nanmean(state_current)
             constant_poly = Polynomial([mean_val])
-            class ConstantModel:
-                def predict(self, X):
-                    n = len(X) if hasattr(X, '__len__') and not isinstance(X, (str, bytes)) else 1
-                    return np.full(n, mean_val)
-            return {"model": ConstantModel(), "polynomial": constant_poly}
+            return {"model": ConstantPredictModel(mean_val), "polynomial": constant_poly}

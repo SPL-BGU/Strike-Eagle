@@ -393,6 +393,10 @@
             (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
             (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
             (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            ; First contact only: while sliding, the bird stays inside this AABB every
+            ; integration step — without this guard the platform effect (and formerly
+            ; bounce_count) re-fired each frame, ending flight after ~3 steps.
+            (> (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
         )
         :effect (and
             {SE-collision-platform-effect}

@@ -99,3 +99,13 @@ multiple_forces,4,D-DDQN-Image,0.150
 multiple_forces,4,Relational-Symbolic,0.275
 multiple_forces,4,Relational-Image,0.150
 multiple_forces,4,Random Agent,0.134
+rolling,2,Human,0.853
+rolling,2,Pig Shooter,0.008
+rolling,2,Datalab,0.370
+rolling,2,Eagle’s Wing,0.330
+rolling,2,Bambirds,0.040
+rolling,2,D-DDQN-Symbolic,0.180
+rolling,2,D-DDQN-Image,0.067
+rolling,2,Relational-Symbolic,0.317
+rolling,2,Relational-Image,0.167
+rolling,2,Random Agent,0.085

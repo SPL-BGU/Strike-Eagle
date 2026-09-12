@@ -29,6 +29,7 @@ class AgentThread(threading.Thread):
                  mag_comparison_decrement: float = 0.1,
                  force_learning_mode: bool = False,
                  force_learning_min_samples: int = 5,
+                 platform_aim_override: bool = False,
                  disable_sim_override: bool = False,
                  planner_only: bool = True,
                  disable_forward_sim: bool = False,
@@ -36,7 +37,9 @@ class AgentThread(threading.Thread):
                  plan_pick_fast: bool = True,
                  plan_pick_timeout_sec: float = 60.0,
                  sim_gate_test_only: bool = True,
-                 max_train_attempts: int = 5):
+                 max_train_attempts: int = 5,
+                 world_model_load: str = None,
+                 world_model_save: str = None):
         """
         Constructor function
         Parameters
@@ -90,6 +93,7 @@ class AgentThread(threading.Thread):
         self.mag_comparison_decrement = mag_comparison_decrement
         self.force_learning_mode = force_learning_mode
         self.force_learning_min_samples = force_learning_min_samples
+        self.platform_aim_override = platform_aim_override
         self.disable_sim_override = disable_sim_override
         self.planner_only = planner_only
         self.disable_forward_sim = disable_forward_sim
@@ -98,6 +102,8 @@ class AgentThread(threading.Thread):
         self.plan_pick_timeout_sec = plan_pick_timeout_sec
         self.sim_gate_test_only = sim_gate_test_only
         self.max_train_attempts = max_train_attempts
+        self.world_model_load = world_model_load
+        self.world_model_save = world_model_save
         threading.Thread.__init__(self)
 
     def run(self):
@@ -135,6 +141,7 @@ class AgentThread(threading.Thread):
             # Force -> velocity learning mode
             force_learning_mode=self.force_learning_mode,
             force_learning_min_samples=self.force_learning_min_samples,
+            platform_aim_override=self.platform_aim_override,
             disable_sim_override=self.disable_sim_override,
             planner_only=self.planner_only,
             disable_forward_sim=self.disable_forward_sim,
@@ -143,6 +150,8 @@ class AgentThread(threading.Thread):
             plan_pick_timeout_sec=self.plan_pick_timeout_sec,
             sim_gate_test_only=self.sim_gate_test_only,
             max_train_attempts=self.max_train_attempts,
+            world_model_load=self.world_model_load,
+            world_model_save=self.world_model_save,
         )
         agent.run()
 
@@ -164,6 +173,7 @@ def main(agent_configs,
          mag_comparison_decrement: float = 0.1,
          force_learning_mode: bool = False,
          force_learning_min_samples: int = 5,
+         platform_aim_override: bool = False,
          disable_sim_override: bool = False,
          planner_only: bool = True,
          disable_forward_sim: bool = False,
@@ -171,7 +181,9 @@ def main(agent_configs,
          plan_pick_fast: bool = True,
          plan_pick_timeout_sec: float = 60.0,
          sim_gate_test_only: bool = True,
-         max_train_attempts: int = 5):
+         max_train_attempts: int = 5,
+         world_model_load: str = None,
+         world_model_save: str = None):
     """
     Main function to start the agent.
     
@@ -229,6 +241,7 @@ def main(agent_configs,
             mag_comparison_decrement=mag_comparison_decrement,
             force_learning_mode=force_learning_mode,
             force_learning_min_samples=force_learning_min_samples,
+            platform_aim_override=platform_aim_override,
             disable_sim_override=disable_sim_override,
             planner_only=planner_only,
             disable_forward_sim=disable_forward_sim,
@@ -237,6 +250,8 @@ def main(agent_configs,
             plan_pick_timeout_sec=plan_pick_timeout_sec,
             sim_gate_test_only=sim_gate_test_only,
             max_train_attempts=max_train_attempts,
+            world_model_load=world_model_load,
+            world_model_save=world_model_save,
         )
         agent.start()
         time.sleep(5)
@@ -402,6 +417,16 @@ Examples:
                         help="Enable force->velocity learning mode: random angle+force, fit v=f(force) model")
     parser.add_argument("--force-min-samples", type=int, default=5,
                         help="Min samples before fitting force model (default: 5)")
+
+    # Platform-aim override (default OFF) — optional ballistic aim at platform top for rolling learning
+    parser.set_defaults(platform_aim_override=False)
+    parser.add_argument("--platform-aim-override", dest="platform_aim_override",
+                        action="store_true",
+                        help="Override ENHSP; aim at platform top to collect rolling samples")
+    parser.add_argument("--no-platform-aim-override", dest="platform_aim_override",
+                        action="store_false",
+                        help="(default) Use normal ENHSP planner for angle selection")
+
     parser.set_defaults(disable_sim_override=False)
     parser.add_argument("--enable-sim-override", dest="disable_sim_override", action="store_false",
                         help="Allow sim search when ENHSP fails or plan is rejected")
@@ -447,6 +472,14 @@ Examples:
                         help="Cap on retries per TRAIN level before it is ABANDONED "
                              "(default: 5; was 8 — reduced to leave SB's 12000s time "
                              "budget for TEST levels)")
+    parser.add_argument("--world-model-load", type=str, default=None, metavar="PATH",
+                        help="Load pre-trained physics + KB from JSON at startup "
+                             "(M5/LR/sklearn models embedded in _pickle_b64)")
+    parser.set_defaults(save_world_model=True)
+    parser.add_argument("--world-model-save", type=str, default=None, metavar="PATH",
+                        help="World model save path (default: saved_models/world_model_YYYYMMDD_HHMMSS.json)")
+    parser.add_argument("--no-world-model-save", dest="save_world_model", action="store_false",
+                        help="Disable automatic world model KB persistence")
 
     args = parser.parse_args()
     
@@ -464,6 +497,11 @@ Examples:
     
     # Handle debug mag flag (--no-debug-mag overrides default)
     debug_mag = args.debug_mag and not args.no_debug_mag
+
+    from agents.pddl.world_model_persistence import default_save_path
+    world_model_save = None
+    if args.save_world_model:
+        world_model_save = args.world_model_save or default_save_path()
     
     main(
         args,
@@ -483,6 +521,7 @@ Examples:
         mag_comparison_decrement=args.mag_decrement,
         force_learning_mode=args.force_learning,
         force_learning_min_samples=args.force_min_samples,
+        platform_aim_override=args.platform_aim_override,
         disable_sim_override=args.disable_sim_override,
         planner_only=args.planner_only,
         disable_forward_sim=args.disable_forward_sim,
@@ -491,4 +530,6 @@ Examples:
         plan_pick_timeout_sec=args.plan_pick_timeout,
         sim_gate_test_only=args.sim_gate_test_only,
         max_train_attempts=args.max_train_attempts,
+        world_model_load=args.world_model_load,
+        world_model_save=world_model_save,
     )
