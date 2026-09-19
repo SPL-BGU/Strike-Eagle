@@ -1,7 +1,8 @@
 (define (domain angry_birds_scaled)
     (:requirements :typing :disjunctive-preconditions :fluents :time :negative-preconditions :conditional-effects)
     (:types bird pig block platform external_agent)
-    (:predicates (bird_released ?b - bird) (pig_dead ?p - pig) (angle_adjusted) (block_explosive ?bl - block) (pig_killed) (agent_dead ?ea - external_agent) (bird_tapped ?b - bird) (force_locked))
+    (:predicates (bird_released ?b - bird) (pig_dead ?p - pig) (angle_adjusted) (block_explosive ?bl - block) (pig_killed) (agent_dead ?ea - external_agent) (bird_tapped ?b - bird) (force_locked)
+                (platform_slide_active ?b - bird) (bird_sliding ?b - bird ?pl - platform))
 
     (:functions (x_bird ?b - bird) (y_bird ?b - bird) (v_bird ?b - bird) (vx_bird ?b - bird) (vy_bird ?b - bird)  (m_bird ?b - bird) (bird_id ?b - bird) (bounce_count ?b - bird)
                 (bird_type ?b - bird) ;; BIRD TYPES: RED=0, YELLOW=1, BLACK2, WHITE=3, BLUE=4 ;;
@@ -122,11 +123,31 @@
         :precondition (and
             (= (active_bird) (bird_id ?b))
             (bird_released ?b)
+            (not (platform_slide_active ?b))
             (> (y_bird ?b) 0)
         )
         :effect (and
             (increase (y_bird ?b) (* (/ #t 100) (* 1.0 (vy_bird ?b))))
             (decrease (vy_bird ?b) (* (/ #t 100) (* 1.0 (gravity)) ))
+            (increase (x_bird ?b) (* (/ #t 100) (* 1.0 (vx_bird ?b))))
+            (assign (mod) 0)
+        )
+    )
+
+    (:process platform_sliding
+        :parameters (?b - bird ?pl - platform)
+        :precondition (and
+            (= (active_bird) (bird_id ?b))
+            (bird_released ?b)
+            (platform_slide_active ?b)
+            (bird_sliding ?b ?pl)
+            (> (vx_bird ?b) 3.0)
+            (<= (- (x_bird ?b) (* (bird_radius ?b) 0.35)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+            (>= (+ (x_bird ?b) (* (bird_radius ?b) 0.35)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
+        )
+        :effect (and
+            (assign (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
+            (assign (vy_bird ?b) 0)
             (increase (x_bird ?b) (* (/ #t 100) (* 1.0 (vx_bird ?b))))
             (assign (mod) 0)
         )
@@ -381,6 +402,8 @@
         :parameters (?b - bird ?pl - platform)
         :precondition (and
             (= (active_bird) (bird_id ?b))
+            (bird_released ?b)
+            (not (platform_slide_active ?b))
             (> (v_bird ?b) 0)
 
             ; x-checks keep the 1.1× margin (grazing the side of a platform is
@@ -393,13 +416,28 @@
             (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
             (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
             (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            ; First contact only: while sliding, the bird stays inside this AABB every
-            ; integration step — without this guard the platform effect (and formerly
-            ; bounce_count) re-fired each frame, ending flight after ~3 steps.
+            ; First contact only — approach from above the stand line.
             (> (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
         )
         :effect (and
             {SE-collision-platform-effect}
+        )
+    )
+
+    (:event platform_slide_end
+        :parameters (?b - bird ?pl - platform)
+        :precondition (and
+            (platform_slide_active ?b)
+            (bird_sliding ?b ?pl)
+            (or
+                (<= (vx_bird ?b) 3.0)
+                (> (- (x_bird ?b) (* (bird_radius ?b) 0.35)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+                (< (+ (x_bird ?b) (* (bird_radius ?b) 0.35)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
+            )
+        )
+        :effect (and
+            (not (platform_slide_active ?b))
+            (not (bird_sliding ?b ?pl))
         )
     )
 
@@ -486,11 +524,11 @@
         :parameters (?b - bird ?p - pig)
         :precondition (and
         	(= (active_bird) (bird_id ?b))
-        	; (or
-      		(= (bird_type ?b) 2)
-      		(= (bounce_count ?b) 3)
-      			; (and (= (bird_type ?b) 3) (= (bounce_count ?b) 1) (bird_tapped ?b) )
-  			; )
+            (or
+                (= (bird_type ?b) 2)
+                (= (bounce_count ?b) 3)
+                (platform_slide_active ?b)
+            )
             (not (pig_dead ?p))
             (<= (- (x_bird ?b) (x_pig ?p)) 50 )
             (>= (- (x_bird ?b) (x_pig ?p)) -50 )

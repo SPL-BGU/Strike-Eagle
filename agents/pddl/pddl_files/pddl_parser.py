@@ -123,6 +123,9 @@ PDDL_PLATFORM_LR_OVERFIT_R2 = 0.99
 
 PLATFORM_COLLISION_MIN_SAMPLES = 5
 PLATFORM_MAX_POST_SPEED = 220.0
+# Max post-contact speed as a fraction of pre-contact speed (platform LR often
+# over-predicts slide energy → Thread B sim pig kills). Applied in forward sim.
+PLATFORM_MAX_POST_RETAIN_RATIO = 0.50
 ROLLING_LR_MAX_V = PLATFORM_MAX_POST_SPEED * 2
 ROLLING_LR_MAX_POS = 5000.0
 ROLLING_LR_MAX_FEATURE = 1e6
@@ -137,7 +140,14 @@ PLATFORM_SLIDE_EDGE_MARGIN = 0.35  # fraction of bird_radius beyond platform x s
 PLATFORM_SLIDE_FRICTION_PER_S = 0.0  # game slides at ~constant vx after landing
 # One-shot horizontal advance appended to PDDL platform/ground slide effects so
 # ENHSP can reach pigs that require multi-frame slide (not modeled as a process).
-PLATFORM_PLANNING_SLIDE_SEC = 0.45
+PLATFORM_PLANNING_SLIDE_SEC = 0.65
+# Extra slide bump on ENHSP Pass A2 (optimistic retry) for long platform_0 → pig slides.
+PLATFORM_PLANNING_SLIDE_SEC_OPTIMISTIC = 1.15
+# Drop mid-hill platforms far below the pig stand (decorative bumps that block arcs in
+# PDDL but are cleared in game over-flight), e.g. rolling_t02_00004 platform_1.
+SUBSTAND_PLATFORM_DROP_BELOW_PIG_PX = 40.0
+# Shrink corridor blocks on Pass C so ENHSP can thread rolling shots (not shelter t04).
+CORRIDOR_BLOCK_RELIEF_SHRINK_PX = 4.0
 # Ground slide: first contact applies LR/heuristic once; no per-step re-fire (run_20260909_175413).
 GROUND_SLIDE_MIN_SPEED = 3.0
 GROUND_SLIDE_FRICTION_PER_S = 0.0
@@ -198,9 +208,14 @@ def _planning_slide_x_advance_effect() -> str:
     return f"(increase (x_bird ?b) (* (vx_bird ?b) {sec}))"
 
 
+def _effect_mutates_x_bird(body: str) -> bool:
+    """True if PDDL effect already assigns or increases bird x."""
+    return "(increase (x_bird ?b)" in (body or "") or "(assign (x_bird ?b)" in (body or "")
+
+
 def _append_planning_slide_x_advance(body: str) -> str:
     """Add optimistic post-contact x advance when the effect lacks x_bird mutation."""
-    if not body or "x_bird ?b)" in body:
+    if not body or _effect_mutates_x_bird(body):
         return body
     return _append_extra_planning_slide_x(body)
 
@@ -247,14 +262,58 @@ def _build_platform_bootstrap_effect() -> str:
     return PLATFORM_COLLISION_BOOTSTRAP
 
 
-def _build_platform_slide_placeholder() -> str:
-    """PDDL rolling effect after platform contact (KB has samples but M5 not ready)."""
+def _platform_surface_y_pddl_expr() -> str:
     surf = PLATFORM_SURFACE_RADIUS_FACTOR
-    y_expr = (
+    return (
         f"(+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) "
         f"(* (bird_radius ?b) {surf}))"
     )
-    return _build_surface_roll_effect(y_expr)
+
+
+def _lr_var_assign_line(lr_models: dict, var: str) -> Optional[str]:
+    """Single fluent assign from one rolling-LR output variable."""
+    if not isinstance(lr_models, dict):
+        return None
+    entry = lr_models.get(var) or {}
+    coef = entry.get("coef")
+    intercept = entry.get("intercept")
+    if coef is None or intercept is None:
+        model = entry.get("model")
+        if model is None:
+            return None
+        coef = model.coef_
+        intercept = float(model.intercept_)
+    fluent = _COLLISION_PDDL_FLUENT[var]
+    rhs = format_affine_assign_rhs(coef, intercept)
+    return f"(assign ({fluent} ?b) {rhs})"
+
+
+def _build_sim_aligned_platform_slide_entry_effect(lr_models: dict = None) -> str:
+    """
+    Platform first-contact effect aligned with forward sim slide entry:
+    snap y to stand line, vy=0, vx from LR v_x (or speed-ratio fallback),
+    then enter platform_sliding process.
+    """
+    lines = [f"(assign (y_bird ?b) {_platform_surface_y_pddl_expr()})"]
+    vx_line = _lr_var_assign_line(lr_models, "v_x") if lr_models else None
+    if vx_line:
+        lines.append(vx_line)
+    else:
+        lines.append(
+            f"(assign (vx_bird ?b) (* (vx_bird ?b) {PLATFORM_DEFAULT_SPEED_RATIO}))"
+        )
+    lines.extend([
+        "(assign (vy_bird ?b) 0)",
+        "(platform_slide_active ?b)",
+        "(bird_sliding ?b ?pl)",
+        "(assign (mod) 2)",
+    ])
+    return "\n            ".join(lines)
+
+
+def _build_platform_slide_placeholder() -> str:
+    """Conservative one-shot platform roll without durative slide process."""
+    return _build_surface_roll_effect(_platform_surface_y_pddl_expr())
 
 
 def _build_ground_roll_placeholder() -> str:
@@ -391,10 +450,19 @@ def _planning_surface_lr_models(kb: dict, n_samples: int = 0):
     Primary gate: lr_models_pddl v_x R² ≥ PDDL_PLATFORM_LR_MIN_VX_R2.
     Fallback gate (split): pddl v_x R² ≥ PDDL_PLATFORM_LR_FALLBACK_MIN_VX_R2 and
     extended sim lr_models v_x R² ≥ PDDL_SIM_LR_MIN_VX_R2.
+
+    Platform v_x uses a slide-filtered ratio model (patched into lr_models_pddl)
+    because global linear v_x R² collapses when bounce and slide samples mix.
     """
     if not isinstance(kb, dict):
         return None, None
     n_samples = n_samples or len(kb.get("states") or [])
+    from agents.pddl.pddl_files.events.learn_events import (
+        PLATFORM_VX_RATIO_MIN_SAMPLES,
+        refresh_platform_pddl_vx_ratio,
+    )
+
+    refresh_platform_pddl_vx_ratio(kb)
     pddl_models = kb.get("lr_models_pddl") or {}
     if not _rolling_lr_ready(pddl_models):
         sim_models = kb.get("lr_models") or {}
@@ -404,24 +472,41 @@ def _planning_surface_lr_models(kb: dict, n_samples: int = 0):
         else:
             return None, None
 
+    vx_entry = pddl_models.get("v_x") or {}
+    vx_kind = str(vx_entry.get("_vx_model_kind") or "")
     if _rolling_lr_good_for_pddl(pddl_models, n_samples=n_samples):
-        return pddl_models, "lr_pddl"
+        tag = "lr_pddl_vx_ratio" if vx_kind.startswith("ratio") else "lr_pddl"
+        return pddl_models, tag
+
+    # Slide-filtered v_x ratio: R² on a constant-ratio model is often low even when
+    # the retention factor is usable for ENHSP (run_20260918: v_x R²≈0.27, n=9 →
+    # heuristic 0.5 inject and "Problem unsolvable" on rolling_t02_00004).
+    ratio_n = int(vx_entry.get("_vx_ratio_n") or 0)
+    if vx_kind.startswith("ratio") and ratio_n >= PLATFORM_VX_RATIO_MIN_SAMPLES:
+        return pddl_models, "lr_pddl_vx_ratio"
 
     sim_models = kb.get("lr_models") or {}
     pddl_vx_r2 = _rolling_lr_vx_r2(pddl_models)
     sim_vx_r2 = _rolling_lr_vx_r2(sim_models)
+    pddl_vx_min = (
+        0.0
+        if vx_kind.startswith("ratio")
+        else PDDL_PLATFORM_LR_FALLBACK_MIN_VX_R2
+    )
     if (
         pddl_vx_r2 is not None
-        and pddl_vx_r2 >= PDDL_PLATFORM_LR_FALLBACK_MIN_VX_R2
+        and pddl_vx_r2 >= pddl_vx_min
         and sim_vx_r2 is not None
         and sim_vx_r2 >= PDDL_SIM_LR_MIN_VX_R2
         and not (
             n_samples > 0
             and n_samples < PDDL_PLATFORM_M5_MIN_SAMPLES
             and pddl_vx_r2 >= PDDL_PLATFORM_LR_OVERFIT_R2
+            and not vx_kind.startswith("ratio")
         )
     ):
-        return pddl_models, "lr_pddl_sim_fallback"
+        tag = "lr_pddl_vx_ratio" if vx_kind.startswith("ratio") else "lr_pddl_sim_fallback"
+        return pddl_models, tag
 
     return None, None
 
@@ -622,6 +707,12 @@ def _clamp_platform_post_velocity(vx: float, vy: float, pre_vx: float, pre_vy: f
     speed = math.hypot(vx, vy)
     if speed > cap and speed > 0:
         scale = cap / speed
+        vx *= scale
+        vy *= scale
+    retain_cap = pre_speed * float(PLATFORM_MAX_POST_RETAIN_RATIO)
+    speed = math.hypot(vx, vy)
+    if retain_cap > 0 and speed > retain_cap:
+        scale = retain_cap / speed
         vx *= scale
         vy *= scale
     return vx, vy
@@ -867,6 +958,99 @@ def identify_sheltering_blocks(problem_data: dict) -> set:
 
 def block_sheltered_layout(problem_data: dict) -> bool:
     return bool(identify_sheltering_blocks(problem_data))
+
+
+def filter_substand_platforms_for_planning(
+    problem_data: dict, debug: bool = False,
+) -> dict:
+    """Remove platforms well below the pig stand that are not the pig's platform.
+
+    ENHSP-only pass (Pass C): keeps the stand platform plus any platform whose top
+    is near the pig line; drops distant low hills in the bird→pig corridor.
+    """
+    pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
+    if not pig_key:
+        return problem_data
+
+    pig = problem_data[pig_key]
+    px = float(pig["x_pig"])
+    py = float(pig["y_pig"])
+    pr = float(pig.get("pig_radius", 3.5))
+    pig_stand = py - pr
+    drop_below = float(SUBSTAND_PLATFORM_DROP_BELOW_PIG_PX)
+
+    drop_keys = []
+    for key, val in problem_data.items():
+        if not key.startswith("platform_"):
+            continue
+        plat = {
+            "x": float(val["x_platform"]),
+            "y": float(val["y_platform"]),
+            "w": float(val["platform_width"]),
+            "h": float(val["platform_height"]),
+        }
+        left, right, _bottom, top = _platform_bounds(plat)
+        pig_on_stand = left - pr <= px <= right + pr
+        if pig_on_stand:
+            continue
+        if top >= pig_stand - drop_below:
+            continue
+        drop_keys.append(key)
+        if debug:
+            print(
+                f"[PLATFORM DEBUG] {key}: dropped for planning (top={top:.1f} "
+                f"< pig_stand-{drop_below:.0f}={pig_stand - drop_below:.1f})"
+            )
+
+    for key in drop_keys:
+        del problem_data[key]
+
+    return problem_data
+
+
+def apply_corridor_block_planning_relief(
+    problem_data: dict, debug: bool = False,
+) -> dict:
+    """Tighten block AABBs in the bird→pig corridor (rolling Pass C).
+
+    Unlike shelter Pass B, does not weaken block_life — only shrinks inflated
+    planning margins so ENHSP can find platform-slide plans past foreground blocks.
+    """
+    bird_key = next((k for k in problem_data if k.startswith("bird_")), None)
+    pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
+    if not bird_key or not pig_key:
+        return problem_data
+
+    bx = float(problem_data[bird_key]["x_bird"])
+    br = float(problem_data[bird_key].get("bird_radius", 4.0))
+    px = float(problem_data[pig_key]["x_pig"])
+    pr = float(problem_data[pig_key].get("pig_radius", 3.5))
+    py = float(problem_data[pig_key]["y_pig"])
+    corridor_left = min(bx, px) - br - PLATFORM_CORRIDOR_MARGIN_PX
+    corridor_right = max(bx, px) + pr + PLATFORM_CORRIDOR_MARGIN_PX
+    y_low = min(float(problem_data[bird_key]["y_bird"]) - br, py - pr) - 20.0
+    y_high = max(float(problem_data[bird_key]["y_bird"]) + br, py + pr) + 20.0
+
+    shrink = float(CORRIDOR_BLOCK_RELIEF_SHRINK_PX)
+    for key, val in list(problem_data.items()):
+        if not key.startswith("block_"):
+            continue
+        left, right, bottom, top = _block_aabb(val)
+        if right < corridor_left or left > corridor_right:
+            continue
+        if top < y_low or bottom > y_high:
+            continue
+        block = dict(val)
+        block["block_width"] = max(4.0, float(block["block_width"]) - 2.0 * shrink)
+        block["block_height"] = max(4.0, float(block["block_height"]) - 2.0 * shrink)
+        block["_corridor_relief"] = True
+        problem_data[key] = block
+        if debug:
+            print(
+                f"[BLOCK DEBUG] {key}: corridor relief "
+                f"({block['block_width']:.1f}x{block['block_height']:.1f})"
+            )
+    return problem_data
 
 
 def apply_block_shelter_adjustments(problem_data: dict, debug: bool = False) -> dict:
@@ -1226,9 +1410,16 @@ def _apply_platform_contact(platform_kb: dict, plat: dict, x: float, y: float,
             print("[SIM DEBUG]   Bootstrap platform slide (KB cold; hill heuristic)")
 
     post_speed = math.hypot(predicted["v_x"], predicted["v_y"])
-    slide = post_speed > 5.0
+    slide = post_speed > PLATFORM_SLIDE_MIN_SPEED
     out_x = predicted.get("x", x)
-    return out_x, predicted["y"], predicted["v_x"], predicted["v_y"], slide, not slide
+    out_y = predicted["y"]
+    out_vx = predicted["v_x"]
+    out_vy = predicted["v_y"]
+    if slide:
+        _, _, _, plat_top = _platform_bounds(plat)
+        out_y = plat_top + br * PLATFORM_SURFACE_RADIUS_FACTOR
+        out_vy = 0.0
+    return out_x, out_y, out_vx, out_vy, slide, not slide
 
 problem_template = Template("""(define (problem sample_problem)
     (:domain angry_birds_scaled)
@@ -1286,12 +1477,18 @@ class AngleCalibrator:
     """
 
     # Bootstrap (game_pull, measured_θ) at force≈1.0 from Science Birds calibration.
+    # Mid-range knots (35–51°) fill the old 28→59 gap so invert(dial→pull) matches
+    # SB6.6 instead of linear extrapolation (Fix 2).
     _BOOTSTRAP = (
         (22.0, 8.5),
         (24.0, 11.0),
         (25.2, 14.4),
         (26.5, 14.4),
         (28.0, 23.4),
+        (35.0, 28.0),
+        (39.0, 32.0),
+        (44.0, 42.0),
+        (51.0, 50.9),
         (59.0, 58.8),
         (75.5, 73.9),
         (81.5, 77.9),
@@ -1421,6 +1618,24 @@ class AngleCalibrator:
         target = self.pddl_flight_angle(pddl_dial)
         pull = self._invert_measured_to_pull(target, force=force)
         return max(min_pull, min(max_pull, pull))
+
+    def release_pull_rad_for_pddl_dial(
+        self,
+        pddl_dial: float,
+        min_pull: float = GAME_PULL_MIN,
+        max_pull: float = GAME_PULL_MAX,
+        force: float = 1.0,
+    ) -> float:
+        """
+        Slingshot pull angle (radians) for ``pddl_release_point_with_mag``.
+
+        Same mapping as forward sim / executable-dial checks: invert PDDL flight
+        target on the SB6.6 pull→measured curve (not BamBirds Java coeffs).
+        """
+        pull_deg = self.game_pull_for_pddl_dial(
+            pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
+        )
+        return math.radians(pull_deg)
 
     def measured_flight_for_game_pull(
         self,
@@ -1738,20 +1953,25 @@ def mode_b_angular_resolution_deg(sling_height: float, force: float = 1.0) -> fl
     return 90.0 / mag
 
 
-def mode_b_dial_collapse_map(sling, dial_min: float, dial_max: float, force: float = 1.0):
+def mode_b_dial_collapse_map(
+    sling,
+    dial_min: float,
+    dial_max: float,
+    force: float = 1.0,
+    angle_calibrator: AngleCalibrator = None,
+):
     """
     Map each integer release pixel to the dials that collapse onto it.
 
     Returns ``(pixel_to_dials, resolution_deg, scaled_mag)`` for Mode B diagnostics.
     """
-    from .bambirds_shot_helper import actual_to_launch
+    cal = angle_calibrator or AngleCalibrator()
     mag = mode_b_scaled_mag(float(getattr(sling, "height", 0) or 0), force)
     pixel_to_dials: dict[tuple[int, int], list[float]] = {}
     step = 0.5
     d = float(dial_min)
     while d <= float(dial_max) + 1e-9:
-        flight_rad = math.radians(pddl_flight_angle_deg(d))
-        corrected_rad = actual_to_launch(flight_rad)
+        corrected_rad = cal.release_pull_rad_for_pddl_dial(d, force=force)
         pt = pddl_release_point_with_mag(sling, corrected_rad, mag)
         key = (int(pt.X), int(pt.Y))
         pixel_to_dials.setdefault(key, []).append(round(d, 1))
@@ -1778,31 +1998,38 @@ def pddl_release_point_with_mag(sling, theta_rad: float, mag_px: float):
     return Point2D(rel_x, rel_y)
 
 
-def pddl_shot_to_release_point(tp, sling, dial_deg: float, force: float):
+def pddl_shot_to_release_point(
+    tp,
+    sling,
+    dial_deg: float,
+    force: float,
+    angle_calibrator: AngleCalibrator = None,
+):
     """
     Map PDDL angle+force to a game release point.
 
-    The domain's dial-minus-angle_bias is the *actual flight angle* we want
-    the bird to produce. But the game's sling launches slightly flatter than
-    the requested pull angle (angle-dependent, larger deficit at low angles).
-    Apply BamBirds' ``actual_to_launch`` correction so what we ask the game
-    to fire at compensates for the deficit, and the observed flight matches
-    what the PDDL domain simulates.
+    PDDL dial (minus ``angle_bias``) is the flight angle the domain simulates.
+    Use ``AngleCalibrator`` to invert that target onto the SB6.6 pull→measured
+    curve — same model as ``sim_dial_for_game_execution`` / executable dial
+    checks (Fix 1). BamBirds ``actualToLaunch`` is not used here.
 
-    Mode B: pullback distance ``mag`` is scaled by
-    ``MODE_B_MAG_MULTIPLIER`` for finer angular resolution.
-
-    Reference: BamBirds ShotHelper.actualToLaunch (see bambirds_shot_helper).
+    Mode B: pullback distance ``mag`` is scaled by ``MODE_B_MAG_MULTIPLIER``.
     """
-    from .bambirds_shot_helper import actual_to_launch
-    flight_angle_rad = math.radians(pddl_flight_angle_deg(dial_deg))
-    corrected_launch_rad = actual_to_launch(flight_angle_rad)
+    cal = angle_calibrator or AngleCalibrator()
+    flight_target = pddl_flight_angle_deg(dial_deg)
+    pull_deg = cal.game_pull_for_pddl_dial(dial_deg, force=force)
+    corrected_launch_rad = cal.release_pull_rad_for_pddl_dial(dial_deg, force=force)
     v_portion = pddl_force_to_v_portion(force)
     sling_h = float(getattr(sling, "height", 0) or 0)
     scaled_mag = mode_b_scaled_mag(sling_h, force)
     px_per_deg = scaled_mag / 90.0
     base_mag = sling_h * 5.0 * v_portion
     force_clamped = max(FORCE_MIN, min(FORCE_MAX, float(force)))
+    pred_meas = cal.measured_flight_for_game_pull(pull_deg, force=force)
+    print(
+        f"[ACTUATOR] flight_target={flight_target:.2f}° → game_pull={pull_deg:.2f}° "
+        f"(calibrator invert, force={force:.3f}) → expected_meas={pred_meas:.2f}°"
+    )
     print(
         f"[MODE B DIAG] sling.height={sling_h:.1f}px  v_portion={v_portion:.3f}  "
         f"base_mag={base_mag:.1f}px  scaled_mag={scaled_mag:.1f}px "
@@ -1896,6 +2123,76 @@ def write_problem_file(path: str, problem_data: dict, init_angle: float, angel_r
         file.write(problem)
 
 
+def _inject_platform_slide_sentinel(
+    content: str,
+    sentinel: str,
+    kb: dict,
+    *,
+    planning_optimistic_slide: bool = False,
+):
+    """
+    Inject sim-aligned platform slide entry for ENHSP planning.
+
+    M5 one-shot bounce is intentionally skipped here: the durative
+    platform_sliding process requires platform_slide_active / bird_sliding,
+    which only the sim-aligned entry effect sets.
+    """
+    if sentinel not in content:
+        return content, "skipped"
+
+    n_samples = len((kb or {}).get("states") or [])
+    lr_models, lr_tag = _planning_surface_lr_models(kb, n_samples)
+    if lr_models is not None:
+        body = _build_sim_aligned_platform_slide_entry_effect(lr_models)
+        vx_r2 = _rolling_lr_vx_r2(lr_models)
+        _collision_inject_log(
+            f"Injected sim-aligned platform slide entry ({n_samples} samples, "
+            f"{lr_tag}, v_x R²={vx_r2:.3f})"
+        )
+        inject_label = "slide_sim_aligned"
+    else:
+        pddl_lr = (kb or {}).get("lr_models_pddl") or {}
+        vx_entry = pddl_lr.get("v_x") or {}
+        vx_kind = str(vx_entry.get("_vx_model_kind") or "")
+        ratio_n = int(vx_entry.get("_vx_ratio_n") or 0)
+        from agents.pddl.pddl_files.events.learn_events import PLATFORM_VX_RATIO_MIN_SAMPLES
+
+        partial_lr = None
+        if vx_kind.startswith("ratio") and ratio_n >= PLATFORM_VX_RATIO_MIN_SAMPLES:
+            partial_lr = {"v_x": vx_entry}
+            _collision_inject_log(
+                f"Platform slide linear gate failed (n={n_samples}) — "
+                f"using slide v_x ratio model (n={ratio_n}) for ENHSP entry"
+            )
+            body = _build_sim_aligned_platform_slide_entry_effect(partial_lr)
+            inject_label = "slide_sim_ratio_vx"
+        else:
+            lr_vx_r2 = _rolling_lr_vx_r2(pddl_lr)
+            reason = (
+                f"v_x R²={lr_vx_r2:.3f} < {PDDL_PLATFORM_LR_MIN_VX_R2}"
+                if lr_vx_r2 is not None
+                else "LR not ready"
+            )
+            _collision_inject_log(
+                f"Platform slide LR rejected ({reason}, n={n_samples}) — "
+                f"slide entry with heuristic vx ratio={PLATFORM_DEFAULT_SPEED_RATIO} "
+                f"(M5 skipped for slide-process domain)"
+            )
+            body = _build_sim_aligned_platform_slide_entry_effect(None)
+            inject_label = "slide_sim_heuristic"
+
+    body = _append_planning_slide_x_advance(body)
+    if planning_optimistic_slide:
+        body = _append_extra_planning_slide_x(
+            body, extra_sec=PLATFORM_PLANNING_SLIDE_SEC_OPTIMISTIC,
+        )
+        _collision_inject_log(
+            f"Appended optimistic slide x-advance "
+            f"(+{PLATFORM_PLANNING_SLIDE_SEC_OPTIMISTIC}s·vx)"
+        )
+    return content.replace(sentinel, body), inject_label
+
+
 def _inject_surface_sentinel(
     content: str,
     sentinel: str,
@@ -1910,6 +2207,11 @@ def _inject_surface_sentinel(
     if sentinel not in content:
         return content, "skipped"
 
+    if m5_bounce_mode == "platform":
+        return _inject_platform_slide_sentinel(
+            content, sentinel, kb, planning_optimistic_slide=planning_optimistic_slide,
+        )
+
     kind, meta = _surface_physics_kind(kb, m5_min_samples=m5_min_samples)
     n_samples = meta.get("n_samples", 0)
 
@@ -1923,11 +2225,6 @@ def _inject_surface_sentinel(
             if vx_r2 is not None
             else f"Injected LR {m5_bounce_mode} rolling effect ({n_samples} samples, {tag})"
         )
-        if planning_optimistic_slide and m5_bounce_mode == "platform" and body:
-            body = _append_extra_planning_slide_x(body)
-            _collision_inject_log(
-                f"Appended optimistic slide x-advance (+{PLATFORM_PLANNING_SLIDE_SEC}s·vx)"
-            )
         return content.replace(sentinel, body), "lr"
 
     if kind == "m5":
@@ -1937,16 +2234,9 @@ def _inject_surface_sentinel(
             _collision_inject_log(
                 f"Injected M5 {m5_bounce_mode} collision effect ({n_samples} samples)"
             )
-            if planning_optimistic_slide and m5_bounce_mode == "platform":
-                m5_body = _append_extra_planning_slide_x(m5_body)
-                _collision_inject_log(
-                    f"Appended optimistic slide x-advance (+{PLATFORM_PLANNING_SLIDE_SEC}s·vx)"
-                )
             return content.replace(sentinel, m5_body), "m5"
 
     _log_surface_placeholder_reason(kb, n_samples, m5_min_samples)
-    if planning_optimistic_slide and m5_bounce_mode == "platform":
-        placeholder_body = _append_extra_planning_slide_x(placeholder_body)
     return content.replace(sentinel, placeholder_body), "placeholder"
 
 
@@ -2016,7 +2306,7 @@ def inject_domain_file(
                 collision_kb,
                 placeholder_body=ground_roll_placeholder,
                 m5_min_samples=0,
-                m5_bounce_mode="platform",
+                m5_bounce_mode="ground",
             )
 
     platform_sentinel = "{SE-collision-platform-effect}"

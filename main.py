@@ -37,6 +37,7 @@ class AgentThread(threading.Thread):
                  plan_pick_fast: bool = True,
                  plan_pick_timeout_sec: float = 60.0,
                  sim_gate_test_only: bool = True,
+                 disable_narrow_sim_gate: bool = False,
                  max_train_attempts: int = 5,
                  world_model_load: str = None,
                  world_model_save: str = None):
@@ -101,6 +102,7 @@ class AgentThread(threading.Thread):
         self.plan_pick_fast = plan_pick_fast
         self.plan_pick_timeout_sec = plan_pick_timeout_sec
         self.sim_gate_test_only = sim_gate_test_only
+        self.disable_narrow_sim_gate = disable_narrow_sim_gate
         self.max_train_attempts = max_train_attempts
         self.world_model_load = world_model_load
         self.world_model_save = world_model_save
@@ -149,6 +151,7 @@ class AgentThread(threading.Thread):
             plan_pick_fast=self.plan_pick_fast,
             plan_pick_timeout_sec=self.plan_pick_timeout_sec,
             sim_gate_test_only=self.sim_gate_test_only,
+            disable_narrow_sim_gate=self.disable_narrow_sim_gate,
             max_train_attempts=self.max_train_attempts,
             world_model_load=self.world_model_load,
             world_model_save=self.world_model_save,
@@ -181,6 +184,7 @@ def main(agent_configs,
          plan_pick_fast: bool = True,
          plan_pick_timeout_sec: float = 60.0,
          sim_gate_test_only: bool = True,
+         disable_narrow_sim_gate: bool = False,
          max_train_attempts: int = 5,
          world_model_load: str = None,
          world_model_save: str = None):
@@ -249,6 +253,7 @@ def main(agent_configs,
             plan_pick_fast=plan_pick_fast,
             plan_pick_timeout_sec=plan_pick_timeout_sec,
             sim_gate_test_only=sim_gate_test_only,
+            disable_narrow_sim_gate=disable_narrow_sim_gate,
             max_train_attempts=max_train_attempts,
             world_model_load=world_model_load,
             world_model_save=world_model_save,
@@ -462,12 +467,18 @@ Examples:
     )
     parser.set_defaults(sim_gate_test_only=True)
     parser.add_argument("--sim-gate-test-only", dest="sim_gate_test_only", action="store_true",
-                        help="(default) With --planner-only: TRAIN and TEST both keep ENHSP plan; "
-                             "sim gate only rejects the narrow 'platform-hit-short' failure "
-                             "(bird stops in front of pig) via sim search replacement")
+                        help="(default) With --planner-only and --narrow-sim-gate: TRAIN/TEST "
+                             "narrow gate may replace ENHSP (platform-short, ground-bounce, etc.)")
     parser.add_argument("--no-sim-gate-test-only", dest="sim_gate_test_only", action="store_false",
                         help="Legacy: enable the broad sim gate on TEST levels "
                              "(rejects any unacceptable plan and runs sim_search/fallback)")
+    parser.set_defaults(disable_narrow_sim_gate=False)
+    parser.add_argument("--no-narrow-sim-gate", dest="disable_narrow_sim_gate", action="store_true",
+                        help="With --planner-only: forward sim for logging only; never replace "
+                             "ENHSP via narrow sim gate / pre-sim diversify / TEST untrusted-slide fallback")
+    parser.add_argument("--narrow-sim-gate", dest="disable_narrow_sim_gate", action="store_false",
+                        help="(default) Replace bad ENHSP plans via sim search when forward sim rejects "
+                             "them (ground-bounce miss, platform-short, etc.)")
     parser.add_argument("--max-train-attempts", type=int, default=5, metavar="N",
                         help="Cap on retries per TRAIN level before it is ABANDONED "
                              "(default: 5; was 8 — reduced to leave SB's 12000s time "
@@ -529,6 +540,7 @@ Examples:
         plan_pick_fast=args.plan_pick_fast,
         plan_pick_timeout_sec=args.plan_pick_timeout,
         sim_gate_test_only=args.sim_gate_test_only,
+        disable_narrow_sim_gate=args.disable_narrow_sim_gate,
         max_train_attempts=args.max_train_attempts,
         world_model_load=args.world_model_load,
         world_model_save=world_model_save,

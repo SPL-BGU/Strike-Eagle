@@ -109,3 +109,13 @@ rolling,2,D-DDQN-Image,0.067
 rolling,2,Relational-Symbolic,0.317
 rolling,2,Relational-Image,0.167
 rolling,2,Random Agent,0.085
+rolling,3,Human,0.853
+rolling,3,Pig Shooter,0.008
+rolling,3,Datalab,0.370
+rolling,3,Eagle’s Wing,0.330
+rolling,3,Bambirds,0.040
+rolling,3,D-DDQN-Symbolic,0.180
+rolling,3,D-DDQN-Image,0.067
+rolling,3,Relational-Symbolic,0.317
+rolling,3,Relational-Image,0.167
+rolling,3,Random Agent,0.085

@@ -4,36 +4,36 @@ Reference table mapping each Phy-Q physical reasoning scenario to the actions, p
 
 **Legend:** ✓ = required · ◐ = sometimes · — = not needed · Rows = scenarios · Columns = abilities (see legends below).
 
+**Merged columns:** **Core** = shoot bird + trajectory + ground/platform collision (✓ on every scenario). **Property** = compare/select by weight, height, width, or shape (✓ if any of those is required; ◐ if only sometimes).
+
 ## Capability Matrix
 
-| Scenario | SB | SM | TP | GC | PC | BI | DP | IP | RO | SL | FA | BO | WT | HT | WD | SH | MS | SO | SW | CL | TM | BT |
-|----------|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| **SF** single_force | ✓ | — | ✓ | ✓ | ✓ | ◐ | ✓ | — | — | — | — | ◐ | — | — | — | — | — | — | — | — | — | — |
-| **MF** multiple_forces | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | ✓ | ◐ | — | — | — | ◐ | — | — | — | — | ✓ | — | — | — | — | — |
-| **RL** rolling | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ◐ | ◐ | — | — | — | ◐ | ◐ | — | — | — | — | — |
-| **FL** falling | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ◐ | — | ✓ | ◐ | — | ◐ | — | — | ◐ | — | — | — | — | — |
-| **SL** sliding | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | ✓ | ◐ | ◐ | — | — | — | ◐ | ◐ | — | — | — | — | — |
-| **BN** bouncing | ✓ | ◐ | ✓ | ✓ | ✓ | ◐ | ✓ | ◐ | — | — | — | ✓ | — | — | ◐ | — | ◐ | — | — | — | — | — |
-| **RW** relative_weight | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ◐ | ◐ | ◐ | ✓ | — | — | ◐ | ✓ | — | — | — | — | — |
-| **HT** relative_height | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ◐ | — | ✓ | ◐ | ◐ | ✓ | ◐ | ◐ | ✓ | — | — | — | — | — |
-| **WD** relative_width | ✓ | ◐ | ✓ | ✓ | ✓ | ◐ | ✓ | ◐ | — | — | — | ◐ | — | ◐ | ✓ | — | ◐ | — | — | — | — | — |
-| **SD** shape_difference | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ◐ | ✓ | ◐ | — | ◐ | — | ✓ | ✓ | — | — | — | — | — |
-| **NG** non_greedy | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | ✓ | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | ✓ | ◐ | ◐ | ◐ | — |
-| **SA** structural_analysis | ✓ | ◐ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ◐ | ◐ | ✓ | ◐ | — | ◐ | — | ◐ | ✓ | — | ✓ | — | — | — |
-| **CP** clearing_paths | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ | ✓ | ◐ | ◐ | ✓ | ◐ | — |
-| **AT** adequate_timing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ◐ | ✓ | ◐ | — | — | — | — | ✓ | ◐ | ◐ | ◐ | ✓ | — |
-| **MN** manoeuvring | ✓ | ◐ | ✓ | ✓ | ✓ | ◐ | ✓ | ◐ | — | — | — | ◐ | — | — | ◐ | — | ✓ | — | — | — | — | ✓ |
+| Scenario | Core | SM | BI | DP | IP | RO | SL | FA | BO | Property | MS | SO | SW | CL | TM | BT |
+|----------|:----:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--------:|:--:|:--:|:--:|:--:|:--:|:--:|
+| **SF** single_force | ✓ | — | ◐ | ✓ | — | — | — | — | ◐ | — | — | — | — | — | — | — |
+| **MF** multiple_forces | ✓ | ✓ | ◐ | ✓ | ◐ | — | — | — | ◐ | — | ✓ | — | — | — | — | — |
+| **RL** rolling | ✓ | ◐ | ✓ | — | ✓ | ✓ | — | ◐ | ◐ | ◐ | ◐ | — | — | — | — | — |
+| **FL** falling | ✓ | ◐ | ✓ | — | ✓ | ◐ | — | ✓ | ◐ | ◐ | ◐ | — | — | — | — | — |
+| **SL** sliding | ✓ | ◐ | ✓ | — | ✓ | — | ✓ | ◐ | ◐ | ◐ | ◐ | — | — | — | — | — |
+| **BN** bouncing | ✓ | ◐ | ◐ | ✓ | ◐ | — | — | — | ✓ | ◐ | ◐ | — | — | — | — | — |
+| **RW** relative_weight | ✓ | ◐ | ✓ | — | ✓ | ✓ | ◐ | ◐ | ◐ | ✓ | ✓ | — | — | — | — | — |
+| **HT** relative_height | ✓ | ◐ | ✓ | — | ✓ | ◐ | — | ✓ | ◐ | ✓ | ✓ | — | — | — | — | — |
+| **WD** relative_width | ✓ | ◐ | ◐ | ✓ | ◐ | — | — | — | ◐ | ✓ | ◐ | — | — | — | — | — |
+| **SD** shape_difference | ✓ | ◐ | ✓ | — | ✓ | ✓ | ◐ | ✓ | ◐ | ✓ | ✓ | — | — | — | — | — |
+| **NG** non_greedy | ✓ | ✓ | ✓ | ◐ | ✓ | ✓ | ◐ | ✓ | ◐ | ◐ | ✓ | ✓ | ◐ | ◐ | ◐ | — |
+| **SA** structural_analysis | ✓ | ◐ | ✓ | ✓ | ✓ | ◐ | ◐ | ✓ | ◐ | ◐ | ✓ | — | ✓ | — | — | — |
+| **CP** clearing_paths | ✓ | ✓ | ✓ | — | ✓ | ✓ | ◐ | ◐ | ◐ | ◐ | ✓ | ◐ | ◐ | ✓ | ◐ | — |
+| **AT** adequate_timing | ✓ | ✓ | ✓ | — | ✓ | ✓ | ◐ | ✓ | ◐ | — | ✓ | ◐ | ◐ | ◐ | ✓ | — |
+| **MN** manoeuvring | ✓ | ◐ | ◐ | ✓ | ◐ | — | — | — | ◐ | ◐ | ✓ | — | — | — | — | ✓ |
 
 ### Ability columns
 
 | | | | |
 |--|--|--|--|
-| **SB** Shoot bird | **SM** Shoot multiple birds | **TP** Trajectory | **GC** Ground collision |
-| **PC** Platform collision | **BI** Block impact | **DP** Direct pig kill | **IP** Indirect pig kill |
-| **RO** Rolling | **SL** Sliding | **FA** Falling / gravity | **BO** Bouncing |
-| **WT** Weight reasoning | **HT** Height reasoning | **WD** Width / path | **SH** Shape reasoning |
-| **MS** Multi-step sequencing | **SO** Strategic ordering | **SW** Structural weak-point | **CL** Path clearing |
-| **TM** Timed actions | **BT** Bird tap / special ability | | |
+| **Core** Shoot bird, trajectory, ground & platform collision | **SM** Shoot multiple birds | **BI** Block impact | **DP** Direct pig kill |
+| **IP** Indirect pig kill | **RO** Rolling | **SL** Sliding | **FA** Falling / gravity |
+| **BO** Bouncing | **Property** Object property reasoning (weight · height · width · shape) | **MS** Multi-step sequencing | **SO** Strategic ordering |
+| **SW** Structural weak-point | **CL** Path clearing | **TM** Timed actions | **BT** Bird tap / special ability |
 
 ## Per-Scenario Breakdown
 

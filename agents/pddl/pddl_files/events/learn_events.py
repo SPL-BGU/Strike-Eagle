@@ -2037,6 +2037,104 @@ def train_rolling_lr_dual(kb_event: dict, min_samples: int = ROLLING_LR_MIN_SAMP
     return sim_models, pddl_models
 
 
+# Platform slide v_x for PDDL: linear 4-feature LR collapses (~0.04 R²) when KB mixes
+# bounces and slides. Ratio on slide-like samples is injectable and stable.
+PLATFORM_SLIDE_POST_VY_MAX = 15.0
+PLATFORM_VX_RATIO_MIN_SAMPLES = 5
+PLATFORM_VX_RATIO_MIN_PRE_VX = 25.0
+# Keep samples that look like forward slide (not reverse bounce / sign flip).
+PLATFORM_VX_RATIO_MIN_RETENTION = 0.35
+PLATFORM_VX_RATIO_MAX_RETENTION = 1.05
+
+
+def _platform_vx_ratio_sample_indices(kb_event: dict, slide_only: bool = True):
+    states = kb_event.get("states") or []
+    variables = kb_event.get("variables") or {}
+    post_vy = variables.get("v_y", {}).get("value") or []
+    post_vx = variables.get("v_x", {}).get("value") or []
+    indices = []
+    for i, st in enumerate(states):
+        if i >= len(post_vy) or i >= len(post_vx):
+            break
+        pre_vx = float(st.get("v_x", 0.0))
+        if abs(pre_vx) < PLATFORM_VX_RATIO_MIN_PRE_VX:
+            continue
+        pv = float(post_vx[i])
+        vy = float(post_vy[i])
+        if slide_only:
+            if abs(vy) > PLATFORM_SLIDE_POST_VY_MAX:
+                continue
+            if pv != 0.0 and np.sign(pv) != np.sign(pre_vx):
+                continue
+            ratio = pv / pre_vx if pre_vx != 0.0 else 0.0
+            if not (PLATFORM_VX_RATIO_MIN_RETENTION <= abs(ratio) <= PLATFORM_VX_RATIO_MAX_RETENTION):
+                continue
+        indices.append(i)
+    return indices
+
+
+def train_platform_pddl_vx_ratio(kb_event: dict, slide_only: bool = True):
+    """
+    Fit injectable v_x = ratio * pre_vx for platform PDDL slide entry.
+
+    Uses slide-like samples (|post_v_y| small) when available; otherwise all samples
+    with meaningful pre_v_x. Returns an lr_models['v_x'] entry or None.
+    """
+    indices = _platform_vx_ratio_sample_indices(kb_event, slide_only=slide_only)
+    if len(indices) < PLATFORM_VX_RATIO_MIN_SAMPLES:
+        return None
+
+    states = kb_event["states"]
+    variables = kb_event["variables"]
+    pre_vx = [float(states[i]["v_x"]) for i in indices]
+    post_vx = [float(variables["v_x"]["value"][i]) for i in indices]
+    filtered_states = [states[i] for i in indices]
+
+    ratio_model = PhysicsRatioModel("v_x")
+    ratio_model.fit(pre_vx, post_vx)
+    if ratio_model.ratio is None:
+        return None
+
+    from sklearn.metrics import r2_score
+
+    X = make_feature_vector(filtered_states, **ROLLING_LR_PDDL_FEATURE_FLAGS)
+    y = np.array(post_vx, dtype=float)
+    pred = ratio_model.predict(X)
+    r2 = float(r2_score(y, pred)) if len(y) >= 2 else 0.0
+
+    return {
+        "model": ratio_model,
+        "r2": r2,
+        "coef": ratio_model.coef_.tolist(),
+        "intercept": float(ratio_model.intercept_),
+        "n_features": 4,
+        "_vx_model_kind": "ratio_slide" if slide_only else "ratio_all",
+        "_vx_ratio_n": len(indices),
+    }
+
+
+def refresh_platform_pddl_vx_ratio(kb_event: dict) -> bool:
+    """Patch lr_models_pddl v_x with slide-filtered ratio model when possible."""
+    if not isinstance(kb_event, dict):
+        return False
+    pddl_lr = kb_event.get("lr_models_pddl")
+    if not isinstance(pddl_lr, dict):
+        return False
+    if not all(var in pddl_lr for var in ROLLING_LR_OUTPUT_VARS):
+        return False
+
+    vx_entry = train_platform_pddl_vx_ratio(kb_event, slide_only=True)
+    if vx_entry is None:
+        vx_entry = train_platform_pddl_vx_ratio(kb_event, slide_only=False)
+    if vx_entry is None:
+        return False
+
+    pddl_lr = dict(pddl_lr)
+    pddl_lr["v_x"] = vx_entry
+    kb_event["lr_models_pddl"] = pddl_lr
+    return True
+
+
 def update_model_effects(
     event_name: str,
     kb: dict,
@@ -2099,13 +2197,23 @@ def update_model_effects(
         )
     if pddl_lr:
         kb[event_name]["lr_models_pddl"] = pddl_lr
+        if event_name == "platform_collision":
+            refresh_platform_pddl_vx_ratio(kb[event_name])
+            pddl_lr = kb[event_name]["lr_models_pddl"]
         pddl_r2 = ", ".join(
             f"{var}={pddl_lr[var]['r2']:.3f}" for var in ROLLING_LR_OUTPUT_VARS
         )
         n_pddl_feat = pddl_lr.get("x", {}).get("n_features", 4)
+        vx_note = ""
+        vx_entry = pddl_lr.get("v_x") or {}
+        if vx_entry.get("_vx_model_kind"):
+            vx_note = (
+                f"  v_x={vx_entry['_vx_model_kind']}"
+                f"(n={vx_entry.get('_vx_ratio_n', '?')})"
+            )
         print(
             f"[ROLL LR PDDL] {event_name}: n={n_samples}  feats={n_pddl_feat} (base)  "
-            f"R²=({pddl_r2})"
+            f"R²=({pddl_r2}){vx_note}"
         )
 
     should_retrain = n_samples == 1

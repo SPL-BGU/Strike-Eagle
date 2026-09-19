@@ -1,2 +1,2 @@
 template,train_pct,test_pct,gen_gap,train_n,test_n
-5,65.625,50.0,15.625,32,8
+2,68.75,0.0,68.75,32,8

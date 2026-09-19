@@ -76,6 +76,14 @@ PLAN_PICK_NEAR_SEARCH_HALF_WIDTH_DEG = 15.0
 PLAN_PICK_SEARCH_TIMEOUT_SEC = 60.0
 # ENHSP subprocess wall-clock limit (seconds).
 ENHSP_TIMEOUT_SEC = 120
+# Platform inject labels too weak to trust sim-predicted slide-to-pig kills without sim_search.
+_UNTRUSTED_PLATFORM_INJECT_FOR_SLIDE_KILL = frozenset({
+    "slide_placeholder",
+    "slide_sim_heuristic",
+    "bootstrap",
+    "placeholder",
+    "hard_stop",
+})
 
 
 def _extract_force_angle(actions, default_force=1.0):
@@ -134,6 +142,7 @@ class PDDLAgent(BaselineAgent):
                  plan_pick_fast: bool = True,
                  plan_pick_timeout_sec: float = PLAN_PICK_SEARCH_TIMEOUT_SEC,
                  sim_gate_test_only: bool = True,
+                 disable_narrow_sim_gate: bool = False,
                  max_train_attempts: int = 5,
                  world_model_load: str = None,
                  world_model_save: str = None):
@@ -240,6 +249,7 @@ class PDDLAgent(BaselineAgent):
         self.disable_sim_override = disable_sim_override
         self.disable_forward_sim = disable_forward_sim
         self.sim_gate_test_only = bool(sim_gate_test_only)
+        self.disable_narrow_sim_gate = bool(disable_narrow_sim_gate)
         self.prefer_sim_plan = prefer_sim_plan
         self.plan_pick_fast = plan_pick_fast
         self.plan_pick_timeout_sec = max(0.0, float(plan_pick_timeout_sec))
@@ -250,6 +260,11 @@ class PDDLAgent(BaselineAgent):
                 "[PDDL] WARNING: prefer_sim_plan requires forward sim — enabling forward sim"
             )
             self.disable_forward_sim = False
+        if self.disable_narrow_sim_gate and not self.planner_only:
+            print(
+                "[PDDL] WARNING: --no-narrow-sim-gate applies only in --planner-only mode; "
+                "broad sim gate (--enable-sim-gate) may still replace ENHSP plans"
+            )
         if self.disable_forward_sim:
             print(
                 "[PDDL] Forward sim disabled — no fallback grid, refine, or plan simulation"
@@ -277,11 +292,16 @@ class PDDLAgent(BaselineAgent):
                     "[PDDL] Planner-only mode — ENHSP plans used as-is; "
                     "forward sim disabled; fallback grid disabled"
                 )
+            elif self.disable_narrow_sim_gate:
+                print(
+                    "[PDDL] Planner-only mode — narrow sim gate OFF; forward sim runs "
+                    "for logging/advisory only; ENHSP plan is never replaced by sim search"
+                )
             elif self.sim_gate_test_only:
                 print(
-                    "[PDDL] Planner-only mode (narrow gate) — TRAIN and TEST both keep "
-                    "ENHSP plan; forward sim only rejects platform-hit-short (bird stops "
-                    "in front of pig) via sim search replacement"
+                    "[PDDL] Planner-only mode (narrow gate) — forward sim may replace "
+                    "ENHSP via sim search on platform-hit-short, ground-bounce miss, "
+                    "block-shelter miss, platform-miss, or clamp-to-min dial"
                 )
             else:
                 print(
@@ -500,6 +520,9 @@ class PDDLAgent(BaselineAgent):
         # Per-shot planner status tracking (for CSV reporting)
         self._last_planner_unsolvable = False  # True if planner reported "unsolvable"
         self._last_plan_source = "planner"  # "planner" or "fallback"
+        self._last_enhsp_inject_labels = {}
+        self._last_enhsp_advisory_failed = False
+        self._last_pre_sim_diversified = False
         
         # Initialize agent comparison CSV for tracking results across agents
         self.comparison_csv = AgentComparisonCSV(
@@ -1032,10 +1055,59 @@ class PDDLAgent(BaselineAgent):
                     train_level=getattr(self, "current_level", None),
                     debug=False,
                 )
+                self._last_platform_learn_pair = (
+                    dict(pre_state),
+                    dict(post_state),
+                )
                 n = len(self.kb["platform_collision"]["states"])
                 print(f"[PLATFORM LEARN] KB samples: {n}")
 
             break
+
+    def _boost_platform_kb_on_thread_b(
+        self,
+        event_indexes_by_event: dict,
+        *,
+        game_won: bool,
+        should_learn: bool,
+    ) -> None:
+        """
+        When forward sim predicted a platform-slide pig kill but the game did not,
+        duplicate the latest game-GT platform contact sample in the KB so LR/M5
+        favor lower post-contact speeds for similar pre-contact states.
+        """
+        if not should_learn:
+            return
+        sim = getattr(self, "_last_sim_result", None) or {}
+        if not sim.get("pig_killed_in_sim") or game_won:
+            return
+        if not sim.get("platform_collision"):
+            return
+        hits = event_indexes_by_event.get("hit") or []
+        if hits:
+            return
+        if not event_indexes_by_event.get("platform_collision"):
+            return
+        pair = getattr(self, "_last_platform_learn_pair", None)
+        if not pair:
+            return
+        pre_state, post_state = pair
+        boosts = 2
+        for _ in range(boosts):
+            update_model_effects(
+                "platform_collision",
+                self.kb,
+                pre_state,
+                post_state,
+                train_level=getattr(self, "current_level", None),
+                debug=False,
+            )
+        n = len(self.kb["platform_collision"]["states"])
+        print(
+            f"[PLATFORM LEARN] thread-B boost: +{boosts} GT samples "
+            f"(sim slide kill, game no pig) — KB n={n}"
+        )
+        self._last_platform_learn_pair = None
     
     def learn_flight_physics(self, trajectory, force_scale: float = 1.0):
         """
@@ -1368,6 +1440,7 @@ class PDDLAgent(BaselineAgent):
         pddl_flight_deg = planned_launch["flight_angle_deg"]
         release_point = pddl_shot_to_release_point(
             self.tp, sling, exec_angle, planned_force,
+            angle_calibrator=self.angle_calibrator,
         )
         override = getattr(self, "_release_nudge_delta", None)
         if override is not None:
@@ -1382,16 +1455,6 @@ class PDDLAgent(BaselineAgent):
             )
             release_point = Point2D(ox, oy)
             self._release_nudge_delta = None
-        # Log the BamBirds correction being applied so we can see the actual
-        # game-request angle vs the domain's flight angle.
-        from agents.pddl.pddl_files.bambirds_shot_helper import actual_to_launch_deg
-        _bam_request_deg = actual_to_launch_deg(pddl_flight_deg)
-        _bam_correction_deg = _bam_request_deg - pddl_flight_deg
-        print(
-            f"[BAMBIRDS] flight_target={pddl_flight_deg:.2f}° "
-            f"→ actualToLaunch → request from game={_bam_request_deg:.2f}° "
-            f"(correction=+{_bam_correction_deg:.2f}°)"
-        )
         # All three points expressed in PDDL Y-up world frame (H=640, origin
         # bottom-left) — the same frame extract_real_trajectory / GT segments
         # already use (see trajectory_parser.py:26 ``640 - entity.Y``). Comparing
@@ -1593,6 +1656,7 @@ class PDDLAgent(BaselineAgent):
                 debug_all_events_full_trajectory(objects_features, groundtruth_objects)
         
         if ENABLE_COLLISION_LEARNING:
+            self._last_platform_learn_pair = None
             # Always record collision samples (for alpha validation), but only train during train phase
             self.learn_collision_effects(collisions, bird_observed_features, phase=current_phase, should_learn=should_learn)
             if platform_collisions:
@@ -2030,6 +2094,11 @@ class PDDLAgent(BaselineAgent):
                 launch=launch,
                 game_won=game_result,
                 phase="outcome",
+            )
+            self._boost_platform_kb_on_thread_b(
+                event_indexes_by_event,
+                game_won=bool(game_result),
+                should_learn=should_learn,
             )
 
             if should_retry_level:
@@ -2850,6 +2919,45 @@ class PDDLAgent(BaselineAgent):
             or ground_bounce_gate or clamp_min_gate
         )
 
+    def _inject_label_untrusted_for_slide_kill(self) -> bool:
+        labels = getattr(self, "_last_enhsp_inject_labels", {}) or {}
+        platform = labels.get("platform", "")
+        return platform in _UNTRUSTED_PLATFORM_INJECT_FOR_SLIDE_KILL
+
+    def _sim_search_untrusted_slide_phases_ok(self, retry_index: int) -> bool:
+        """Test always; train from 2nd attempt onward (retry_index >= 1)."""
+        phase = self._current_level_phase()
+        if phase == "test":
+            return True
+        if phase == "train" and int(retry_index) >= 1:
+            return True
+        return False
+
+    def _should_fallback_sim_search_untrusted_slide_kill(self, sim: dict) -> bool:
+        """
+        ENHSP + forward sim pig-kill on a platform slide path is not trustworthy
+        enough to fire without sim_search (weak platform inject, parse advisory,
+        or pre-sim dial nudge on a platform slide path).
+        """
+        if not sim.get("pig_killed_in_sim"):
+            return False
+        if not sim.get("platform_collision"):
+            return False
+        if self._inject_label_untrusted_for_slide_kill():
+            return True
+        if getattr(self, "_last_enhsp_advisory_failed", False):
+            return True
+        if (
+            getattr(self, "_last_pre_sim_diversified", False)
+            and bool(sim.get("platform_slide_continued"))
+        ):
+            return True
+        return False
+
+    def _test_should_fallback_sim_search(self, sim: dict) -> bool:
+        """Backward-compatible alias; prefer _should_fallback_sim_search_untrusted_slide_kill."""
+        return self._should_fallback_sim_search_untrusted_slide_kill(sim)
+
     def _score_enhsp_sim_plan(
         self,
         sim: dict,
@@ -2884,6 +2992,8 @@ class PDDLAgent(BaselineAgent):
         Returns (angle, force, diversified_bool).
         """
         if self.disable_forward_sim or not self._planner_only_effective():
+            return angle, force, False
+        if getattr(self, "disable_narrow_sim_gate", False):
             return angle, force, False
 
         base_sim = self._simulate_shot(
@@ -4235,13 +4345,18 @@ class PDDLAgent(BaselineAgent):
         Two-pass strategy:
           A. Platform slide (retain vx/vy) + raw block geometry — default for
              pig-on-platform / rolling paths (t05 and similar).
+          A2. Optimistic slide x-advance when A is unsolvable (platform levels).
+          C. Rolling relief — drop sub-stand decorative platforms + tighten
+             corridor blocks when A2 still unsolvable (not t04 shelter layout).
           B. Shelter mode — tightened block AABB / weakened block_life so ENHSP
              prefers collapse plans (needed for t04 block-collapse levels like
              00030/00068). Only entered when Pass A returns unsolvable.
         """
         from agents.pddl.pddl_files.pddl_parser import (
             apply_block_shelter_adjustments,
+            apply_corridor_block_planning_relief,
             block_sheltered_layout,
+            filter_substand_platforms_for_planning,
         )
 
         has_platforms = any(k.startswith("platform_") for k in problem_data)
@@ -4272,6 +4387,26 @@ class PDDLAgent(BaselineAgent):
                 pessimistic_platform=False,
                 planning_optimistic_slide=True,
                 pass_label="A2: optimistic slide x-advance",
+            )
+            if actions is not None:
+                return actions, planner_output
+            unsolvable = "unsolvable" in (planner_output or "").lower()
+
+        has_blocks = any(k.startswith("block_") for k in problem_data)
+        if unsolvable and has_platforms and has_blocks and not shelter_applicable:
+            print(
+                "[PDDL DEBUG] Pass A2 unsolvable — retrying with rolling corridor "
+                "relief (sub-stand platforms dropped, corridor blocks tightened)"
+            )
+            relief_data = copy.deepcopy(problem_data)
+            filter_substand_platforms_for_planning(relief_data, debug=True)
+            apply_corridor_block_planning_relief(relief_data, debug=True)
+            actions, planner_output = self._run_enhsp_planner_single(
+                relief_data,
+                agent_world_model,
+                pessimistic_platform=False,
+                planning_optimistic_slide=True,
+                pass_label="C: rolling corridor relief + optimistic slide",
             )
             if actions is not None:
                 return actions, planner_output
@@ -4345,6 +4480,7 @@ class PDDLAgent(BaselineAgent):
             planning_pessimistic_platform=pessimistic_platform,
             planning_optimistic_slide=planning_optimistic_slide,
         )
+        self._last_enhsp_inject_labels = dict(inject_labels)
         ground_model = inject_labels.get("ground", "skipped")
         platform_model = inject_labels.get("platform", "skipped")
         print(
@@ -4472,7 +4608,9 @@ class PDDLAgent(BaselineAgent):
                         world_model_params,
                         force=planned_force if planned_force is not None else 1.0,
                     )
-                    if not self._sim_plan_is_acceptable(exec_sim):
+                    advisory_failed = not self._sim_plan_is_acceptable(exec_sim)
+                    self._last_enhsp_advisory_failed = advisory_failed
+                    if advisory_failed:
                         msg = (
                             f"planned dial {planned_angle:.1f}°, exec dial {exec_angle:.1f}°, "
                             f"pig={exec_sim.get('pig_killed_in_sim')}, "
@@ -4781,6 +4919,9 @@ class PDDLAgent(BaselineAgent):
         Formulate_image
         """
         print("\n[PDDL DEBUG] ========== get_action_to_perform() STARTED ==========")
+        self._last_enhsp_inject_labels = {}
+        self._last_enhsp_advisory_failed = False
+        self._last_pre_sim_diversified = False
 
         ground_truth_type = GroundTruthType.ground_truth_screenshot
 
@@ -4903,6 +5044,7 @@ class PDDLAgent(BaselineAgent):
         pre_angle, pre_force, pre_div = self._try_pre_sim_gate_diversify(
             problem_data, world_model_params, angle, planned_force,
         )
+        self._last_pre_sim_diversified = pre_div
         if pre_div:
             actions = self._build_shot_actions(pre_angle, pre_force)
             angle = pre_angle
@@ -4986,7 +5128,27 @@ class PDDLAgent(BaselineAgent):
                     short_gate or shelter_gate or platform_miss_gate
                     or ground_bounce_gate or clamp_min_gate
                 )
-                if gate_reject:
+                if gate_reject and getattr(self, "disable_narrow_sim_gate", False):
+                    if clamp_min_gate:
+                        raw = getattr(self, "_last_enhsp_raw_angle", None)
+                        raw_s = f"{raw:.1f}°" if raw is not None else "?"
+                        would_reason = (
+                            f"ENHSP dial clamped to minimum "
+                            f"(planner wanted {raw_s}, exec floor {self.min_deg:.1f}°)"
+                        )
+                    elif short_gate:
+                        would_reason = "platform-hit-short (bird stops in front of pig)"
+                    elif shelter_gate:
+                        would_reason = "block-shelter miss (block absorbs shot short of pig)"
+                    elif ground_bounce_gate:
+                        would_reason = "ground-bounce miss (sim ground path, no pig kill)"
+                    else:
+                        would_reason = "platform-miss (sim hits platform, no pig kill)"
+                    print(
+                        "[SIM-GATE] Narrow gate disabled — would reject "
+                        f"({would_reason}); keeping ENHSP plan"
+                    )
+                elif gate_reject:
                     if clamp_min_gate:
                         raw = getattr(self, "_last_enhsp_raw_angle", None)
                         raw_s = f"{raw:.1f}°" if raw is not None else "?"
@@ -5037,6 +5199,39 @@ class PDDLAgent(BaselineAgent):
                             f"[PDDL DEBUG] Planner-only gate ({reason}): "
                             "no viable sim alternative — keeping ENHSP plan"
                         )
+                elif (
+                    not getattr(self, "disable_narrow_sim_gate", False)
+                    and not replaced_by_sim
+                    and self._sim_search_untrusted_slide_phases_ok(retry_index)
+                    and self._should_fallback_sim_search_untrusted_slide_kill(sim)
+                ):
+                    phase = self._current_level_phase()
+                    gate_tag = "TEST" if phase == "test" else "TRAIN-RETRY"
+                    print(
+                        f"[SIM-GATE] {gate_tag}: untrusted ENHSP slide plan "
+                        "(weak inject / advisory / pre-sim diversify) — sim search"
+                    )
+                    sim_actions, sim_angle, sim_force = self._try_sim_search_plan(
+                        problem_data, world_model_params, planned_force=planned_force,
+                    )
+                    if sim_actions is not None:
+                        self._last_plan_source = "sim_search_test"
+                        actions = sim_actions
+                        planned_force = sim_force
+                        self._finalize_plan_metadata(
+                            problem_data, sim_angle, world_model_params,
+                            force=sim_force,
+                        )
+                        replaced_by_sim = True
+                        print(
+                            "[PDDL DEBUG] TEST sim-search fallback: replaced ENHSP plan "
+                            f"(force={sim_force:.2f}, angle={sim_angle:.1f}°)"
+                        )
+                    else:
+                        print(
+                            "[PDDL DEBUG] TEST sim-search fallback: no alternative — "
+                            "keeping ENHSP plan"
+                        )
             phase = self._current_level_phase()
             phase_tag = f" [{phase}]" if phase else ""
             if replaced_by_sim:
@@ -5045,9 +5240,14 @@ class PDDLAgent(BaselineAgent):
                     "replaced ENHSP plan via planner-only gate"
                 )
             else:
+                gate_note = (
+                    "narrow sim gate disabled"
+                    if getattr(self, "disable_narrow_sim_gate", False)
+                    else "sim gate skipped"
+                )
                 print(
                     f"[PDDL DEBUG] Planner-only mode{phase_tag} — "
-                    "keeping ENHSP plan (sim gate skipped)"
+                    f"keeping ENHSP plan ({gate_note})"
                 )
             print(f"[PDDL DEBUG] ========== get_action_to_perform() RETURNING: {actions} ==========\n")
             return actions
