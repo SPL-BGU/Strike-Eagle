@@ -185,12 +185,38 @@ def is_platform_collision(frames, groundtruth_properties, i, debug=False):
         props = groundtruth_properties.get(pname, None)
         
         # Skip if no valid dimensions
-        if not props or not isinstance(props, (list, tuple)) or len(props) < 2:
+        _props_ok = (
+            isinstance(props, dict)
+            and ("platform_width" in props or props.get("_platform_sloped"))
+        ) or (
+            isinstance(props, (list, tuple)) and len(props) >= 2
+        )
+        if not props or not _props_ok:
             if debug and i == 0:
                 print(f"[PLATFORM DEBUG] {pname} has invalid props: {props}")
             continue
         
-        w, h = props[0], props[1]
+        if isinstance(props, dict) and props.get("_platform_sloped"):
+            from agents.pddl.pddl_files.pddl_parser import (
+                _bird_overlaps_platform,
+                _internal_plat_from_problem,
+            )
+            plat = _internal_plat_from_problem(props)
+            hit = _bird_overlaps_platform(x_b, y_b, r_bird, plat)
+            if debug and hit:
+                print(
+                    f"[PLATFORM DEBUG] Frame {i}: Bird({x_b:.1f},{y_b:.1f}) "
+                    f"slope segment ({plat['sx0']:.1f},{plat['sy0']:.1f})→"
+                    f"({plat['sx1']:.1f},{plat['sy1']:.1f}) COLLISION!"
+                )
+            if hit:
+                return True
+            continue
+
+        if isinstance(props, dict):
+            w, h = props.get("platform_width", 0), props.get("platform_height", 0)
+        else:
+            w, h = props[0], props[1]
         if w <= 0 or h <= 0:
             if debug and i == 0:
                 print(f"[PLATFORM DEBUG] {pname} has zero dimensions: w={w}, h={h}")
@@ -228,58 +254,88 @@ def is_platform_collision(frames, groundtruth_properties, i, debug=False):
     return False
 
 
+# Tight bird–block contact (GT segments). Pig hits use min(dim)/2 with no slack;
+# platforms still use +6px. Blocks use min/2 + small slack and a swept segment.
+BLOCK_COLLISION_EPSILON = 1.5
+
+
+def _bird_block_collision_radius(groundtruth_properties, bird_key):
+    """Match ``is_hit`` bird radius + small tolerance for frame quantization."""
+    bird_dims = groundtruth_properties.get(bird_key, [14, 14])
+    if isinstance(bird_dims, (list, tuple)) and len(bird_dims) >= 2:
+        return min(bird_dims) / 2 + BLOCK_COLLISION_EPSILON
+    return 7.0 + BLOCK_COLLISION_EPSILON
+
+
+def _circle_intersects_aabb(x_b, y_b, r_bird, x_bl, y_bl, w, h):
+    left = x_bl - w / 2
+    right = x_bl + w / 2
+    top = y_bl - h / 2
+    bottom = y_bl + h / 2
+    closest_x = max(left, min(x_b, right))
+    closest_y = max(top, min(y_b, bottom))
+    dx = x_b - closest_x
+    dy = y_b - closest_y
+    return dx * dx + dy * dy <= r_bird * r_bird
+
+
+def block_collision_at_frame(frames, groundtruth_properties, i):
+    """
+    First bird–block contact on frame *i* (and swept segment from *i-1* if present).
+
+    Returns a dict with block_name, bird_x, bird_y, frame, or None.
+    """
+    if i < 0 or i >= len(frames):
+        return None
+
+    frame = frames[i]
+    bird_key = _find_active_bird(frames, i, groundtruth_properties)
+    if bird_key is None:
+        return None
+
+    bird = frame.get(bird_key)
+    if not bird:
+        return None
+
+    block_names = _block_names_in_frame(frame)
+    if not block_names:
+        return None
+
+    vx_b, vy_b = bird.get("v_x", 0.0), bird.get("v_y", 0.0)
+    if math.hypot(vx_b, vy_b) <= 0:
+        return None
+
+    r_bird = _bird_block_collision_radius(groundtruth_properties, bird_key)
+    samples = [(bird["x"], bird["y"])]
+    if i > 0 and bird_key in frames[i - 1]:
+        prev = frames[i - 1][bird_key]
+        samples.insert(0, (prev["x"], prev["y"]))
+
+    for bname in block_names:
+        block = frame[bname]
+        props = groundtruth_properties.get(bname, {})
+        if not props or len(props) < 2:
+            continue
+        w, h = props[0], props[1]
+        if w <= 0 or h <= 0:
+            continue
+        x_bl, y_bl = block["x"], block["y"]
+        for sx, sy in samples:
+            if not _circle_intersects_aabb(sx, sy, r_bird, x_bl, y_bl, w, h):
+                continue
+            return {
+                "block_name": bname,
+                "bird_x": sx,
+                "bird_y": sy,
+                "frame": i,
+            }
+    return None
+
+
 def is_block_collision(frames, groundtruth_properties, i):
     """
     Detect bird collision with blocks (wood/stone/ice/TNT).
     
     Supports multi-bird scenarios by finding the active bird.
     """
-    frame = frames[i]
-    
-    # Find active bird (supports multi-bird)
-    bird_key = _find_active_bird(frames, i, groundtruth_properties)
-    if bird_key is None:
-        return False
-    
-    bird = frame.get(bird_key)
-    if not bird:
-        return False
-
-    block_names = _block_names_in_frame(frame)
-    if not block_names:
-        return False
-
-    x_b, y_b = bird["x"], bird["y"]
-    vx_b, vy_b = bird.get("v_x", 0.0), bird.get("v_y", 0.0)
-    if math.hypot(vx_b, vy_b) <= 0:
-        return False
-
-    # Get actual bird radius from groundtruth + epsilon for tolerance
-    COLLISION_EPSILON = 6.0  # pixels - increased to catch near-miss passes
-    bird_dims = groundtruth_properties.get(bird_key, [14, 14])
-    if isinstance(bird_dims, (list, tuple)) and len(bird_dims) >= 2:
-        r_bird = max(bird_dims) / 2 + COLLISION_EPSILON
-    else:
-        r_bird = 7.0 + COLLISION_EPSILON
-    
-    for bname in block_names:
-        block = frame[bname]
-        props = groundtruth_properties.get(bname, {})
-        if not props or len(props) < 2:
-            continue
-
-        x_bl, y_bl = block["x"], block["y"]
-        w, h = props[0], props[1]
-        left = x_bl - w / 2
-        right = x_bl + w / 2
-        top = y_bl - h / 2
-        bottom = y_bl + h / 2
-
-        closest_x = max(left, min(x_b, right))
-        closest_y = max(top, min(y_b, bottom))
-        dx = x_b - closest_x
-        dy = y_b - closest_y
-        if dx * dx + dy * dy <= r_bird * r_bird:
-            return True
-
-    return False
+    return block_collision_at_frame(frames, groundtruth_properties, i) is not None

@@ -61,6 +61,16 @@ def get_pigs(vision, sling, tp):
     pig_id = 0
     problem_data = dict()
     pigs = vision.find_pigs_mbr()
+    
+    # Debug: what did find_pigs_mbr() actually return?
+    print(f"\n[PIG DEBUG] find_pigs_mbr() returned: {type(pigs).__name__}, value={pigs}")
+    if pigs is None:
+        print("[PIG DEBUG] WARNING: find_pigs_mbr() returned None - no pigs will be added to problem!")
+        return problem_data
+    if not pigs:
+        print(f"[PIG DEBUG] WARNING: find_pigs_mbr() returned empty {type(pigs).__name__} - no pigs in scene?")
+        return problem_data
+    
     for pig in pigs:
         temp_pt = pig.get_centre_point()
 
@@ -197,7 +207,7 @@ def get_platforms(vision: GroundTruthReader, sling, tp):
     if not all_platforms:
         print("[PLATFORM DEBUG] No platforms found from any source!")
         return {}
-    
+
     print(f"[PLATFORM DEBUG] Processing {len(all_platforms)} total platform(s)")
     
     for platform in all_platforms:
@@ -214,8 +224,15 @@ def get_platforms(vision: GroundTruthReader, sling, tp):
             f"  PDDL center=({bbox['x_platform']:.1f}, {bbox['y_platform']:.1f}), "
             f"size={bbox['platform_width']:.1f}x{bbox['platform_height']:.1f}"
         )
-        top = bbox["y_platform"] + bbox["platform_height"] / 2
-        print(f"  PDDL top={top:.1f}")
+        if bbox.get("_platform_sloped"):
+            print(
+                f"  Slope: {bbox.get('_platform_surface_angle_deg', 0):.1f}° "
+                f"({bbox['_platform_surface_x0']:.1f},{bbox['_platform_surface_y0']:.1f})→"
+                f"({bbox['_platform_surface_x1']:.1f},{bbox['_platform_surface_y1']:.1f})"
+            )
+        else:
+            top = bbox["y_platform"] + bbox["platform_height"] / 2
+            print(f"  PDDL top={top:.1f}")
 
         problem_data[f"platform_{platform_id}"] = bbox
         platform_id += 1

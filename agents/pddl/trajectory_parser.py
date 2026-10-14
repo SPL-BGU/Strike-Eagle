@@ -20,6 +20,7 @@ def filter_from_entity(entity: GameObject, entity_type: str = None):
         return {
             "location": np.array([bbox["x_platform"], bbox["y_platform"]]),
             "dimension": [bbox["platform_width"], bbox["platform_height"]],
+            "platform_geom": bbox,
         }
 
     dimension = [entity.width, entity.height]
@@ -47,7 +48,10 @@ def groundtruth_trajectory_parser(
                 if entity_name not in entity_trajectories.keys():
                     entity_trajectories[entity_name] = []
                 entity_trajectories[entity_name].append(filtered_entity["location"])
-                entity_dimensions[entity_name] = filtered_entity["dimension"]
+                if filtered_entity.get("platform_geom") is not None:
+                    entity_dimensions[entity_name] = filtered_entity["platform_geom"]
+                else:
+                    entity_dimensions[entity_name] = filtered_entity["dimension"]
 
     return entity_trajectories, entity_dimensions
 

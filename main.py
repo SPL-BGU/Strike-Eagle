@@ -23,14 +23,17 @@ class AgentThread(threading.Thread):
                  phyq_config_path: str = "ScienceBirds/win6.6/win/config_phyq_sample.xml",
                  levels_per_template: int = None,
                  visualize_pddl: bool = False,
-                 debug_mag_comparison: bool = True,
+                 visualize_pddl_board: bool = False,
+                 debug_mag_comparison: bool = False,  # Disabled - use ENHSP planner
                  mag_comparison_angle: float = 60.0,
                  mag_comparison_start: float = 5.0,
                  mag_comparison_decrement: float = 0.1,
                  force_learning_mode: bool = False,
                  force_learning_min_samples: int = 5,
                  platform_aim_override: bool = False,
-                 disable_sim_override: bool = False,
+                 block_aim_override: bool = False,
+                 planner_roll_block_only: bool = False,  # Disabled - use full problem with pig
+                 disable_sim_override: bool = True,
                  planner_only: bool = True,
                  disable_forward_sim: bool = False,
                  prefer_sim_plan: bool = False,
@@ -40,7 +43,21 @@ class AgentThread(threading.Thread):
                  disable_narrow_sim_gate: bool = False,
                  max_train_attempts: int = 5,
                  world_model_load: str = None,
-                 world_model_save: str = None):
+                 world_model_save: str = None,
+                 enhsp_ground_placeholder: bool = False,
+                 enhsp_timeout_sec: float = 120.0,
+                 event_determinism_mode: bool = False,
+                 event_determinism_repeats: int = 5,
+                 event_determinism_save: str = "event_determinism_results.json",
+                 angle_residual_correction: bool = True,
+                 angle_residual_calibration_path: str = "angle_residual_calibration.json",
+                 angle_residual_bootstrap_path: str = "event_determinism_results.json",
+                 angle_residual_live_update: bool = True,
+                 test_force_clamp_to_full: bool = True,
+                 test_force_clamp_min: float = 1.0,
+                 override_angle: float = None,
+                 override_force: float = None,
+                 ):
         """
         Constructor function
         Parameters
@@ -66,7 +83,9 @@ class AgentThread(threading.Thread):
         levels_per_template : int, optional
             Limit the number of levels per template
         visualize_pddl : bool
-            Show PDDL visualization when a level is lost (default: disabled)
+            Extra PDDL plots when a level is lost (default: disabled)
+        visualize_pddl_board : bool
+            Show/save board geometry on each ENHSP problem write (default: disabled)
         debug_mag_comparison : bool
             Enable mag comparison debug mode
         mag_comparison_angle : float
@@ -88,6 +107,7 @@ class AgentThread(threading.Thread):
         self.phyq_config_path = phyq_config_path
         self.levels_per_template = levels_per_template
         self.visualize_pddl = visualize_pddl
+        self.visualize_pddl_board = visualize_pddl_board
         self.debug_mag_comparison = debug_mag_comparison
         self.mag_comparison_angle = mag_comparison_angle
         self.mag_comparison_start = mag_comparison_start
@@ -95,6 +115,8 @@ class AgentThread(threading.Thread):
         self.force_learning_mode = force_learning_mode
         self.force_learning_min_samples = force_learning_min_samples
         self.platform_aim_override = platform_aim_override
+        self.block_aim_override = block_aim_override
+        self.planner_roll_block_only = planner_roll_block_only
         self.disable_sim_override = disable_sim_override
         self.planner_only = planner_only
         self.disable_forward_sim = disable_forward_sim
@@ -106,6 +128,19 @@ class AgentThread(threading.Thread):
         self.max_train_attempts = max_train_attempts
         self.world_model_load = world_model_load
         self.world_model_save = world_model_save
+        self.enhsp_ground_placeholder = enhsp_ground_placeholder
+        self.enhsp_timeout_sec = enhsp_timeout_sec
+        self.event_determinism_mode = event_determinism_mode
+        self.event_determinism_repeats = event_determinism_repeats
+        self.event_determinism_save = event_determinism_save
+        self.angle_residual_correction = angle_residual_correction
+        self.angle_residual_calibration_path = angle_residual_calibration_path
+        self.angle_residual_bootstrap_path = angle_residual_bootstrap_path
+        self.angle_residual_live_update = angle_residual_live_update
+        self.test_force_clamp_to_full = test_force_clamp_to_full
+        self.test_force_clamp_min = test_force_clamp_min
+        self.override_angle = override_angle
+        self.override_force = override_force
         threading.Thread.__init__(self)
 
     def run(self):
@@ -135,6 +170,7 @@ class AgentThread(threading.Thread):
             scenario_filter=self.scenario_filter,
             levels_per_template=self.levels_per_template,
             visualize_pddl_input=self.visualize_pddl,
+            visualize_pddl_board=self.visualize_pddl_board,
             # Debug mag comparison mode
             debug_mag_comparison=self.debug_mag_comparison,
             mag_comparison_angle=self.mag_comparison_angle,
@@ -144,6 +180,8 @@ class AgentThread(threading.Thread):
             force_learning_mode=self.force_learning_mode,
             force_learning_min_samples=self.force_learning_min_samples,
             platform_aim_override=self.platform_aim_override,
+            block_aim_override=self.block_aim_override,
+            planner_roll_block_only=self.planner_roll_block_only,
             disable_sim_override=self.disable_sim_override,
             planner_only=self.planner_only,
             disable_forward_sim=self.disable_forward_sim,
@@ -155,6 +193,19 @@ class AgentThread(threading.Thread):
             max_train_attempts=self.max_train_attempts,
             world_model_load=self.world_model_load,
             world_model_save=self.world_model_save,
+            enhsp_ground_placeholder=self.enhsp_ground_placeholder,
+            enhsp_timeout_sec=self.enhsp_timeout_sec,
+            event_determinism_mode=self.event_determinism_mode,
+            event_determinism_repeats=self.event_determinism_repeats,
+            event_determinism_save=self.event_determinism_save,
+            angle_residual_correction=self.angle_residual_correction,
+            angle_residual_calibration_path=self.angle_residual_calibration_path,
+            angle_residual_bootstrap_path=self.angle_residual_bootstrap_path,
+            angle_residual_live_update=self.angle_residual_live_update,
+            test_force_clamp_to_full=self.test_force_clamp_to_full,
+            test_force_clamp_min=self.test_force_clamp_min,
+            override_angle=self.override_angle,
+            override_force=self.override_force,
         )
         agent.run()
 
@@ -170,6 +221,7 @@ def main(agent_configs,
          phyq_config_path: str = "ScienceBirds/win6.6/win/config_phyq_sample.xml",
          levels_per_template: int = None,
          visualize_pddl: bool = False,
+         visualize_pddl_board: bool = False,
          debug_mag_comparison: bool = False,
          mag_comparison_angle: float = 60.0,
          mag_comparison_start: float = 5.0,
@@ -177,7 +229,9 @@ def main(agent_configs,
          force_learning_mode: bool = False,
          force_learning_min_samples: int = 5,
          platform_aim_override: bool = False,
-         disable_sim_override: bool = False,
+         block_aim_override: bool = False,
+         planner_roll_block_only: bool = False,  # Disabled - use full problem with pig
+         disable_sim_override: bool = True,
          planner_only: bool = True,
          disable_forward_sim: bool = False,
          prefer_sim_plan: bool = False,
@@ -187,7 +241,21 @@ def main(agent_configs,
          disable_narrow_sim_gate: bool = False,
          max_train_attempts: int = 5,
          world_model_load: str = None,
-         world_model_save: str = None):
+         world_model_save: str = None,
+         enhsp_ground_placeholder: bool = False,
+         enhsp_timeout_sec: float = 120.0,
+         event_determinism_mode: bool = False,
+         event_determinism_repeats: int = 5,
+         event_determinism_save: str = "event_determinism_results.json",
+         angle_residual_correction: bool = True,
+         angle_residual_calibration_path: str = "angle_residual_calibration.json",
+         angle_residual_bootstrap_path: str = "event_determinism_results.json",
+         angle_residual_live_update: bool = True,
+         test_force_clamp_to_full: bool = True,
+         test_force_clamp_min: float = 1.0,
+         override_angle: float = None,
+         override_force: float = None,
+):
     """
     Main function to start the agent.
     
@@ -214,7 +282,9 @@ def main(agent_configs,
     levels_per_template : int, optional
         Limit the number of levels per template
     visualize_pddl : bool
-        Show PDDL visualization when a level is lost (default: disabled)
+        Extra PDDL plots when a level is lost (default: disabled)
+    visualize_pddl_board : bool
+        Board plot on each ENHSP problem write (default: disabled)
     debug_mag_comparison : bool
         Enable mag comparison debug mode
     mag_comparison_angle : float
@@ -239,6 +309,7 @@ def main(agent_configs,
             phyq_config_path=phyq_config_path,
             levels_per_template=levels_per_template,
             visualize_pddl=visualize_pddl,
+            visualize_pddl_board=visualize_pddl_board,
             debug_mag_comparison=debug_mag_comparison,
             mag_comparison_angle=mag_comparison_angle,
             mag_comparison_start=mag_comparison_start,
@@ -246,6 +317,8 @@ def main(agent_configs,
             force_learning_mode=force_learning_mode,
             force_learning_min_samples=force_learning_min_samples,
             platform_aim_override=platform_aim_override,
+            block_aim_override=block_aim_override,
+            planner_roll_block_only=planner_roll_block_only,
             disable_sim_override=disable_sim_override,
             planner_only=planner_only,
             disable_forward_sim=disable_forward_sim,
@@ -257,6 +330,19 @@ def main(agent_configs,
             max_train_attempts=max_train_attempts,
             world_model_load=world_model_load,
             world_model_save=world_model_save,
+            enhsp_ground_placeholder=enhsp_ground_placeholder,
+            enhsp_timeout_sec=enhsp_timeout_sec,
+            event_determinism_mode=event_determinism_mode,
+            event_determinism_repeats=event_determinism_repeats,
+            event_determinism_save=event_determinism_save,
+            angle_residual_correction=angle_residual_correction,
+            angle_residual_calibration_path=angle_residual_calibration_path,
+            angle_residual_bootstrap_path=angle_residual_bootstrap_path,
+            angle_residual_live_update=angle_residual_live_update,
+            test_force_clamp_to_full=test_force_clamp_to_full,
+            test_force_clamp_min=test_force_clamp_min,
+            override_angle=override_angle,
+            override_force=override_force,
         )
         agent.start()
         time.sleep(5)
@@ -401,7 +487,10 @@ Examples:
     parser.add_argument("--no-config-metadata", action="store_true",
                         help="Disable auto-loading from .meta.json file, use command-line parameters only.")
     parser.add_argument("--visualize", action="store_true",
-                        help="Show PDDL visualization when a level is lost (default: disabled)")
+                        help="PDDL loss plots on level failure + board on each ENHSP write")
+    parser.add_argument("--visualize-pddl-board", action="store_true",
+                        help="Show/save visualize_level_setup after problem.pddl is written "
+                             "(pddl_level_viz/*_board_*.png); does not require a loss")
     parser.add_argument("--no-visualize", action="store_true",
                         help="Disable PDDL visualization (default)")
     
@@ -432,11 +521,27 @@ Examples:
                         action="store_false",
                         help="(default) Use normal ENHSP planner for angle selection")
 
-    parser.set_defaults(disable_sim_override=False)
+    parser.set_defaults(block_aim_override=False)
+    parser.add_argument("--block-aim-override", dest="block_aim_override",
+                        action="store_true",
+                        help="FF: skip ENHSP; ballistic aim at on-platform block (rolling indirect)")
+    parser.add_argument("--no-block-aim-override", dest="block_aim_override",
+                        action="store_false",
+                        help="(default) Use ENHSP planner instead of block-aim FF")
+
+    parser.set_defaults(planner_roll_block_only=False)  # Disabled - use full problem with pig
+    parser.add_argument("--planner-roll-block-only", dest="planner_roll_block_only",
+                        action="store_true",
+                        help="(default) ENHSP problem keeps only the chosen on-platform roll block")
+    parser.add_argument("--no-planner-roll-block-only", dest="planner_roll_block_only",
+                        action="store_false",
+                        help="Include all vision blocks in the planner problem")
+
+    parser.set_defaults(disable_sim_override=True)
     parser.add_argument("--enable-sim-override", dest="disable_sim_override", action="store_false",
-                        help="Allow sim search when ENHSP fails or plan is rejected")
+                        help="Allow angle×force sim search when ENHSP fails or sim gate rejects")
     parser.add_argument("--disable-sim-override", dest="disable_sim_override", action="store_true",
-                        help="Skip sim search on planner failure; use fallback grid only")
+                        help="(default) Skip sim search; ENHSP then block/platform/ballistic fallback only")
     parser.set_defaults(planner_only=True)
     parser.add_argument("--enable-sim-gate", dest="planner_only", action="store_false",
                         help="Run sim search when ENHSP fails; sim gate may reject bad plans")
@@ -474,8 +579,7 @@ Examples:
                              "(rejects any unacceptable plan and runs sim_search/fallback)")
     parser.set_defaults(disable_narrow_sim_gate=False)
     parser.add_argument("--no-narrow-sim-gate", dest="disable_narrow_sim_gate", action="store_true",
-                        help="With --planner-only: forward sim for logging only; never replace "
-                             "ENHSP via narrow sim gate / pre-sim diversify / TEST untrusted-slide fallback")
+                        help="Forward sim for logging/advisory only; keep ENHSP plan")
     parser.add_argument("--narrow-sim-gate", dest="disable_narrow_sim_gate", action="store_false",
                         help="(default) Replace bad ENHSP plans via sim search when forward sim rejects "
                              "them (ground-bounce miss, platform-short, etc.)")
@@ -486,16 +590,101 @@ Examples:
     parser.add_argument("--world-model-load", type=str, default=None, metavar="PATH",
                         help="Load pre-trained physics + KB from JSON at startup "
                              "(M5/LR/sklearn models embedded in _pickle_b64)")
+    parser.add_argument(
+        "--enhsp-ground-placeholder",
+        action="store_true",
+        help="A/B: ENHSP planning uses conservative ground-roll placeholder instead "
+             "of learned ground LR/M5 inject (forward sim + KB learning unchanged)",
+    )
+    parser.add_argument(
+        "--enhsp-timeout",
+        type=float,
+        default=120.0,
+        metavar="SEC",
+        help="Wall-clock cap for ENHSP Java subprocess (default: 120; "
+             "was 300 — lowered to fit 200-min trial budget on hard templates "
+             "like t06 where ENHSP frequently exhausts its 300s pass without "
+             "finding a plan; see log/run_20260927_190840.log)",
+    )
     parser.set_defaults(save_world_model=True)
     parser.add_argument("--world-model-save", type=str, default=None, metavar="PATH",
                         help="World model save path (default: saved_models/world_model_YYYYMMDD_HHMMSS.json)")
     parser.add_argument("--no-world-model-save", dest="save_world_model", action="store_false",
                         help="Disable automatic world model KB persistence")
 
+    parser.set_defaults(event_determinism_mode=False)
+    parser.add_argument("--event-determinism", dest="event_determinism_mode",
+                        action="store_true",
+                        help="Test event determinism — 20 BamBirds high-deviation dials, "
+                             "5 identical shots each on the first level (no ENHSP)")
+    parser.add_argument("--no-event-determinism", dest="event_determinism_mode",
+                        action="store_false",
+                        help="(default) Normal PDDL / generalization; angle residual correction applies")
+    parser.add_argument("--event-determinism-repeats", type=int, default=5, metavar="N",
+                        help="Repeats per dial angle in event determinism mode (default: 5)")
+    parser.add_argument("--event-determinism-save", type=str,
+                        default="event_determinism_results.json",
+                        help="JSON report path for event determinism mode")
+
+    parser.set_defaults(angle_residual_correction=True)
+    parser.add_argument("--angle-residual-correction", dest="angle_residual_correction",
+                        action="store_true",
+                        help="(default) Apply ε(dial) from calibration JSON: exec ← planned − ε")
+    parser.add_argument("--no-angle-residual-correction", dest="angle_residual_correction",
+                        action="store_false",
+                        help="Disable dial residual correction")
+    parser.add_argument("--angle-residual-calibration", type=str,
+                        default="angle_residual_calibration.json",
+                        help="Live ε(dial) table path (updated during play)")
+    parser.add_argument("--angle-residual-bootstrap", type=str,
+                        default="event_determinism_results.json",
+                        help="One-time seed JSON if live calibration file is missing")
+    parser.set_defaults(angle_residual_live_update=True)
+    parser.add_argument("--angle-residual-live-update", dest="angle_residual_live_update",
+                        action="store_true",
+                        help="(default) Update calibration from [SHOT DIAG POST] after each shot")
+    parser.add_argument("--no-angle-residual-live-update", dest="angle_residual_live_update",
+                        action="store_false",
+                        help="Do not write live ε updates during normal play")
+
+    # TEST-phase force clamp (Mode-B actuator floor mitigation).
+    # See run_20260927_102019: SB's release mapping floors scaled_mag at ~72 px,
+    # so force<1.0 still delivers |v|≈176. Planner picks force=0.6/0.8 for TEST,
+    # sim expects short trajectory, actual overshoots. 0/8 TEST wins that run.
+    parser.set_defaults(test_force_clamp_to_full=True)
+    parser.add_argument("--test-force-clamp-to-full", dest="test_force_clamp_to_full",
+                        action="store_true",
+                        help="(default) Clamp planner force to --test-force-clamp-min in TEST "
+                             "phase (Mode-B actuator floor mitigation; TRAIN unaffected)")
+    parser.add_argument("--allow-partial-force-in-test", dest="test_force_clamp_to_full",
+                        action="store_false",
+                        help="Let ENHSP pick force<1.0 in TEST too (A/B: measure Mode-B overshoot)")
+    parser.add_argument("--test-force-clamp-min", type=float, default=1.0, metavar="F",
+                        help="Force floor applied in TEST when clamp is active (default: 1.0)")
+
+    parser.add_argument(
+        "--override-angle",
+        type=float,
+        default=None,
+        metavar="DEG",
+        help="Skip ENHSP; fire fixed PDDL dial each shot (e.g. 50 for t01_00033 left shelf). "
+             "No gap-clearance nudge.",
+    )
+    parser.add_argument(
+        "--override-force",
+        type=float,
+        default=None,
+        metavar="F",
+        help="Force with --override-angle (default: 1.0)",
+    )
+
     args = parser.parse_args()
     
     if args.prefer_sim_plan:
         args.disable_forward_sim = False
+        args.disable_sim_override = False
+    if not args.planner_only:
+        args.disable_sim_override = False
     
     # Determine if generalization protocol should be used
     use_generalization = args.generalization != "none"
@@ -503,11 +692,17 @@ Examples:
     # Handle config metadata flag (--no-config-metadata overrides default)
     use_config_metadata = args.use_config_metadata and not args.no_config_metadata
     
-    # Handle visualization flag (--no-visualize overrides default)
+    # Handle visualization flags (--no-visualize overrides default)
     visualize_pddl = args.visualize and not args.no_visualize
+    visualize_pddl_board = (
+        (args.visualize_pddl_board or args.visualize) and not args.no_visualize
+    )
     
     # Handle debug mag flag (--no-debug-mag overrides default)
     debug_mag = args.debug_mag and not args.no_debug_mag
+    if args.event_determinism_mode:
+        debug_mag = False
+        use_generalization = False
 
     from agents.pddl.world_model_persistence import default_save_path
     world_model_save = None
@@ -526,6 +721,7 @@ Examples:
         phyq_config_path=args.config,
         levels_per_template=args.levels_per_template,
         visualize_pddl=visualize_pddl,
+        visualize_pddl_board=visualize_pddl_board,
         debug_mag_comparison=debug_mag,
         mag_comparison_angle=args.mag_angle,
         mag_comparison_start=args.mag_start,
@@ -533,6 +729,8 @@ Examples:
         force_learning_mode=args.force_learning,
         force_learning_min_samples=args.force_min_samples,
         platform_aim_override=args.platform_aim_override,
+        block_aim_override=args.block_aim_override,
+        planner_roll_block_only=args.planner_roll_block_only,
         disable_sim_override=args.disable_sim_override,
         planner_only=args.planner_only,
         disable_forward_sim=args.disable_forward_sim,
@@ -544,4 +742,17 @@ Examples:
         max_train_attempts=args.max_train_attempts,
         world_model_load=args.world_model_load,
         world_model_save=world_model_save,
+        enhsp_ground_placeholder=args.enhsp_ground_placeholder,
+        enhsp_timeout_sec=args.enhsp_timeout,
+        event_determinism_mode=args.event_determinism_mode,
+        event_determinism_repeats=args.event_determinism_repeats,
+        event_determinism_save=args.event_determinism_save,
+        angle_residual_correction=args.angle_residual_correction,
+        angle_residual_calibration_path=args.angle_residual_calibration,
+        angle_residual_bootstrap_path=args.angle_residual_bootstrap,
+        angle_residual_live_update=args.angle_residual_live_update,
+        test_force_clamp_to_full=args.test_force_clamp_to_full,
+        test_force_clamp_min=args.test_force_clamp_min,
+        override_angle=args.override_angle,
+        override_force=args.override_force,
     )

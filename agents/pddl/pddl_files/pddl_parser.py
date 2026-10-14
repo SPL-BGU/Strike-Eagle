@@ -13,9 +13,11 @@ from agents.pddl.pddl_files.events.learn_events import m5_collision_leaves_for_p
 COLLISION_INJECT_DEBUG = True
 
 # Force search constants (joint angle × force PDDL planning)
-FORCE_MIN = 0.2
+FORCE_MIN = 0.6
 FORCE_MAX = 1.0
 FORCE_RATE = 0.1
+# PDDL increasing_angle: degrees per planning time unit (ENHSP dial discretisation).
+PDDL_ANGLE_RATE = 1.0
 MAG_MULT = 0.5          # keeps force→velocity in linear regime (force_velocity_curve_05.png)
 FORCE_V_SCALE = MAG_MULT / 5.0   # = 0.1; converts force fraction to find_release_point_partial_power v_portion
 
@@ -131,7 +133,14 @@ ROLLING_LR_MAX_POS = 5000.0
 ROLLING_LR_MAX_FEATURE = 1e6
 # Observed platform slides (Template 4): post_speed varies; use conservative 50% for
 # cold-start planning so ENHSP does not assume aggressive shallow slides reach the pig.
-PLATFORM_DEFAULT_SPEED_RATIO = 0.50
+# Conservative heuristic for cold-start KB — lowered from 0.50 to 0.35 because
+# actual game retention on rolling levels is often 0.33-0.40 for hard geometries.
+PLATFORM_DEFAULT_SPEED_RATIO = 0.35
+# Bounce detection: if |vy/vx| exceeds this threshold at platform contact,
+# predict bounce (backward motion) instead of slide. Empirical threshold from
+# observed bounces where pre=(133,-83) → post=(-33,-83), i.e., |vy/vx| ≈ 0.62.
+# Bounces observed at |vy/vx| ≥ 0.5, slides at |vy/vx| < 0.5.
+PLATFORM_BOUNCE_VY_VX_THRESHOLD = 0.55
 PLATFORM_DEFAULT_VY_RATIO = 0.50
 PLATFORM_SURFACE_RADIUS_FACTOR = 0.35
 # Continuous platform-slide integrator (forward sim): bird stays on surface at vy≈0.
@@ -141,8 +150,6 @@ PLATFORM_SLIDE_FRICTION_PER_S = 0.0  # game slides at ~constant vx after landing
 # One-shot horizontal advance appended to PDDL platform/ground slide effects so
 # ENHSP can reach pigs that require multi-frame slide (not modeled as a process).
 PLATFORM_PLANNING_SLIDE_SEC = 0.65
-# Extra slide bump on ENHSP Pass A2 (optimistic retry) for long platform_0 → pig slides.
-PLATFORM_PLANNING_SLIDE_SEC_OPTIMISTIC = 1.15
 # Drop mid-hill platforms far below the pig stand (decorative bumps that block arcs in
 # PDDL but are cleared in game over-flight), e.g. rolling_t02_00004 platform_1.
 SUBSTAND_PLATFORM_DROP_BELOW_PIG_PX = 40.0
@@ -161,6 +168,22 @@ PLATFORM_COLLISION_EPSILON = 6.0
 # Extra platform AABB inflation in forward sim only (vision vertices are tight vs
 # game MBR); does not affect ENHSP problem files.
 PLATFORM_SIM_AABB_MARGIN_PX = 2.0
+# Treat platform as a ramp when |top-edge angle| exceeds this (degrees, PDDL y-up).
+PLATFORM_SLOPE_ANGLE_THRESHOLD_DEG = 2.0
+# Thin segment-aligned box for ENHSP (avoids fat vertex AABB blocking arcs over ramps).
+PLATFORM_PLANNER_SLOPE_THICKNESS_PX = 8.0
+# Max gaps between one platform's right end and the next platform's top for a
+# slide hand-off (platform_chain) instead of a slide end + fall.
+PLATFORM_CHAIN_X_GAP_PX = 6.0
+PLATFORM_CHAIN_Y_GAP_PX = 4.0
+# Solid-sphere rolling factor (5/7) for downhill acceleration while sliding.
+PLATFORM_ROLL_ACCEL_FACTOR = 5.0 / 7.0
+# Rolling friction deceleration (px/s²) used until kb["_platform_friction"] has samples.
+PLATFORM_FRICTION_DEFAULT = 10.0
+# Block rolling vx / bird vx at contact, used until kb["_block_push"] has samples
+# (median of the 15 [BLOCK IMPULSE LEARN] samples from run_20261010_223027).
+BLOCK_PUSH_RATIO_DEFAULT = 0.18
+PLAYFIELD_Y_FLIP = 640.0
 # Bird-radius multiplier for platform-collision detection in the forward sim.
 # Was 1.1 (10% safety inflation), but that caused "coincident-contact" false
 # negatives: when a pig sits directly on top of a platform, the inflated
@@ -213,32 +236,16 @@ def _effect_mutates_x_bird(body: str) -> bool:
     return "(increase (x_bird ?b)" in (body or "") or "(assign (x_bird ?b)" in (body or "")
 
 
-def _append_planning_slide_x_advance(body: str) -> str:
-    """Add optimistic post-contact x advance when the effect lacks x_bird mutation."""
-    if not body or _effect_mutates_x_bird(body):
-        return body
-    return _append_extra_planning_slide_x(body)
-
-
-def _append_extra_planning_slide_x(
-    body: str,
-    extra_sec: float = None,
-) -> str:
-    """Append an extra vx-scaled x bump before (assign (mod) 2)."""
-    if not body:
-        return body
-    sec = PLATFORM_PLANNING_SLIDE_SEC if extra_sec is None else float(extra_sec)
-    bump = f"(increase (x_bird ?b) (* (vx_bird ?b) {sec}))"
-    mod = "(assign (mod) 2)"
-    if mod not in body:
-        return f"{body}\n            {bump}\n            {mod}"
-    return body.replace(mod, f"{bump}\n            {mod}", 1)
-
-
 def _build_surface_roll_effect(y_assign_expr: str, *, planning_x_advance: bool = True) -> str:
     """
     Shared PDDL effect for bird rolling/sliding along a surface (platform or ground).
-    Retains horizontal speed; v_bird unchanged — vx/vy drive continued motion.
+    
+    CRITICAL FIX (2026-10-04): v_bird MUST be updated to reflect actual sliding velocity.
+    Previously v_bird was left at launch velocity (~180) even though vx/vy were scaled down.
+    This caused collision_block_bounce_off to never trigger because:
+      - Check: (> (block_stability ?bl) (v_bird ?b))
+      - With stale v_bird=180 and block_stability=0.5, condition always FALSE
+      - Bird would phase through blocks during platform slide
 
     Does not increment bounce_count: slide contacts can fire every integration step
     while the bird stays on the surface; counting them made explode_bird (>= 3)
@@ -250,6 +257,9 @@ def _build_surface_roll_effect(y_assign_expr: str, *, planning_x_advance: bool =
         f"(assign (y_bird ?b) {y_assign_expr})",
         f"(assign (vx_bird ?b) (* (vx_bird ?b) {ratio}))",
         f"(assign (vy_bird ?b) (* (vy_bird ?b) {vy_ratio}))",
+        # Update v_bird to match actual horizontal velocity during slide
+        # (vy is ~0 on surface, so v_bird ≈ vx_bird after scaling)
+        f"(assign (v_bird ?b) (* (vx_bird ?b) {ratio}))",
     ]
     if planning_x_advance:
         lines.append(_planning_slide_x_advance_effect())
@@ -262,10 +272,21 @@ def _build_platform_bootstrap_effect() -> str:
     return PLATFORM_COLLISION_BOOTSTRAP
 
 
+def _platform_top_y_lerp_pddl(x_expr: str) -> str:
+    """Top surface y at ``x_expr`` — linear between platform_top_y_left/right."""
+    return (
+        f"(+ (platform_top_y_left ?pl) "
+        f"(* (- (platform_top_y_right ?pl) (platform_top_y_left ?pl)) "
+        f"(/ (- {x_expr} (- (x_platform ?pl) (/ (platform_width ?pl) 2))) "
+        f"(platform_width ?pl))))"
+    )
+
+
 def _platform_surface_y_pddl_expr() -> str:
+    """Stand-line y on first platform contact: top-edge line at the bird's x."""
     surf = PLATFORM_SURFACE_RADIUS_FACTOR
     return (
-        f"(+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) "
+        f"(+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))) "
         f"(* (bird_radius ?b) {surf}))"
     )
 
@@ -293,14 +314,33 @@ def _build_sim_aligned_platform_slide_entry_effect(lr_models: dict = None) -> st
     Platform first-contact effect aligned with forward sim slide entry:
     snap y to stand line, vy=0, vx from LR v_x (or speed-ratio fallback),
     then enter platform_sliding process.
+    
+    CRITICAL: v_bird MUST be updated to match actual sliding velocity.
+    Without this, block collision checks use stale launch v_bird (~180)
+    instead of actual slide velocity (~2-10), causing collision_block_bounce_off
+    to never trigger (block_stability < v_bird always fails).
     """
     lines = [f"(assign (y_bird ?b) {_platform_surface_y_pddl_expr()})"]
     vx_line = _lr_var_assign_line(lr_models, "v_x") if lr_models else None
     if vx_line:
         lines.append(vx_line)
+        # PDDL effects are simultaneous, so v_bird must use same formula as vx_bird
+        # Generate v_bird assignment using same LR coefficients
+        v_bird_line = _lr_var_assign_line_for_v_bird(lr_models, "v_x")
+        if v_bird_line:
+            lines.append(v_bird_line)
+        else:
+            # Fallback: use default ratio
+            lines.append(
+                f"(assign (v_bird ?b) (* (vx_bird ?b) {PLATFORM_DEFAULT_SPEED_RATIO}))"
+            )
     else:
         lines.append(
             f"(assign (vx_bird ?b) (* (vx_bird ?b) {PLATFORM_DEFAULT_SPEED_RATIO}))"
+        )
+        # v_bird should match scaled vx_bird (vy is 0)
+        lines.append(
+            f"(assign (v_bird ?b) (* (vx_bird ?b) {PLATFORM_DEFAULT_SPEED_RATIO}))"
         )
     lines.extend([
         "(assign (vy_bird ?b) 0)",
@@ -311,9 +351,75 @@ def _build_sim_aligned_platform_slide_entry_effect(lr_models: dict = None) -> st
     return "\n            ".join(lines)
 
 
+def _lr_var_assign_line_for_v_bird(lr_models: dict, var: str) -> Optional[str]:
+    """Generate v_bird assignment using same formula as vx_bird LR model."""
+    if not isinstance(lr_models, dict):
+        return None
+    entry = lr_models.get(var) or {}
+    coef = entry.get("coef")
+    intercept = entry.get("intercept")
+    if coef is None or intercept is None:
+        model = entry.get("model")
+        if model is None:
+            return None
+        coef = model.coef_
+        intercept = float(model.intercept_)
+    # Use same formula but output to v_bird instead of vx_bird
+    rhs = format_affine_assign_rhs(coef, intercept)
+    return f"(assign (v_bird ?b) {rhs})"
+
+
+def _block_platform_surface_y_pddl_expr() -> str:
+    return (
+        "(+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_block ?bl))) "
+        "(/ (block_height ?bl) 2))"
+    )
+
+
+def _build_block_platform_roll_entry_effect() -> str:
+    """
+    Block starts rolling on the platform it rests on. vx_block is kept: it was
+    already set by the bird–block push ({SE-block-push-ratio}).
+    """
+    lines = [
+        f"(assign (y_block ?bl) {_block_platform_surface_y_pddl_expr()})",
+        "(assign (vy_block ?bl) 0)",
+        "(assign (v_block ?bl) (vx_block ?bl))",
+        "(block_slide_active ?bl)",
+        "(block_sliding ?bl ?pl)",
+        "(assign (mod) 2)",
+    ]
+    return "\n            ".join(lines)
+
+
+def _pddl_sentinel_is_active(content: str, sentinel: str) -> bool:
+    """True if sentinel appears on a non-comment line (ENHSP PDDL uses ';' comments)."""
+    for line in content.splitlines():
+        if sentinel not in line:
+            continue
+        if line.lstrip().startswith(";"):
+            continue
+        return True
+    return False
+
+
+def _inject_block_platform_roll_sentinel(
+    content: str,
+    sentinel: str,
+    kb: dict,
+    *,
+    planning_optimistic_slide: bool = False,
+):
+    """Inject block platform roll entry (snap to surface, keep pushed vx)."""
+    if not _pddl_sentinel_is_active(content, sentinel):
+        return content, "skipped"
+    body = _build_block_platform_roll_entry_effect()
+    return content.replace(sentinel, body), "block_roll_keep_push_vx"
+
+
 def _build_platform_slide_placeholder() -> str:
     """Conservative one-shot platform roll without durative slide process."""
-    return _build_surface_roll_effect(_platform_surface_y_pddl_expr())
+    return _build_surface_roll_effect(_platform_surface_y_pddl_expr(), planning_x_advance=False)
 
 
 def _build_ground_roll_placeholder() -> str:
@@ -481,8 +587,15 @@ def _planning_surface_lr_models(kb: dict, n_samples: int = 0):
     # Slide-filtered v_x ratio: R² on a constant-ratio model is often low even when
     # the retention factor is usable for ENHSP (run_20260918: v_x R²≈0.27, n=9 →
     # heuristic 0.5 inject and "Problem unsolvable" on rolling_t02_00004).
+    # CRITICAL: Reject negative R² - means model is worse than predicting the mean,
+    # often due to mixed slide/bounce data polluting the ratio estimate.
     ratio_n = int(vx_entry.get("_vx_ratio_n") or 0)
-    if vx_kind.startswith("ratio") and ratio_n >= PLATFORM_VX_RATIO_MIN_SAMPLES:
+    vx_r2 = _rolling_lr_vx_r2(pddl_models)
+    if (
+        vx_kind.startswith("ratio")
+        and ratio_n >= PLATFORM_VX_RATIO_MIN_SAMPLES
+        and (vx_r2 is None or vx_r2 >= 0.0)  # Reject negative R²
+    ):
         return pddl_models, "lr_pddl_vx_ratio"
 
     sim_models = kb.get("lr_models") or {}
@@ -789,14 +902,15 @@ def _platform_bounds(plat: dict):
     )
 
 
-def _platform_surface_y(plat: dict, br: float) -> float:
-    """Bird center y when resting on platform top (matches collision_platform guard)."""
-    _, _, _, top = _platform_bounds(plat)
-    return top + br * PLATFORM_SURFACE_RADIUS_FACTOR
+def _platform_surface_y(plat: dict, br: float, x: Optional[float] = None) -> float:
+    """Bird center y when resting on platform top (flat or sloped at x)."""
+    if x is None:
+        x = float(plat.get("x", 0.0))
+    return _platform_surface_y_at_x(plat, float(x), br)
 
 
 def _bird_on_platform_span(x: float, br: float, plat: dict) -> bool:
-    left, right, _, _ = _platform_bounds(plat)
+    left, right = _platform_x_span(plat)
     margin = br * PLATFORM_SLIDE_EDGE_MARGIN
     return (left - margin) <= x <= (right + margin)
 
@@ -807,11 +921,216 @@ def _ground_surface_y(br: float) -> float:
 
 def _rotated_aabb_extents(width: float, height: float, angle_deg: float):
     """Full width/height of the axis-aligned bbox of a rotated rectangle."""
-    import math
     rad = math.radians(float(angle_deg))
     c, s = abs(math.cos(rad)), abs(math.sin(rad))
     w, h = float(width), float(height)
     return w * c + h * s, w * s + h * c
+
+
+def _as_vertex_array(vertices) -> Optional[np.ndarray]:
+    if vertices is None:
+        return None
+    arr = np.asarray(vertices, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] < 3 or arr.shape[1] < 2:
+        return None
+    return arr[:, :2]
+
+
+def _platform_top_segment_from_vertices(vertices_screen) -> Optional[dict]:
+    """
+    Top stand line of a thin rotated platform plank in PDDL coords.
+
+    Picks the longer pair of edges on the convex quad; the upper edge (higher
+    mean PDDL y) is the surface the bird rolls on.
+    """
+    verts = _as_vertex_array(vertices_screen)
+    if verts is None:
+        return None
+
+    xs = verts[:, 0]
+    ys_pddl = PLAYFIELD_Y_FLIP - verts[:, 1]
+    cx, cy = float(xs.mean()), float(ys_pddl.mean())
+    order = np.argsort(np.arctan2(ys_pddl - cy, xs - cx))
+    pts = np.column_stack([xs, ys_pddl])[order]
+    n = len(pts)
+
+    edges = []
+    for i in range(n):
+        x0, y0 = float(pts[i, 0]), float(pts[i, 1])
+        x1, y1 = float(pts[(i + 1) % n, 0]), float(pts[(i + 1) % n, 1])
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length < 1e-6:
+            continue
+        edges.append((length, x0, y0, x1, y1, (y0 + y1) * 0.5))
+
+    if not edges:
+        return None
+
+    max_len = max(e[0] for e in edges)
+    long_edges = [e for e in edges if e[0] >= max_len * 0.85]
+    if not long_edges:
+        long_edges = edges
+
+    _, x0, y0, x1, y1, _ = max(long_edges, key=lambda e: e[5])
+    if x0 > x1:
+        x0, y0, x1, y1 = x1, y1, x0, y0
+
+    angle_deg = math.degrees(math.atan2(y1 - y0, x1 - x0))
+    sloped = abs(angle_deg) > PLATFORM_SLOPE_ANGLE_THRESHOLD_DEG
+    return {
+        "_platform_sloped": sloped,
+        "_platform_surface_x0": x0,
+        "_platform_surface_y0": y0,
+        "_platform_surface_x1": x1,
+        "_platform_surface_y1": y1,
+        "_platform_surface_angle_deg": angle_deg,
+    }
+
+
+def _attach_platform_slope_fields(bbox: dict, platform) -> dict:
+    verts = getattr(platform, "vertices", None)
+    seg = _platform_top_segment_from_vertices(verts)
+    if seg:
+        bbox.update(seg)
+    else:
+        bbox["_platform_sloped"] = False
+    return bbox
+
+
+def apply_enhsp_platform_geometry(problem_data: dict) -> None:
+    """
+    Planner-facing platform init: thin segment box + top-edge y endpoints.
+
+    Forward sim keeps ``_platform_surface_*``; ENHSP uses ``platform_top_y_*``
+    and a thin ``platform_width`` × ``platform_height`` along the ramp chord.
+    """
+    for key, val in problem_data.items():
+        if not key.startswith("platform_"):
+            continue
+        if val.get("_platform_sloped"):
+            x0 = float(val["_platform_surface_x0"])
+            x1 = float(val["_platform_surface_x1"])
+            y0 = float(val["_platform_surface_y0"])
+            y1 = float(val["_platform_surface_y1"])
+            if x0 > x1:
+                x0, x1, y0, y1 = x1, x0, y1, y0
+            width = max(x1 - x0, 1.0)
+            val["x_platform"] = (x0 + x1) * 0.5
+            val["y_platform"] = (y0 + y1) * 0.5
+            val["platform_width"] = width
+            val["platform_height"] = PLATFORM_PLANNER_SLOPE_THICKNESS_PX
+            val["platform_top_y_left"] = y0
+            val["platform_top_y_right"] = y1
+        else:
+            y = float(val["y_platform"])
+            h = float(val["platform_height"])
+            top = y + h * 0.5
+            val["platform_top_y_left"] = top
+            val["platform_top_y_right"] = top
+        yl = float(val["platform_top_y_left"])
+        yr = float(val["platform_top_y_right"])
+        val["platform_top_y_min"] = min(yl, yr)
+        val["platform_top_y_max"] = max(yl, yr)
+        w = max(float(val["platform_width"]), 1.0)
+        val["platform_x_left"] = float(val["x_platform"]) - w * 0.5
+        s = (yr - yl) / w
+        val["platform_slope"] = s
+        # Intercept form (y = c + s*x) — ENHSP's grounder OOMs on s*(x - x_left).
+        val["platform_line_c"] = yl - s * val["platform_x_left"]
+        # Horizontal accel per unit gravity of a rolling ball (5/7 g sin θ, x-component).
+        val["platform_slide_accel"] = -s / (1.0 + s * s) * PLATFORM_ROLL_ACCEL_FACTOR
+        problem_data[key] = val
+    _link_touching_platforms(problem_data)
+
+
+def _link_touching_platforms(problem_data: dict) -> None:
+    """
+    Store ``_platform_chain_next`` on each platform whose right edge meets the
+    top of another platform (within PLATFORM_CHAIN_*_GAP_PX), so ENHSP can hand
+    a rightward slide over instead of ending it.
+    """
+    plats = {
+        k: v for k, v in problem_data.items()
+        if k.startswith("platform_") and "platform_x_left" in v
+    }
+    for key, a in plats.items():
+        a.pop("_platform_chain_next", None)
+        a_right = a["platform_x_left"] + float(a["platform_width"])
+        a_right_y = float(a["platform_top_y_right"])
+        best = None
+        for other, b in plats.items():
+            if other == key:
+                continue
+            b_left = b["platform_x_left"]
+            b_right = b_left + float(b["platform_width"])
+            if b_left > a_right + PLATFORM_CHAIN_X_GAP_PX or b_right <= a_right + 1.0:
+                continue
+            x_on_b = min(max(a_right, b_left), b_right)
+            b_y = float(b["platform_top_y_left"]) + b["platform_slope"] * (x_on_b - b_left)
+            dy = abs(b_y - a_right_y)
+            if dy <= PLATFORM_CHAIN_Y_GAP_PX and (best is None or dy < best[0]):
+                best = (dy, other)
+        if best is not None:
+            a["_platform_chain_next"] = best[1]
+
+
+def _internal_plat_from_problem(val: dict) -> dict:
+    """Normalize problem_data / GT platform entry for sim and collision."""
+    plat = {
+        "x": float(val["x_platform"]),
+        "y": float(val["y_platform"]),
+        "w": float(val["platform_width"]),
+        "h": float(val["platform_height"]),
+    }
+    if val.get("_platform_sloped"):
+        plat["sloped"] = True
+        plat["sx0"] = float(val["_platform_surface_x0"])
+        plat["sy0"] = float(val["_platform_surface_y0"])
+        plat["sx1"] = float(val["_platform_surface_x1"])
+        plat["sy1"] = float(val["_platform_surface_y1"])
+        plat["angle_deg"] = float(val.get("_platform_surface_angle_deg", 0.0))
+    return plat
+
+
+def _platform_line_y_at_x(plat: dict, x: float) -> float:
+    """Y on the top surface segment (PDDL, no bird radius)."""
+    if not plat.get("sloped"):
+        _, _, _, top = _platform_bounds(plat)
+        return top
+
+    x0, y0 = plat["sx0"], plat["sy0"]
+    x1, y1 = plat["sx1"], plat["sy1"]
+    if x <= x0:
+        return y0
+    if x >= x1:
+        return y1
+    t = (x - x0) / (x1 - x0) if abs(x1 - x0) > 1e-9 else 0.0
+    return y0 + t * (y1 - y0)
+
+
+def _platform_x_span(plat: dict):
+    if plat.get("sloped"):
+        margin = 0.0
+        return min(plat["sx0"], plat["sx1"]) - margin, max(plat["sx0"], plat["sx1"]) + margin
+    left, right, _, _ = _platform_bounds(plat)
+    return left, right
+
+
+def _platform_surface_y_at_x(plat: dict, x: float, br: float) -> float:
+    """Bird center y when resting on the surface at horizontal position x."""
+    return _platform_line_y_at_x(plat, x) + br * PLATFORM_SURFACE_RADIUS_FACTOR
+
+
+def _point_segment_distance_sq(px: float, py: float,
+                               x0: float, y0: float, x1: float, y1: float) -> float:
+    dx, dy = x1 - x0, y1 - y0
+    len_sq = dx * dx + dy * dy
+    if len_sq < 1e-12:
+        return (px - x0) ** 2 + (py - y0) ** 2
+    t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / len_sq))
+    cx = x0 + t * dx
+    cy = y0 + t * dy
+    return (px - cx) ** 2 + (py - cy) ** 2
 
 
 def block_bbox_from_game_object(block, margin_px: float = BLOCK_PLANNING_MARGIN_PX) -> dict:
@@ -859,8 +1178,8 @@ def platform_bbox_from_game_object(platform) -> dict:
     Prefer polygon vertices (float) over the GameObject MBR, which truncates to int
     and stores width/height on swapped axes in Rectangle.
     """
-    if hasattr(platform, "vertices") and platform.vertices and len(platform.vertices) >= 2:
-        vertices = np.asarray(platform.vertices, dtype=float)
+    vertices = _as_vertex_array(getattr(platform, "vertices", None))
+    if vertices is not None:
         x_coords = vertices[:, 0]
         y_coords = vertices[:, 1]
         width = float(np.max(x_coords) - np.min(x_coords))
@@ -874,12 +1193,13 @@ def platform_bbox_from_game_object(platform) -> dict:
         center_x = float(platform.X + width / 2)
         center_y_screen = float(platform.Y + height / 2)
 
-    return {
+    bbox = {
         "x_platform": center_x,
-        "y_platform": 640.0 - center_y_screen,
+        "y_platform": PLAYFIELD_Y_FLIP - center_y_screen,
         "platform_width": width,
         "platform_height": height,
     }
+    return _attach_platform_slope_fields(bbox, platform)
 
 
 # Hysteresis: snap platform_top to pig_surface whenever they differ by no more
@@ -904,6 +1224,206 @@ _PIG_STAND_SNAP_PX = 1.0
 # high-arc over-flight plans while the pig stand is at x≈228; removing far hills
 # leaves the stand line plus any mid-corridor obstacles only.
 PLATFORM_CORRIDOR_MARGIN_PX = 15.0
+# Legacy gap for merge_platform_fragments_in_problem_data (not used on ENHSP write path).
+PLATFORM_FRAGMENT_MERGE_GAP_PX = 25.0
+
+
+def _platform_interval_connected(left_a, right_a, left_b, right_b, gap_px: float) -> bool:
+    return right_a + gap_px >= left_b and right_b + gap_px >= left_a
+
+
+def _merged_platform_problem_entry(fragments: list) -> dict:
+    """Build one problem_data platform dict from several fragment entries."""
+    internals = [_internal_plat_from_problem(dict(f)) for f in fragments]
+    x_lo = min(_platform_x_span(p)[0] for p in internals)
+    x_hi = max(_platform_x_span(p)[1] for p in internals)
+    y_at_lo = max(_platform_line_y_at_x(p, x_lo) for p in internals)
+    y_at_hi = max(_platform_line_y_at_x(p, x_hi) for p in internals)
+    width = max(x_hi - x_lo, 1.0)
+    sloped = abs(y_at_hi - y_at_lo) > PLATFORM_SLOPE_ANGLE_THRESHOLD_DEG * 0.05 + 0.5
+    if sloped:
+        angle_deg = math.degrees(math.atan2(y_at_hi - y_at_lo, x_hi - x_lo))
+        sloped = abs(angle_deg) > PLATFORM_SLOPE_ANGLE_THRESHOLD_DEG
+    if sloped:
+        sx0, sy0, sx1, sy1 = x_lo, y_at_lo, x_hi, y_at_hi
+        if sx0 > sx1:
+            sx0, sx1, sy0, sy1 = sx1, sx0, sy1, sy0
+        return {
+            "x_platform": (sx0 + sx1) * 0.5,
+            "y_platform": (sy0 + sy1) * 0.5,
+            "platform_width": max(sx1 - sx0, 1.0),
+            "platform_height": PLATFORM_PLANNER_SLOPE_THICKNESS_PX,
+            "_platform_sloped": True,
+            "_platform_surface_x0": sx0,
+            "_platform_surface_y0": sy0,
+            "_platform_surface_x1": sx1,
+            "_platform_surface_y1": sy1,
+            "_platform_surface_angle_deg": math.degrees(math.atan2(sy1 - sy0, sx1 - sx0)),
+        }
+    top = max(
+        _platform_line_y_at_x(p, x)
+        for p in internals
+        for x in (x_lo, x_hi, 0.5 * (x_lo + x_hi))
+    )
+    bottom = min(_platform_bounds(p)[2] for p in internals)
+    height = max(top - bottom, 4.0)
+    center_y = bottom + height * 0.5
+    return {
+        "x_platform": (x_lo + x_hi) * 0.5,
+        "y_platform": center_y,
+        "platform_width": width,
+        "platform_height": height,
+        "_platform_sloped": False,
+    }
+
+
+def merge_platform_fragments_in_problem_data(
+    problem_data: dict, debug: bool = False,
+) -> dict:
+    """Merge x-connected platform_* fragments (legacy; not called for ENHSP problem write)."""
+    keys = sorted(k for k in problem_data if k.startswith("platform_"))
+    if len(keys) <= 1:
+        return problem_data
+
+    spans = {
+        key: _platform_x_span(_internal_plat_from_problem(problem_data[key]))
+        for key in keys
+    }
+    parent = {key: key for key in keys}
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    gap = PLATFORM_FRAGMENT_MERGE_GAP_PX
+    for i, ki in enumerate(keys):
+        li, ri = spans[ki]
+        for kj in keys[i + 1:]:
+            lj, rj = spans[kj]
+            if _platform_interval_connected(li, ri, lj, rj, gap):
+                union(ki, kj)
+
+    buckets: dict = {}
+    for key in keys:
+        buckets.setdefault(find(key), []).append(key)
+    merged_groups = list(buckets.values())
+
+    any_merge = any(len(g) > 1 for g in merged_groups)
+    if not any_merge:
+        return problem_data
+
+    merged_entries = []
+    for group in merged_groups:
+        if len(group) == 1:
+            merged_entries.append(problem_data[group[0]])
+        else:
+            frags = [problem_data[k] for k in group]
+            merged_entries.append(_merged_platform_problem_entry(frags))
+
+    for key in keys:
+        del problem_data[key]
+    for idx, entry in enumerate(merged_entries):
+        problem_data[f"platform_{idx}"] = entry
+
+    if debug:
+        print(
+            f"[PLATFORM DEBUG] Merged {len(keys)} hill fragment(s) into "
+            f"{len(merged_entries)} platform(s)"
+        )
+    return problem_data
+
+
+def _game_object_screen_x_span(platform) -> tuple:
+    verts = getattr(platform, "vertices", None)
+    if verts and len(verts) >= 2:
+        xs = [float(v[0]) for v in verts]
+        return min(xs), max(xs)
+    width = float(platform.height)
+    left = float(platform.X)
+    return left, left + width
+
+
+def coalesce_hill_game_objects(platforms, gap_px: float = PLATFORM_FRAGMENT_MERGE_GAP_PX):
+    """
+    Merge adjacent Platform/hill GameObjects (legacy helper; not used for ENHSP problem write).
+    Returns a new list (may be unchanged).
+    """
+    if not platforms or len(platforms) <= 1:
+        return platforms
+
+    from src.computer_vision.cv_utils import Rectangle
+    from src.computer_vision.game_object import GameObject
+
+    spans = [_game_object_screen_x_span(p) for p in platforms]
+    n = len(platforms)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        li, ri = spans[i]
+        for j in range(i + 1, n):
+            lj, rj = spans[j]
+            if _platform_interval_connected(li, ri, lj, rj, gap_px):
+                union(i, j)
+
+    buckets: dict = {}
+    for i in range(n):
+        buckets.setdefault(find(i), []).append(i)
+    groups = list(buckets.values())
+
+    if all(len(g) == 1 for g in groups):
+        return platforms
+
+    def _merge_indices(idxs: list):
+        xs, ys = [], []
+        for idx in idxs:
+            p = platforms[idx]
+            verts = getattr(p, "vertices", None)
+            if verts:
+                for v in verts:
+                    xs.append(float(v[0]))
+                    ys.append(float(v[1]))
+            else:
+                l, r = spans[idx]
+                xs.extend([l, r])
+                ys.extend([float(p.Y), float(p.Y + p.width)])
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        width = max(xmax - xmin, 1.0)
+        height = max(ymax - ymin, 1.0)
+        rect = Rectangle(((ymin, xmin), (ymin + height, xmin + width)))
+        vertices = [
+            [xmin, ymin],
+            [xmax, ymin],
+            [xmax, ymax],
+            [xmin, ymax],
+        ]
+        return GameObject(rect, platforms[idxs[0]].type, vertices)
+
+    coalesced = [_merge_indices(g) if len(g) > 1 else platforms[g[0]] for g in groups]
+    if len(coalesced) < len(platforms):
+        print(
+            f"[PLATFORM DEBUG] Coalesced {len(platforms)} hill GT object(s) into "
+            f"{len(coalesced)}"
+        )
+    return coalesced
 
 
 def _block_aabb(block_data: dict):
@@ -983,13 +1503,9 @@ def filter_substand_platforms_for_planning(
     for key, val in problem_data.items():
         if not key.startswith("platform_"):
             continue
-        plat = {
-            "x": float(val["x_platform"]),
-            "y": float(val["y_platform"]),
-            "w": float(val["platform_width"]),
-            "h": float(val["platform_height"]),
-        }
-        left, right, _bottom, top = _platform_bounds(plat)
+        plat = _internal_plat_from_problem(val)
+        left, right = _platform_x_span(plat)
+        top = _platform_line_y_at_x(plat, px)
         pig_on_stand = left - pr <= px <= right + pr
         if pig_on_stand:
             continue
@@ -1113,11 +1629,17 @@ def _extend_platforms_for_pig(platforms: list, px: float, py: float, pr: float):
     extended = []
     for plat in platforms:
         p = dict(plat)
-        left, right, _bottom, top = _platform_bounds(p)
+        left, right = _platform_x_span(p)
         if left - pr <= px <= right + pr:
             pig_surface = py - pr
+            top = _platform_line_y_at_x(p, px)
             diff = pig_surface - top
-            if abs(diff) <= _PIG_STAND_SNAP_PX:
+            if p.get("sloped"):
+                if abs(diff) <= _PIG_STAND_SNAP_PX or diff > 0:
+                    if diff != 0:
+                        p["sy0"] = float(p["sy0"]) + diff
+                        p["sy1"] = float(p["sy1"]) + diff
+            elif abs(diff) <= _PIG_STAND_SNAP_PX:
                 if diff != 0:
                     p["h"] = p["h"] + diff
                     p["y"] = p["y"] + diff / 2
@@ -1157,13 +1679,7 @@ def extend_platforms_in_problem_data(
     for key, val in problem_data.items():
         if not key.startswith("platform_"):
             continue
-        platforms.append({
-            "name": key,
-            "x": float(val["x_platform"]),
-            "y": float(val["y_platform"]),
-            "w": float(val["platform_width"]),
-            "h": float(val["platform_height"]),
-        })
+        platforms.append({"name": key, **_internal_plat_from_problem(val)})
 
     if not platforms:
         return problem_data
@@ -1174,6 +1690,24 @@ def extend_platforms_in_problem_data(
         old = problem_data[key]
         old_y = float(old["y_platform"])
         old_h = float(old["platform_height"])
+        if old.get("_platform_sloped"):
+            old_y0 = float(old.get("_platform_surface_y0", plat.get("sy0", 0)))
+            old_y1 = float(old.get("_platform_surface_y1", plat.get("sy1", 0)))
+            new_y0 = float(plat.get("sy0", old_y0))
+            new_y1 = float(plat.get("sy1", old_y1))
+            if old_y0 == new_y0 and old_y1 == new_y1:
+                continue
+            if debug:
+                print(
+                    f"[PLATFORM DEBUG] {key}: sloped stand snap "
+                    f"(y0 {old_y0:.1f}->{new_y0:.1f}, y1 {old_y1:.1f}->{new_y1:.1f})"
+                )
+            problem_data[key] = {
+                **old,
+                "_platform_surface_y0": new_y0,
+                "_platform_surface_y1": new_y1,
+            }
+            continue
         if plat["y"] == old_y and plat["h"] == old_h:
             continue
         _, _, _, old_top = _platform_bounds(
@@ -1227,13 +1761,8 @@ def filter_platforms_for_corridor(problem_data: dict, debug: bool = False) -> di
     for key, val in problem_data.items():
         if not key.startswith("platform_"):
             continue
-        plat = {
-            "x": float(val["x_platform"]),
-            "y": float(val["y_platform"]),
-            "w": float(val["platform_width"]),
-            "h": float(val["platform_height"]),
-        }
-        left, right, _bottom, _top = _platform_bounds(plat)
+        plat = _internal_plat_from_problem(val)
+        left, right = _platform_x_span(plat)
 
         pig_on_stand = left - pr <= px <= right + pr
         overlaps_corridor = right >= corridor_left and left <= corridor_right
@@ -1269,16 +1798,26 @@ def _platform_collision_reach(br: float, margin_mult: float = PLATFORM_MARGIN_MU
 def _bird_overlaps_platform(x: float, y: float, br: float, plat: dict,
                             margin_mult: float = PLATFORM_MARGIN_MULT) -> bool:
     """
-    Circle-vs-AABB closest-point test — same geometry as ``is_platform_collision``
-    in event_conditions.py (screen coords) after PDDL y-up bounds mapping.
+    Circle contact with platform stand surface (sloped segment or AABB top).
     """
+    reach = _platform_collision_reach(br, margin_mult)
+    reach_sq = reach * reach
+
+    if plat.get("sloped"):
+        dist_sq = _point_segment_distance_sq(
+            x, y, plat["sx0"], plat["sy0"], plat["sx1"], plat["sy1"],
+        )
+        if dist_sq > reach_sq:
+            return False
+        surface_y = _platform_line_y_at_x(plat, x)
+        return y >= surface_y - reach * 0.25
+
     left, right, bottom, top = _platform_bounds(plat)
     closest_x = max(left, min(x, right))
     closest_y = max(bottom, min(y, top))
     dx = x - closest_x
     dy = y - closest_y
-    reach = _platform_collision_reach(br, margin_mult)
-    return dx * dx + dy * dy <= reach * reach
+    return dx * dx + dy * dy <= reach_sq
 
 
 def _sweep_platform_contact(x0: float, y0: float, x1: float, y1: float, br: float, plat: dict):
@@ -1293,13 +1832,28 @@ def _sweep_platform_contact(x0: float, y0: float, x1: float, y1: float, br: floa
     return False, x0, y0
 
 
+def _predict_platform_bounce(vx: float, vy: float) -> bool:
+    """
+    Predict if platform contact will result in bounce (backward motion) vs slide.
+    
+    Based on observed data:
+    - Bounces: pre=(133,-83) → post=(-33,-83), |vy/vx| ≈ 0.62
+    - Slides:  pre=(100,-100) → post=(+33,+17), |vy/vx| = 1.0 but different geometry
+    
+    Uses |vy/vx| threshold - steep approach angles bounce, shallow angles slide.
+    """
+    if abs(vx) < 1e-6:
+        return True  # Nearly vertical = always bounce
+    vy_vx_ratio = abs(vy / vx)
+    return vy_vx_ratio >= PLATFORM_BOUNCE_VY_VX_THRESHOLD
+
+
 def _default_platform_slide_post_state(plat: dict, x: float, y: float,
                                        vx: float, vy: float, br: float):
     """
     Heuristic hill slide when platform KB is cold.
     Matches observed game behavior: ~50% speed retention after platform contact (conservative).
     """
-    _, _, _, plat_top = _platform_bounds(plat)
     pre_speed = math.hypot(vx, vy)
     if pre_speed < 5.0:
         return None
@@ -1309,7 +1863,7 @@ def _default_platform_slide_post_state(plat: dict, x: float, y: float,
     out_vy = vy * PLATFORM_DEFAULT_VY_RATIO
     if abs(out_vx) < 8.0:
         out_vx = math.copysign(max(pre_speed * ratio, 8.0), vx if abs(vx) > 1e-6 else 1.0)
-    surface_y = plat_top + br * 0.35
+    surface_y = _platform_surface_y_at_x(plat, x, br)
     out_vx, out_vy = _clamp_platform_post_velocity(out_vx, out_vy, vx, vy)
     return {"y": surface_y, "v_x": out_vx, "v_y": out_vy}
 
@@ -1391,6 +1945,21 @@ def _apply_platform_contact(platform_kb: dict, plat: dict, x: float, y: float,
     """
     Apply platform contact response. Returns (new_x, new_y, new_vx, new_vy, slide_continued, hard_stop).
     """
+    # Check for bounce condition - steep entry angle causes backward bounce, not slide
+    if _predict_platform_bounce(vx, vy):
+        # Simulate bounce based on observed game data:
+        # pre=(116.7,-100.0) → post=(-33.3,-50.0): vx reverses, vy stays negative (keeps falling)
+        bounce_vx = -abs(vx) * 0.30  # Reverse direction, ~30% speed
+        bounce_vy = vy * 0.60        # Keep falling, reduce speed ~40%
+        if debug:
+            vy_vx = abs(vy / vx) if abs(vx) > 1e-6 else float('inf')
+            print(
+                f"[SIM DEBUG]   Platform BOUNCE: |vy/vx|={vy_vx:.2f} >= "
+                f"{PLATFORM_BOUNCE_VY_VX_THRESHOLD} — bouncing backwards vx={bounce_vx:.1f}, vy={bounce_vy:.1f}"
+            )
+        # Return bounce state - not sliding, not hard stop (continues flight)
+        return x, y, bounce_vx, bounce_vy, False, False
+    
     predicted = _resolve_platform_post_state(platform_kb, plat, x, y, vx, vy, br, debug=debug)
     if predicted is None:
         # Cold-start KB: the old hard stop rejected every pig-on-hill ENHSP plan
@@ -1416,8 +1985,14 @@ def _apply_platform_contact(platform_kb: dict, plat: dict, x: float, y: float,
     out_vx = predicted["v_x"]
     out_vy = predicted["v_y"]
     if slide:
-        _, _, _, plat_top = _platform_bounds(plat)
-        out_y = plat_top + br * PLATFORM_SURFACE_RADIUS_FACTOR
+        # Match PDDL domain: (increase (x_bird ?b) (* (vx_bird ?b) 0.65))
+        # This position bump moves bird forward after platform contact,
+        # allowing it to reach blocks sitting on the platform.
+        x_bump = vx * 0.65
+        out_x += x_bump
+        if debug:
+            print(f"[SIM DEBUG]   Platform slide x-bump: +{x_bump:.1f} → x={out_x:.1f}")
+        out_y = _platform_surface_y_at_x(plat, out_x, br)
         out_vy = 0.0
     return out_x, out_y, out_vx, out_vy, slide, not slide
 
@@ -1434,7 +2009,7 @@ problem_template = Template("""(define (problem sample_problem)
         (and
             $goal
         )
-    )
+    )$metric
 )
 """)
 
@@ -2039,9 +2614,70 @@ def pddl_shot_to_release_point(
     return pddl_release_point_with_mag(sling, corrected_launch_rad, scaled_mag)
 
 
+# Rolling indirect ENHSP goal (legacy): block center shifts +x from init.
+INDIRECT_ROLL_BLOCK_GOAL_DELTA_X_PX = 10.0
+# Roll-block-only: bird center within this radius (px) of block center at plan end.
+INDIRECT_ROLL_BIRD_BLOCK_GOAL_RADIUS_PX = 20.0
+# Block-to-pig goal: how close block center must get to pig center (px margin).
+INDIRECT_ROLL_BLOCK_TO_PIG_MARGIN_PX = 2.0
+
+
+def indirect_roll_block_goal_terms(
+    problem_data: dict,
+    block_key: str,
+    pig_key: str = None,
+    *,
+    delta_x_px: float = INDIRECT_ROLL_BLOCK_GOAL_DELTA_X_PX,
+    pig_x: float = None,
+    pig_radius: float = None,
+) -> list:
+    """Numeric goal: block reaches near the pig (if pig_x provided), else shifts +delta_x."""
+    bx0 = float(problem_data[block_key]["x_block"])
+    block_half_w = float(problem_data[block_key].get("block_width", 20.0)) / 2.0
+    
+    # If pig position is provided, goal is: block reaches near pig
+    if pig_x is not None:
+        pig_r = float(pig_radius) if pig_radius is not None else 3.5
+        # Block's right edge should reach pig's left edge minus a small margin
+        # x_block + block_half_w >= pig_x - pig_r - margin
+        # => x_block >= pig_x - pig_r - block_half_w - margin
+        target_x = pig_x - pig_r - block_half_w - INDIRECT_ROLL_BLOCK_TO_PIG_MARGIN_PX
+        # But at minimum, block should still move forward
+        x_min = max(bx0 + delta_x_px, target_x)
+        print(
+            f"[PDDL GOAL] Block-to-pig goal: block_x >= {x_min:.1f} "
+            f"(pig_x={pig_x:.1f}, block starts at {bx0:.1f}, needs to move +{x_min - bx0:.1f}px)"
+        )
+        return [f"(>= (x_block {block_key}) {x_min:.4f})"]
+    
+    # Fallback: just move block +delta_x
+    x_min = bx0 + float(delta_x_px)
+    return [f"(>= (x_block {block_key}) {x_min:.4f})"]
+
+
+def indirect_roll_bird_near_block_goal_terms(
+    problem_data: dict,
+    bird_key: str,
+    block_key: str,
+    *,
+    radius_px: float = INDIRECT_ROLL_BIRD_BLOCK_GOAL_RADIUS_PX,
+) -> list:
+    """Goal: released bird within ``radius_px`` of block center (squared distance)."""
+    r2 = float(radius_px) * float(radius_px)
+    dx = f"(- (x_bird {bird_key}) (x_block {block_key}))"
+    dy = f"(- (y_bird {bird_key}) (y_block {block_key}))"
+    dist_sq = f"(+ (* {dx} {dx}) (* {dy} {dy}))"
+    return [
+        f"(bird_released {bird_key})",
+        f"(<= {dist_sq} {r2:.4f})",
+    ]
+
+
 def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: WorldModel,
                   min_angle: float = -4, max_angle: float = 85,
-                  force_min: float = FORCE_MIN, force_max: float = FORCE_MAX):
+                  force_min: float = FORCE_MIN, force_max: float = FORCE_MAX,
+                  indirect_roll_block_key: Optional[str] = None,
+                  goal_pig_data: Optional[dict] = None):
     objects = list()
     goals = list()
     # Start at max_angle so increasing_angle can run (requires angle <= max_angle)
@@ -2073,6 +2709,7 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         # run_20260822_082303.log).
         f"(= (points_score) 0)",
         f"(= (mod) 0)",
+        "(= (total-time) 0)",
     ]
     # T1.2 (continued): per-bird velocity fluents. These are undefined until
     # pa-twang fires; ENHSP's numeric heuristic then treats them as unknown and
@@ -2082,15 +2719,75 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         if object_name.startswith('bird_'):
             initial_state.append(f"(= (vx_bird {object_name}) 0)")
             initial_state.append(f"(= (vy_bird {object_name}) 0)")
+        if object_name.startswith('block_'):
+            initial_state.append(f"(= (v_block {object_name}) 0)")
+            initial_state.append(f"(= (vx_block {object_name}) 0)")
+            initial_state.append(f"(= (vy_block {object_name}) 0)")
+    pig_key = next((k for k in problem_data if k.startswith("pig_")), None)
+    roll_key = indirect_roll_block_key
+    if roll_key and roll_key not in problem_data:
+        roll_key = None
+    if roll_key:
+        # Rolling scenario: use x_block position goal (simpler for ENHSP to plan)
+        # The collision_block_pig_kill event is in the domain as a bonus -
+        # if the block happens to kill the pig along the way, great!
+        # Get pig position from goal_pig_data if provided (for roll-block-only mode)
+        pig_x = None
+        pig_radius = None
+        if goal_pig_data:
+            goal_pig_key = next((k for k in goal_pig_data if k.startswith("pig_")), None)
+            if goal_pig_key:
+                pig_x = float(goal_pig_data[goal_pig_key]["x_pig"])
+                pig_radius = float(goal_pig_data[goal_pig_key].get("pig_radius", 3.5))
+        roll_goals = indirect_roll_block_goal_terms(
+            problem_data, roll_key, pig_key,
+            pig_x=pig_x, pig_radius=pig_radius,
+        )
+        goals.extend(roll_goals)
+        bx0 = float(problem_data[roll_key]["x_block"])
+        if pig_x is not None:
+            print(
+                f"[PDDL] Rolling block-to-pig goal: {roll_key} → pig "
+                f"(block starts at {bx0:.1f}, pig at {pig_x:.1f}; {roll_goals[0]})"
+            )
+        else:
+            print(
+                f"[PDDL] Rolling indirect goal: {roll_key} x_block +"
+                f"{INDIRECT_ROLL_BLOCK_GOAL_DELTA_X_PX:.0f}px "
+                f"(init x_block={bx0:.1f}; {roll_goals[0]})"
+            )
+    elif pig_key:
+        goals.append(f"(pig_dead {pig_key})")
+
+    # --- LEVEL-LOADING PROBE: pig/goal composition (regression diagnostic) ---
+    _pigs_in_scene = [k for k in problem_data if k.startswith("pig_")]
+    _blocks_in_scene = [k for k in problem_data if k.startswith("block_")]
+    _pigdead_goals = [g for g in goals if g.startswith("(pig_dead ")]
+    print(
+        f"[LOAD-PROBE] generate_pddl | pigs_in_scene={len(_pigs_in_scene)} "
+        f"({_pigs_in_scene}) | blocks={len(_blocks_in_scene)} | "
+        f"pig_dead_goals={len(_pigdead_goals)} | roll_key={roll_key} | "
+        f"total_goals={len(goals)}"
+    )
+    if len(_pigs_in_scene) > len(_pigdead_goals) and roll_key is None:
+        print(
+            f"[LOAD-PROBE] WARNING: {len(_pigs_in_scene)} pigs in scene but only "
+            f"{len(_pigdead_goals)} pig_dead goals — planner may 'solve' without "
+            f"killing every pig (SB WIN requires all pigs dead)."
+        )
+    # --- END PROBE ------------------------------------------------------------
+
     for object, object_data in problem_data.items():
         objects.append(f"{object} - {object.split('_')[0]}")
-        if "pig" in object:
-            goals.append(f"(pig_dead {object})")
         for pred, val in object_data.items():
             # Skip keys starting with '_' (visualization-only data)
             if pred.startswith('_'):
                 continue
             initial_state.append(f"(= ({pred} {object}) {val})")
+        chain_next = object_data.get("_platform_chain_next")
+        if chain_next:
+            initial_state.append(f"(platform_chain {object} {chain_next})")
+            initial_state.append(f"(platform_has_next {object})")
         # relations
         for other_object in problem_data:
             if 'bird' in object and 'block' in other_object:
@@ -2112,13 +2809,26 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
 
 def write_problem_file(path: str, problem_data: dict, init_angle: float, angel_rate: float, world_model: WorldModel,
                        min_angle: float = -4, max_angle: float = 85,
-                       force_min: float = FORCE_MIN, force_max: float = FORCE_MAX):
+                       force_min: float = FORCE_MIN, force_max: float = FORCE_MAX,
+                       indirect_roll_block_key: Optional[str] = None,
+                       plan_cost_bound: Optional[float] = None,
+                       goal_pig_data: Optional[dict] = None):
     extend_platforms_in_problem_data(problem_data)
+    apply_enhsp_platform_geometry(problem_data)
     objects, initial_state, goals = generate_pddl(
         problem_data, init_angle, angel_rate, world_model, min_angle, max_angle,
         force_min=force_min, force_max=force_max,
+        indirect_roll_block_key=indirect_roll_block_key,
+        goal_pig_data=goal_pig_data,
     )
-    problem = problem_template.substitute({"objects": objects, "initial": initial_state, "goal": goals})
+    metric = (
+        "\n    (:metric minimize (total-time))"
+        if plan_cost_bound is not None
+        else ""
+    )
+    problem = problem_template.substitute(
+        {"objects": objects, "initial": initial_state, "goal": goals, "metric": metric}
+    )
     with open(path, 'w') as file:
         file.write(problem)
 
@@ -2158,11 +2868,17 @@ def _inject_platform_slide_sentinel(
         from agents.pddl.pddl_files.events.learn_events import PLATFORM_VX_RATIO_MIN_SAMPLES
 
         partial_lr = None
-        if vx_kind.startswith("ratio") and ratio_n >= PLATFORM_VX_RATIO_MIN_SAMPLES:
+        vx_r2 = vx_entry.get("r2")
+        # Only use ratio model if R² is non-negative (negative means worse than mean)
+        if (
+            vx_kind.startswith("ratio")
+            and ratio_n >= PLATFORM_VX_RATIO_MIN_SAMPLES
+            and (vx_r2 is None or vx_r2 >= 0.0)
+        ):
             partial_lr = {"v_x": vx_entry}
             _collision_inject_log(
                 f"Platform slide linear gate failed (n={n_samples}) — "
-                f"using slide v_x ratio model (n={ratio_n}) for ENHSP entry"
+                f"using slide v_x ratio model (n={ratio_n}, R²={vx_r2:.3f}) for ENHSP entry"
             )
             body = _build_sim_aligned_platform_slide_entry_effect(partial_lr)
             inject_label = "slide_sim_ratio_vx"
@@ -2181,15 +2897,6 @@ def _inject_platform_slide_sentinel(
             body = _build_sim_aligned_platform_slide_entry_effect(None)
             inject_label = "slide_sim_heuristic"
 
-    body = _append_planning_slide_x_advance(body)
-    if planning_optimistic_slide:
-        body = _append_extra_planning_slide_x(
-            body, extra_sec=PLATFORM_PLANNING_SLIDE_SEC_OPTIMISTIC,
-        )
-        _collision_inject_log(
-            f"Appended optimistic slide x-advance "
-            f"(+{PLATFORM_PLANNING_SLIDE_SEC_OPTIMISTIC}s·vx)"
-        )
     return content.replace(sentinel, body), inject_label
 
 
@@ -2265,6 +2972,22 @@ def _log_surface_placeholder_reason(kb: dict, n_samples: int, m5_min_samples: in
         _collision_inject_log("LR/M5 not available yet — slide placeholder")
 
 
+def platform_friction_from_kb(kb: Optional[dict]) -> tuple:
+    """(deceleration px/s², sample count) for rolling on platforms; median of learned samples."""
+    samples = ((kb or {}).get("_platform_friction") or {}).get("samples") or []
+    if not samples:
+        return PLATFORM_FRICTION_DEFAULT, 0
+    return float(np.median(samples)), len(samples)
+
+
+def block_push_ratio_from_kb(kb: Optional[dict]) -> tuple:
+    """(block vx / bird vx at contact, sample count); median of learned push samples."""
+    samples = ((kb or {}).get("_block_push") or {}).get("samples") or []
+    if not samples:
+        return BLOCK_PUSH_RATIO_DEFAULT, 0
+    return float(np.median(samples)), len(samples)
+
+
 def inject_domain_file(
     path: str,
     world_model: WorldModel,
@@ -2286,7 +3009,7 @@ def inject_domain_file(
     ground_roll_placeholder = _build_ground_roll_placeholder()
     collision_kb = world_model.kb.get("collision") or {}
     platform_kb = world_model.kb.get("platform_collision") or {}
-    inject_labels = {"ground": "skipped", "platform": "skipped"}
+    inject_labels = {"ground": "skipped", "platform": "skipped", "block_platform": "skipped"}
 
     with open(path, "r") as file:
         new_content = file.read()
@@ -2330,6 +3053,35 @@ def inject_domain_file(
                 m5_bounce_mode="platform",
                 planning_optimistic_slide=planning_optimistic_slide,
             )
+
+    block_platform_sentinel = "{SE-block-platform-roll-effect}"
+    if _pddl_sentinel_is_active(new_content, block_platform_sentinel):
+        new_content, inject_labels["block_platform"] = _inject_block_platform_roll_sentinel(
+            new_content,
+            block_platform_sentinel,
+            platform_kb,
+            planning_optimistic_slide=planning_optimistic_slide,
+        )
+
+    friction_sentinel = "{SE-platform-friction}"
+    if friction_sentinel in new_content:
+        friction, n_friction = platform_friction_from_kb(world_model.kb)
+        new_content = new_content.replace(friction_sentinel, f"{friction:.4f}")
+        inject_labels["platform_friction"] = f"{friction:.2f}(n={n_friction})"
+        _collision_inject_log(
+            f"Platform roll friction {friction:.2f} px/s² "
+            f"({'learned median' if n_friction else 'default'}, n={n_friction})"
+        )
+
+    push_sentinel = "{SE-block-push-ratio}"
+    if push_sentinel in new_content:
+        push_ratio, n_push = block_push_ratio_from_kb(world_model.kb)
+        new_content = new_content.replace(push_sentinel, f"{push_ratio:.4f}")
+        inject_labels["block_push"] = f"{push_ratio:.3f}(n={n_push})"
+        _collision_inject_log(
+            f"Block push ratio {push_ratio:.3f} × vx_bird "
+            f"({'learned median' if n_push else 'default'}, n={n_push})"
+        )
 
     base_dir = os.path.dirname(path)
     base_name = os.path.splitext(os.path.basename(path))[0]
@@ -2575,13 +3327,12 @@ def simulate_pddl_shot_plan(
     blocks = []
     for key, val in problem_data.items():
         if key.startswith("platform_"):
-            platforms.append({
-                "name": key,
-                "x": float(val["x_platform"]),
-                "y": float(val["y_platform"]),
-                "w": float(val["platform_width"]) + 2.0 * _sim_plat_pad,
-                "h": float(val["platform_height"]) + 2.0 * _sim_plat_pad,
-            })
+            p = _internal_plat_from_problem(val)
+            p["name"] = key
+            if not p.get("sloped"):
+                p["w"] = p["w"] + 2.0 * _sim_plat_pad
+                p["h"] = p["h"] + 2.0 * _sim_plat_pad
+            platforms.append(p)
         elif key.startswith("block_"):
             # ``damage`` mirrors write_problem_file: sheltering blocks get
             # BLOCK_SHELTER_DAMAGE, everything else DEFAULT_BIRD_BLOCK_DAMAGE.
@@ -2612,8 +3363,14 @@ def simulate_pddl_shot_plan(
         print(f"[SIM DEBUG] Pig: ({px:.1f}, {py:.1f}), radius={pr:.1f}")
         print(f"[SIM DEBUG] Platforms: {len(platforms)}")
         for p in platforms:
-            print(f"[SIM DEBUG]   {p['name']}: center=({p['x']:.1f}, {p['y']:.1f}), size={p['w']:.1f}x{p['h']:.1f}")
-            print(f"[SIM DEBUG]     bounds: left={p['x']-p['w']/2:.1f}, right={p['x']+p['w']/2:.1f}, bottom={p['y']-p['h']/2:.1f}, top={p['y']+p['h']/2:.1f}")
+            if p.get("sloped"):
+                print(
+                    f"[SIM DEBUG]   {p['name']}: slope angle={p.get('angle_deg', 0):.1f}° "
+                    f"segment ({p['sx0']:.1f},{p['sy0']:.1f})→({p['sx1']:.1f},{p['sy1']:.1f})"
+                )
+            else:
+                print(f"[SIM DEBUG]   {p['name']}: center=({p['x']:.1f}, {p['y']:.1f}), size={p['w']:.1f}x{p['h']:.1f}")
+                print(f"[SIM DEBUG]     bounds: left={p['x']-p['w']/2:.1f}, right={p['x']+p['w']/2:.1f}, bottom={p['y']-p['h']/2:.1f}, top={p['y']+p['h']/2:.1f}")
         print(f"[SIM DEBUG] Blocks: {len(blocks)}")
 
     platforms = _extend_platforms_for_pig(platforms, px, py, pr)
@@ -2694,7 +3451,7 @@ def simulate_pddl_shot_plan(
         # Continuous platform slide: horizontal motion on surface (vy≈0), not ballistic arc.
         if slide_phase_active and slide_platform is not None:
             nx = x + vx * dt
-            surface_y = _platform_surface_y(slide_platform, br)
+            surface_y = _platform_surface_y_at_x(slide_platform, nx, br)
             ny = surface_y
 
             if pig is not None and not pig_killed:
@@ -2818,6 +3575,7 @@ def simulate_pddl_shot_plan(
                     f"x [{bottom:.1f}, {top:.1f}]"
                 )
 
+            pre_slide_x = cx  # Track position before platform slide bump
             x, y, vx, vy, slide, hard_stop = _apply_platform_contact(
                 platform_kb, plat, cx, cy, vx, vy, br, debug=debug
             )
@@ -2832,8 +3590,64 @@ def simulate_pddl_shot_plan(
                 platform_slide_continued = True
                 slide_phase_active = True
                 slide_platform = plat
-                y = _platform_surface_y(plat, br)
+                y = _platform_surface_y_at_x(plat, cx, br)
                 vy = 0.0
+                
+                # Check for block collision during the slide bump (swept collision)
+                # Bird slides from pre_slide_x to x; check if any block is in the path
+                # This matches PDDL domain where collision_block fires when bird crosses block AABB
+                swept_block_hit = None
+                for blk in blocks:
+                    blk_left = blk["x"] - blk["w"] / 2
+                    blk_right = blk["x"] + blk["w"] / 2
+                    blk_bottom = blk["y"] - blk["h"] / 2
+                    blk_top = blk["y"] + blk["h"] / 2
+                    
+                    # Check y overlap (bird at platform surface y)
+                    if not (y + br >= blk_bottom and y - br <= blk_top):
+                        continue
+                    
+                    # Check x overlap with the slide segment [pre_slide_x, x]
+                    slide_x_min = min(pre_slide_x, x)
+                    slide_x_max = max(pre_slide_x, x)
+                    if slide_x_max + br >= blk_left and slide_x_min - br <= blk_right:
+                        swept_block_hit = blk
+                        break
+                
+                if swept_block_hit is not None:
+                    blk = swept_block_hit
+                    life = blk["life"]
+                    damage = blk["damage"]
+                    ke = vx * vx + vy * vy  # kinetic energy proxy
+                    can_punch = (life * life) <= ke * (damage * damage)
+                    
+                    if can_punch:
+                        # Punch through: bird breaks block, momentum transfers to block
+                        # Match PDDL: (assign (v_block ?bl) (v_bird ?b))
+                        block_collision = True
+                        block_hit_name = blk["name"]
+                        _v_scale = 0.85
+                        vx *= _v_scale
+                        blocks = [b for b in blocks if b["name"] != blk["name"]]
+                        # Position bird just past the block
+                        x = blk["x"] + blk["w"] / 2 + br + 1.0
+                        if debug:
+                            print(
+                                f"[SIM DEBUG] Step {step}: SWEPT BLOCK PUNCH-THROUGH "
+                                f"'{blk['name']}' during slide (pre_x={pre_slide_x:.1f} → x={x:.1f})"
+                            )
+                    else:
+                        # Bounce off: hard stop
+                        block_collision = True
+                        block_hit_name = blk["name"]
+                        bounce_count = 3
+                        slide_phase_active = False
+                        x = blk["x"] - blk["w"] / 2 - br - 1.0  # Stop before block
+                        if debug:
+                            print(
+                                f"[SIM DEBUG] Step {step}: SWEPT BLOCK BOUNCE-OFF "
+                                f"'{blk['name']}' during slide (stopped at x={x:.1f})"
+                            )
             else:
                 slide_phase_active = False
                 slide_platform = None

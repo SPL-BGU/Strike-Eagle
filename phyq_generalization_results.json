@@ -1,12 +1,16 @@
 {
   "summary": {
     "phyq_score": 0.0,
-    "total_levels": 0,
+    "total_levels": 3,
     "total_wins": 0,
-    "total_losses": 0,
+    "total_losses": 3,
     "overall_pass_rate": 0.0,
-    "local_generalization": {},
-    "broad_generalization": {},
+    "local_generalization": {
+      "single_force": 0.0
+    },
+    "broad_generalization": {
+      "Force Scenarios": 0.0
+    },
     "scenarios": {
       "single_force": {
         "scenario": "single_force",
@@ -16,10 +20,10 @@
         "description": "Some target objects can be destroyed with a single force",
         "skill": "Force application",
         "wins": 0,
-        "losses": 0,
-        "total": 0,
+        "losses": 3,
+        "total": 3,
         "pass_rate": 0.0,
-        "avg_attempts": 0.0,
+        "avg_attempts": 1.0,
         "avg_score": 0.0
       },
       "multiple_forces": {
@@ -228,8 +232,8 @@
           "multiple_forces"
         ],
         "wins": 0,
-        "losses": 0,
-        "total": 0,
+        "losses": 3,
+        "total": 3,
         "pass_rate": 0.0
       },
       "Motion Scenarios": {
@@ -267,6 +271,34 @@
       }
     }
   },
-  "results": [],
-  "timestamp": "2026-09-05T12:01:59.570711"
+  "results": [
+    {
+      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t01_00033.xml",
+      "scenario": "single_force",
+      "template": 1,
+      "won": false,
+      "attempts": 1,
+      "score": 0,
+      "timestamp": "2026-09-27T09:26:49.241562"
+    },
+    {
+      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t01_00078.xml",
+      "scenario": "single_force",
+      "template": 1,
+      "won": false,
+      "attempts": 1,
+      "score": 0,
+      "timestamp": "2026-09-27T09:27:50.551542"
+    },
+    {
+      "level_path": "./Levels/phy_q/scenario_01_single_force/train/single_force_t01_00027.xml",
+      "scenario": "single_force",
+      "template": 1,
+      "won": false,
+      "attempts": 1,
+      "score": 0,
+      "timestamp": "2026-09-27T09:28:53.392130"
+    }
+  ],
+  "timestamp": "2026-09-27T09:28:56.973208"
 }

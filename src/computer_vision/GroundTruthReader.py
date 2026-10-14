@@ -140,6 +140,11 @@ class GroundTruthReader:
         predict_class = predicts.argmax(0)
         predict_class = np.array(list(map(lambda x : self.target_class[x],predict_class)))
         obj_types[obj_types=='0.0'] =  predict_class[obj_types=='0.0']
+        
+        # DEBUG: Print all predicted classes to help diagnose pig detection issues
+        print(f"\n[GT DEBUG] Model predicted {len(obj_types)} objects:")
+        for i, ot in enumerate(obj_types):
+            print(f"  [{i}] predicted_class='{ot}' → type_transformer maps to '{self.type_transformer.get(ot, 'UNMAPPED')}'")
 
         #put unknow for the dot products less than a threshold
 
@@ -191,6 +196,9 @@ class GroundTruthReader:
 
 
             obj_num += 1
+
+        # Keep each hill polygon separate for PDDL/ENHSP (shelf + ramp + stand).
+        # Merging via coalesce_hill_game_objects broke ramp slope on t01_00033.
 
     def _getRect(self,j):
         '''

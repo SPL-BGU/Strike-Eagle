@@ -119,3 +119,23 @@ rolling,3,D-DDQN-Image,0.067
 rolling,3,Relational-Symbolic,0.317
 rolling,3,Relational-Image,0.167
 rolling,3,Random Agent,0.085
+rolling,5,Human,0.853
+rolling,5,Pig Shooter,0.008
+rolling,5,Datalab,0.370
+rolling,5,Eagle’s Wing,0.330
+rolling,5,Bambirds,0.040
+rolling,5,D-DDQN-Symbolic,0.180
+rolling,5,D-DDQN-Image,0.067
+rolling,5,Relational-Symbolic,0.317
+rolling,5,Relational-Image,0.167
+rolling,5,Random Agent,0.085
+rolling,6,Human,0.853
+rolling,6,Pig Shooter,0.008
+rolling,6,Datalab,0.370
+rolling,6,Eagle’s Wing,0.330
+rolling,6,Bambirds,0.040
+rolling,6,D-DDQN-Symbolic,0.180
+rolling,6,D-DDQN-Image,0.067
+rolling,6,Relational-Symbolic,0.317
+rolling,6,Relational-Image,0.167
+rolling,6,Random Agent,0.085

@@ -2,7 +2,9 @@
     (:requirements :typing :disjunctive-preconditions :fluents :time :negative-preconditions :conditional-effects)
     (:types bird pig block platform external_agent)
     (:predicates (bird_released ?b - bird) (pig_dead ?p - pig) (angle_adjusted) (block_explosive ?bl - block) (pig_killed) (agent_dead ?ea - external_agent) (bird_tapped ?b - bird) (force_locked)
-                (platform_slide_active ?b - bird) (bird_sliding ?b - bird ?pl - platform))
+                (platform_slide_active ?b - bird) (bird_sliding ?b - bird ?pl - platform)
+                (block_slide_active ?bl - block) (block_sliding ?bl - block ?pl - platform)
+                (platform_chain ?from - platform ?to - platform) (platform_has_next ?pl - platform))
 
     (:functions (x_bird ?b - bird) (y_bird ?b - bird) (v_bird ?b - bird) (vx_bird ?b - bird) (vy_bird ?b - bird)  (m_bird ?b - bird) (bird_id ?b - bird) (bounce_count ?b - bird)
                 (bird_type ?b - bird) ;; BIRD TYPES: RED=0, YELLOW=1, BLACK2, WHITE=3, BLUE=4 ;;
@@ -17,7 +19,9 @@
                 (x_pig ?p - pig) (y_pig ?p - pig) (pig_radius ?p - pig) (m_pig ?p - pig)
                 (pig_life ?p - pig) (fall_damage) (explosion_damage)
                 (x_platform ?pl - platform) (y_platform ?pl - platform) (platform_width ?pl - platform) (platform_height ?pl - platform)
-                (x_block ?bl - block) (y_block ?bl - block) (block_width ?bl - block) (block_height ?bl - block) (block_life ?bl - block) (block_mass ?bl - block) (block_stability ?bl - block)
+                (platform_top_y_left ?pl - platform) (platform_top_y_right ?pl - platform) (platform_top_y_min ?pl - platform) (platform_top_y_max ?pl - platform)
+                (platform_x_left ?pl - platform) (platform_slope ?pl - platform) (platform_slide_accel ?pl - platform) (platform_line_c ?pl - platform)
+                (x_block ?bl - block) (y_block ?bl - block) (block_width ?bl - block) (block_height ?bl - block) (block_life ?bl - block) (block_mass ?bl - block) (block_stability ?bl - block) (v_block ?bl - block) (vx_block ?bl - block) (vy_block ?bl - block)
                 (points_score)
                 (x_agent ?ea - external_agent) (y_agent ?ea - external_agent) (agent_height ?ea - external_agent) (agent_width ?ea - external_agent)
                 (vx_agent ?ea - external_agent) (vy_agent ?ea - external_agent) (timing_agent ?ea - external_agent)
@@ -141,14 +145,16 @@
             (bird_released ?b)
             (platform_slide_active ?b)
             (bird_sliding ?b ?pl)
-            (> (vx_bird ?b) 3.0)
+            (> (vx_bird ?b) 0)
             (<= (- (x_bird ?b) (* (bird_radius ?b) 0.35)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
             (>= (+ (x_bird ?b) (* (bird_radius ?b) 0.35)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
         )
         :effect (and
-            (assign (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
+            (assign (y_bird ?b) (+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))) (* (bird_radius ?b) 0.35)))
             (assign (vy_bird ?b) 0)
             (increase (x_bird ?b) (* (/ #t 100) (* 1.0 (vx_bird ?b))))
+            (increase (vx_bird ?b) (* (/ #t 100) (* (gravity) (platform_slide_accel ?pl))))
+            (decrease (vx_bird ?b) (* (/ #t 100) 29.7619))
             (assign (mod) 0)
         )
     )
@@ -184,10 +190,10 @@
 
         )
         :effect (and
-            (assign (x_bird ?b) (+ 3.7064 (+ (* 0.9955 (x_bird ?b)) (+ (* -0.1034 (y_bird ?b)) (+ (* 0.0256 (vx_bird ?b)) (* 0.0129 (vy_bird ?b)))))))
-            (assign (y_bird ?b) (+ 3.8590 (+ (* 0.0007 (x_bird ?b)) (+ (* -0.4281 (y_bird ?b)) (+ (* -0.0023 (vx_bird ?b)) (* 0.0028 (vy_bird ?b)))))))
-            (assign (vx_bird ?b) (* 0.3750 (vx_bird ?b)))
-            (assign (vy_bird ?b) (+ -24.3738 (+ (* 0.0145 (x_bird ?b)) (+ (* 2.7334 (y_bird ?b)) (+ (* 0.0151 (vx_bird ?b)) (* -0.3947 (vy_bird ?b)))))))
+            (assign (x_bird ?b) (+ -3.5426 (+ (* 1.0060 (x_bird ?b)) (+ (* 0.2175 (y_bird ?b)) (+ (* 0.0226 (vx_bird ?b)) (* -0.0029 (vy_bird ?b)))))))
+            (assign (y_bird ?b) (+ 4.4305 (+ (* -0.0014 (x_bird ?b)) (+ (* -0.3739 (y_bird ?b)) (+ (* 0.0023 (vx_bird ?b)) (* 0.0031 (vy_bird ?b)))))))
+            (assign (vx_bird ?b) (* 0.8333 (vx_bird ?b)))
+            (assign (vy_bird ?b) (+ -72.5776 (+ (* 0.1108 (x_bird ?b)) (+ (* -0.0164 (y_bird ?b)) (+ (* -0.0866 (vx_bird ?b)) (* -0.5158 (vy_bird ?b)))))))
             (assign (mod) 2)
         )
     )
@@ -289,10 +295,17 @@
             (>= (+ (y_bird ?b) (bird_radius ?b)) (- (y_block ?bl) (/ (block_height ?bl) 2) ) )
             (<= (- (y_bird ?b) (bird_radius ?b)) (+ (y_block ?bl) (/ (block_height ?bl) 2) ) )
             (> (block_life ?bl) 0)
-            (> (block_stability ?bl) (v_bird ?b) )
+            ; Bird has enough velocity to push the block (velocity >= stability threshold)
+            (>= (v_bird ?b) (block_stability ?bl))
+            ; Bird can't break through (life check fails) - bounces instead
             (> (* (block_life ?bl) (block_life ?bl) ) ( * ( + ( * (vx_bird ?b) (vx_bird ?b) ) (	* (vy_bird ?b) (vy_bird ?b) ) ) ( * (bird_block_damage ?b ?bl) (bird_block_damage ?b ?bl) ) ) )
         )
         :effect (and
+            ; Bird bounces off; block gets the learned push ratio of the bird's velocity
+            (assign (vx_block ?bl) (* 0.0000 (vx_bird ?b)))
+            (assign (vy_block ?bl) (* 0.0000 (vy_bird ?b)))
+            (assign (v_block ?bl) (* 0.0000 (v_bird ?b)))
+            ; Bird stops after bounce
             (assign (v_bird ?b) 0)
             (assign (vx_bird ?b) 0)
             (assign (vy_bird ?b) 0)
@@ -313,9 +326,11 @@
             (> (block_life ?bl) 0)
             (<= (* (block_life ?bl) (block_life ?bl) ) ( * ( + ( * (vx_bird ?b) (vx_bird ?b) ) (	* (vy_bird ?b) (vy_bird ?b) ) ) ( * (bird_block_damage ?b ?bl) (bird_block_damage ?b ?bl) ) ) ) )
         :effect (and
-            (assign (v_bird ?b) 0)
-            (assign (vx_bird ?b) 0)
-            (assign (vy_bird ?b) 0)
+            ; Bird breaks through block; block gets the learned push ratio of the bird's velocity
+            (assign (vx_block ?bl) (* 0.0000 (vx_bird ?b)))
+            (assign (vy_block ?bl) (* 0.0000 (vy_bird ?b)))
+            (assign (v_block ?bl) (* 0.0000 (v_bird ?b)))
+            ; Bird stops after collision
             (assign (bounce_count ?b) 3)
         )
     )
@@ -402,6 +417,25 @@
         )
     )
 
+    ; Rolling block kills pig - RE-ENABLED for pig_dead goal with pig in problem
+    (:event collision_block_pig_kill
+        :parameters (?bl - block ?p - pig)
+        :precondition (and
+            (not (pig_dead ?p))
+            (> (block_life ?bl) 0)
+            (> (v_block ?bl) 10)
+            (>= (+ (x_block ?bl) (/ (block_width ?bl) 2)) (- (x_pig ?p) (pig_radius ?p)))
+            (<= (- (x_block ?bl) (/ (block_width ?bl) 2)) (+ (x_pig ?p) (pig_radius ?p)))
+            (>= (+ (y_block ?bl) (/ (block_height ?bl) 2)) (- (y_pig ?p) (pig_radius ?p)))
+            (<= (- (y_block ?bl) (/ (block_height ?bl) 2)) (+ (y_pig ?p) (pig_radius ?p)))
+        )
+        :effect (and
+            (pig_dead ?p)
+            (pig_killed)
+            (increase (points_score) 5000)
+        )
+    )
+
     (:event collision_platform
         :parameters (?b - bird ?pl - platform)
         :precondition (and
@@ -418,19 +452,57 @@
             ; "Problem unsolvable" in ENHSP (see _unsolvable_snapshots).
             (<= (- (x_bird ?b)  (* (bird_radius ?b) 1.1)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
             (>= (+ (x_bird ?b)  (* (bird_radius ?b) 1.1)) (- (x_platform ?pl) (/ (platform_width ?pl) 2 ) ) )
-            (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
-            (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (y_platform ?pl) (/ (platform_height ?pl) 2) ) )
+            ; y-checks are against the top-edge line at the bird's x (equals the
+            ; flat top for non-sloped platforms).
+            (>= (+ (y_bird ?b)  (bird_radius ?b)) (- (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))) (platform_height ?pl)))
+            (<= (- (y_bird ?b)  (bird_radius ?b)) (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))))
             ; First contact only — approach from above the stand line.
-            (> (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
+            (> (y_bird ?b) (+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))) (* (bird_radius ?b) 0.35)))
         )
         :effect (and
-            (assign (y_bird ?b) (+ (+ (y_platform ?pl) (/ (platform_height ?pl) 2)) (* (bird_radius ?b) 0.35)))
-            (assign (vx_bird ?b) (* 0.8167 (vx_bird ?b)))
+            (assign (y_bird ?b) (+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))) (* (bird_radius ?b) 0.35)))
+            (assign (vx_bird ?b) (* 1.0000 (vx_bird ?b)))
+            (assign (v_bird ?b) (* 1.0000 (vx_bird ?b)))
             (assign (vy_bird ?b) 0)
             (platform_slide_active ?b)
             (bird_sliding ?b ?pl)
-            (increase (x_bird ?b) (* (vx_bird ?b) 0.65))
             (assign (mod) 2)
+        )
+    )
+
+    ; Slide continues onto a touching platform (precomputed platform_chain):
+    ; no landing damping, no x jump, y snaps to the next platform's top line.
+    (:event platform_slide_handoff
+        :parameters (?b - bird ?from - platform ?to - platform)
+        :precondition (and
+            (platform_slide_active ?b)
+            (bird_sliding ?b ?from)
+            (platform_chain ?from ?to)
+            (> (vx_bird ?b) 0)
+            (> (- (x_bird ?b) (* (bird_radius ?b) 0.35)) (+ (x_platform ?from) (/ (platform_width ?from) 2)))
+        )
+        :effect (and
+            (not (bird_sliding ?b ?from))
+            (bird_sliding ?b ?to)
+            (assign (y_bird ?b) (+ (+ (platform_line_c ?to) (* (platform_slope ?to) (x_bird ?b))) (* (bird_radius ?b) 0.35)))
+            (assign (vy_bird ?b) 0)
+        )
+    )
+
+    ; Bird stopped by friction: it rests on the platform and the shot ends
+    ; (slide flags stay set so the flying process does not drop it through).
+    (:event platform_slide_stop
+        :parameters (?b - bird ?pl - platform)
+        :precondition (and
+            (platform_slide_active ?b)
+            (bird_sliding ?b ?pl)
+            (<= (vx_bird ?b) 0)
+            (< (bounce_count ?b) 3)
+        )
+        :effect (and
+            (assign (vx_bird ?b) 0)
+            (assign (v_bird ?b) 0)
+            (assign (bounce_count ?b) 3)
         )
     )
 
@@ -440,14 +512,105 @@
             (platform_slide_active ?b)
             (bird_sliding ?b ?pl)
             (or
-                (<= (vx_bird ?b) 3.0)
-                (> (- (x_bird ?b) (* (bird_radius ?b) 0.35)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+                (and
+                    (not (platform_has_next ?pl))
+                    (> (- (x_bird ?b) (* (bird_radius ?b) 0.35)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+                )
                 (< (+ (x_bird ?b) (* (bird_radius ?b) 0.35)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
             )
         )
         :effect (and
             (not (platform_slide_active ?b))
             (not (bird_sliding ?b ?pl))
+        )
+    )
+
+    ; Block collides with platform and starts rolling
+    ; Y-check allows blocks resting ON TOP of platform (within half block height)
+    (:event collision_block_platform
+        :parameters (?bl - block ?pl - platform)
+        :precondition (and
+            (not (block_slide_active ?bl))
+            (> (block_life ?bl) 0)
+            (> (v_block ?bl) 0)
+            ; X overlap check
+            (<= (- (x_block ?bl) (/ (block_width ?bl) 2)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+            (>= (+ (x_block ?bl) (/ (block_width ?bl) 2)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
+            ; Y check: block bottom within half-block-height of platform top
+            (<= (- (y_block ?bl) (/ (block_height ?bl) 2)) (+ (platform_top_y_max ?pl) (/ (block_height ?bl) 2)))
+            (>= (- (y_block ?bl) (/ (block_height ?bl) 2)) (- (platform_top_y_min ?pl) (/ (platform_height ?pl) 2)))
+        )
+        :effect (and
+            (assign (y_block ?bl) (+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_block ?bl))) (/ (block_height ?bl) 2)))
+            (assign (vy_block ?bl) 0)
+            (assign (v_block ?bl) (vx_block ?bl))
+            (block_slide_active ?bl)
+            (block_sliding ?bl ?pl)
+            (assign (mod) 2)
+        )
+    )
+
+    ; Block continues rolling on platform
+    (:process block_platform_rolling
+        :parameters (?bl - block ?pl - platform)
+        :precondition (and
+            (block_slide_active ?bl)
+            (block_sliding ?bl ?pl)
+            (> (vx_block ?bl) 0)
+            (> (v_block ?bl) 0)
+            (<= (- (x_block ?bl) (/ (block_width ?bl) 2)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+            (>= (+ (x_block ?bl) (/ (block_width ?bl) 2)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
+        )
+        :effect (and
+            ; Keep block on the platform's top-edge line at its x
+            (assign (y_block ?bl) (+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_block ?bl))) (/ (block_height ?bl) 2)))
+            (assign (vy_block ?bl) 0)
+            (increase (x_block ?bl) (* (/ #t 100) (* 1.0 (vx_block ?bl))))
+            (increase (vx_block ?bl) (* (/ #t 100) (* (gravity) (platform_slide_accel ?pl))))
+            (decrease (vx_block ?bl) (* (/ #t 100) 29.7619))
+            (assign (v_block ?bl) (vx_block ?bl))
+            (assign (mod) 0)
+        )
+    )
+
+    ; Roll continues onto a touching platform (precomputed platform_chain):
+    ; no damping, y snaps to the next platform's top line.
+    (:event block_platform_roll_handoff
+        :parameters (?bl - block ?from - platform ?to - platform)
+        :precondition (and
+            (block_slide_active ?bl)
+            (block_sliding ?bl ?from)
+            (platform_chain ?from ?to)
+            (> (vx_block ?bl) 0)
+            (> (- (x_block ?bl) (/ (block_width ?bl) 2)) (+ (x_platform ?from) (/ (platform_width ?from) 2)))
+        )
+        :effect (and
+            (not (block_sliding ?bl ?from))
+            (block_sliding ?bl ?to)
+            (assign (y_block ?bl) (+ (+ (platform_line_c ?to) (* (platform_slope ?to) (x_block ?bl))) (/ (block_height ?bl) 2)))
+            (assign (vy_block ?bl) 0)
+        )
+    )
+
+    ; Block stops rolling
+    (:event block_platform_roll_end
+        :parameters (?bl - block ?pl - platform)
+        :precondition (and
+            (block_slide_active ?bl)
+            (block_sliding ?bl ?pl)
+            (or
+                (<= (vx_block ?bl) 0)
+                (<= (v_block ?bl) 0)
+                (and
+                    (not (platform_has_next ?pl))
+                    (> (- (x_block ?bl) (/ (block_width ?bl) 2)) (+ (x_platform ?pl) (/ (platform_width ?pl) 2)))
+                )
+                (< (+ (x_block ?bl) (/ (block_width ?bl) 2)) (- (x_platform ?pl) (/ (platform_width ?pl) 2)))
+            )
+        )
+        :effect (and
+            (not (block_slide_active ?bl))
+            (not (block_sliding ?bl ?pl))
         )
     )
 
@@ -551,6 +714,7 @@
             (increase (points_score) 5000)
         )
     )
+
 
 
     (:event explode_pig_from_egg

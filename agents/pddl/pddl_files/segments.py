@@ -139,9 +139,26 @@ def check_events(objects_features, groundtruth_objects, events: list):
 
     for i in range(len(frames)):
         for event in events:
-            if event["func"](frames,groundtruth_objects,i):
+            if event["func"](frames, groundtruth_objects, i):
                 result[event["name"]].append(i)
     return result
+
+
+def features_to_frames(objects_features: dict):
+    """Rebuild per-frame dicts from segmented object feature lists."""
+    if not objects_features:
+        return []
+    max_time = max(len(traj) for traj in objects_features.values())
+    stretched = {}
+    for obj, traj in objects_features.items():
+        row = list(traj)
+        while len(row) < max_time:
+            row.append(row[-1])
+        stretched[obj] = row
+    frames = []
+    for frame_values in zip(*stretched.values()):
+        frames.append(dict(zip(stretched.keys(), frame_values)))
+    return frames
 
 
 def is_flying(features_dict_list, i):

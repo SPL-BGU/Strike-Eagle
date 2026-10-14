@@ -1,4 +1,5 @@
 import warnings
+from itertools import combinations
 
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
@@ -922,11 +923,14 @@ class PhysicsRatioModel:
             self.ratios_filtered = self.ratios
             self.n_outliers_removed = 0
         
-        # Use median for robustness (less sensitive to remaining outliers)
+        # Use 10th percentile for very conservative predictions — even 25th percentile
+        # was too optimistic (KB stored older high-retention samples), predicting vx=46
+        # when actual was vx=33. Forces planner to reject marginal slide-dependent plans
+        # and fall back to block_aim_ff which worked well in Sept runs.
         if len(self.ratios_filtered) > 0:
-            self.ratio = np.median(self.ratios_filtered)
+            self.ratio = np.percentile(self.ratios_filtered, 10)
         elif len(self.ratios) > 0:
-            self.ratio = np.median(self.ratios)  # Fall back to all ratios
+            self.ratio = np.percentile(self.ratios, 10)  # Fall back to all ratios
         else:
             self.ratio = 0.5 if self.var_name == 'v_x' else -0.3
         
@@ -2037,13 +2041,518 @@ def train_rolling_lr_dual(kb_event: dict, min_samples: int = ROLLING_LR_MIN_SAMP
     return sim_models, pddl_models
 
 
+# --- Bird–block impulse / rolling block (local LR; not injected into PDDL yet) ---
+BLOCK_IMPULSE_MIN_SAMPLES = 3
+BLOCK_IMPULSE_OUTPUT_VARS = (
+    "bird_x", "bird_y", "bird_vx", "bird_vy",
+    "block_x", "block_y", "block_vx", "block_vy",
+)
+BLOCK_IMPULSE_PART_KEYS = ("baseline", "rel", "geom", "mass", "size")
+_BLOCK_IMPULSE_MASS_COEF = 0.375
+_DEFAULT_BIRD_MASS = 56.0
+_DEFAULT_BLOCK_MASS = 150.0
+_DEFAULT_BLOCK_WIDTH = 40.0
+_DEFAULT_BLOCK_HEIGHT = 30.0
+_DEFAULT_BIRD_RADIUS = 7.0
+# Curated compare/train set (not full 2^N part grid).
+# Multi-variant ablation disabled — train/log primary only:
+# BLOCK_IMPULSE_VARIANT_SPECS = {
+#     "baseline": ("baseline",),
+#     "rel_geom": ("rel", "geom"),
+#     "baseline_rel": ("baseline", "rel"),
+#     "baseline_rel_mass": ("baseline", "rel", "mass"),
+#     "baseline_rel_geom": ("baseline", "rel", "geom"),
+#     "size": ("size",),
+#     "baseline_rel_geom_mass": ("baseline", "rel", "geom", "mass"),
+#     "baseline_rel_geom_mass_size": ("baseline", "rel", "geom", "mass", "size"),
+# }
+BLOCK_IMPULSE_VARIANT_SPECS = {
+    "baseline_rel_geom_mass_size": ("baseline", "rel", "geom", "mass", "size"),
+}
+BLOCK_IMPULSE_VARIANT_ORDER = tuple(BLOCK_IMPULSE_VARIANT_SPECS.keys())
+BLOCK_IMPULSE_PRIMARY_VARIANT = "baseline_rel_geom_mass_size"
+BLOCK_IMPULSE_FIT_REPORT_VARIANTS = (BLOCK_IMPULSE_PRIMARY_VARIANT,)
+
+
+def block_type_code_from_gt_name(block_name: str) -> int:
+    """Encode block material for LR (wood=0, stone=1, ice=2, TNT=3)."""
+    name = (block_name or "").lower()
+    if name.startswith("stone"):
+        return 1
+    if name.startswith("ice"):
+        return 2
+    if name.startswith("tnt"):
+        return 3
+    return 0
+
+
+def _estimate_bird_mass_gt(groundtruth_objects: dict) -> float:
+    for key, props in (groundtruth_objects or {}).items():
+        if "bird" not in (key or "").lower():
+            continue
+        if props and len(props) >= 2:
+            return float(props[0]) * float(props[1])
+    return _DEFAULT_BIRD_MASS
+
+
+def _estimate_block_mass_gt(block_name: str, groundtruth_objects: dict) -> float:
+    props = (groundtruth_objects or {}).get(block_name)
+    if props and len(props) >= 2:
+        w, h = float(props[0]), float(props[1])
+        if w > 0 and h > 0:
+            return w * h * _BLOCK_IMPULSE_MASS_COEF
+    return _DEFAULT_BLOCK_MASS
+
+
+def resolve_block_impulse_masses(
+    block_gt_name: str,
+    block_x: float,
+    block_y: float,
+    groundtruth_objects: dict,
+    problem_data: dict = None,
+) -> tuple:
+    """
+    PDDL problem masses when available; else same bbox×coef estimates as pddl_objects.
+    """
+    bird_mass = None
+    block_mass = None
+    if problem_data:
+        for _k, v in problem_data.items():
+            if _k.startswith("bird_") and isinstance(v, dict) and "m_bird" in v:
+                bird_mass = float(v["m_bird"])
+                break
+        best_d = None
+        for _k, v in problem_data.items():
+            if not _k.startswith("block_") or not isinstance(v, dict):
+                continue
+            if "block_mass" not in v:
+                continue
+            dx = float(v["x_block"]) - float(block_x)
+            dy = float(v["y_block"]) - float(block_y)
+            d = dx * dx + dy * dy
+            if best_d is None or d < best_d:
+                best_d = d
+                block_mass = float(v["block_mass"])
+    if bird_mass is None:
+        bird_mass = _estimate_bird_mass_gt(groundtruth_objects)
+    if block_mass is None:
+        block_mass = _estimate_block_mass_gt(block_gt_name, groundtruth_objects)
+    return bird_mass, block_mass
+
+
+def _gt_width_height(props) -> tuple:
+    if props and len(props) >= 2:
+        w, h = float(props[0]), float(props[1])
+        if w > 0 and h > 0:
+            return w, h
+    return None, None
+
+
+def _active_bird_gt_key(groundtruth_objects: dict):
+    for key in (groundtruth_objects or {}):
+        if "bird" in (key or "").lower():
+            return key
+    return None
+
+
+def resolve_block_impulse_sizes(
+    block_gt_name: str,
+    block_x: float,
+    block_y: float,
+    groundtruth_objects: dict,
+    problem_data: dict = None,
+) -> tuple:
+    """
+    Block W×H and bird collision radius (GT min(w,h)/2, same as block_collision_at_frame).
+    PDDL problem sizes override block dims when matched by position.
+    """
+    block_w = block_h = bird_radius = None
+    props = (groundtruth_objects or {}).get(block_gt_name)
+    gw, gh = _gt_width_height(props)
+    if gw is not None:
+        block_w, block_h = gw, gh
+    bird_key = _active_bird_gt_key(groundtruth_objects)
+    if bird_key:
+        bw, bh = _gt_width_height(groundtruth_objects.get(bird_key))
+        if bw is not None:
+            bird_radius = min(bw, bh) / 2.0
+    if problem_data:
+        best_d = None
+        for _k, v in problem_data.items():
+            if not _k.startswith("block_") or not isinstance(v, dict):
+                continue
+            if "block_width" not in v or "block_height" not in v:
+                continue
+            dx = float(v["x_block"]) - float(block_x)
+            dy = float(v["y_block"]) - float(block_y)
+            d = dx * dx + dy * dy
+            if best_d is None or d < best_d:
+                best_d = d
+                block_w = float(v["block_width"])
+                block_h = float(v["block_height"])
+        for _k, v in problem_data.items():
+            if _k.startswith("bird_") and isinstance(v, dict) and "bird_radius" in v:
+                # PDDL uses max/2; keep GT min/2 for collision unless GT missing
+                if bird_radius is None:
+                    bird_radius = float(v["bird_radius"])
+                break
+    if block_w is None:
+        block_w = _DEFAULT_BLOCK_WIDTH
+    if block_h is None:
+        block_h = _DEFAULT_BLOCK_HEIGHT
+    if bird_radius is None:
+        bird_radius = _DEFAULT_BIRD_RADIUS
+    aspect = block_h / block_w if block_w > 1e-6 else 0.0
+    return block_w, block_h, bird_radius, aspect
+
+
+def _block_impulse_feats_baseline(sample):
+    return [
+        float(sample["bird_x"]),
+        float(sample["bird_y"]),
+        float(sample["bird_vx"]),
+        float(sample["bird_vy"]),
+        float(sample["block_x"]),
+        float(sample["block_y"]),
+        float(sample["block_vx"]),
+        float(sample["block_vy"]),
+    ]
+
+
+def _block_impulse_feats_rel(sample):
+    rvx = float(sample["bird_vx"]) - float(sample["block_vx"])
+    rvy = float(sample["bird_vy"]) - float(sample["block_vy"])
+    ratio = compute_velocity_ratio(rvx, rvy)
+    cos_ang, sin_ang, tan_ang = compute_angle_trig_features(rvx, rvy)
+    speed, _, _ = compute_kinetic_features(rvx, rvy)
+    return [rvx, rvy, ratio, cos_ang, sin_ang, tan_ang, speed]
+
+
+def _block_impulse_feats_geom(sample):
+    bx = float(sample["bird_x"])
+    by = float(sample["bird_y"])
+    blx = float(sample["block_x"])
+    bly = float(sample["block_y"])
+    dx = blx - bx
+    dy = bly - by
+    dist = float(np.hypot(dx, dy))
+    height_above = float(sample.get("height_above_platform", 0.0))
+    return [dx, dy, dist, height_above]
+
+
+def _block_impulse_feats_mass(sample):
+    bm = float(sample.get("bird_mass", _DEFAULT_BIRD_MASS))
+    blm = float(sample.get("block_mass", _DEFAULT_BLOCK_MASS))
+    ratio = bm / blm if abs(blm) > 1e-6 else 0.0
+    return [blm, ratio]
+
+
+def _block_impulse_feats_size(sample):
+    bw = float(sample.get("block_width", _DEFAULT_BLOCK_WIDTH))
+    bh = float(sample.get("block_height", _DEFAULT_BLOCK_HEIGHT))
+    bird_r = float(sample.get("bird_radius", _DEFAULT_BIRD_RADIUS))
+    aspect = float(sample.get("block_aspect", bh / bw if bw > 1e-6 else 0.0))
+    return [bw, bh, bird_r, aspect]
+
+
+BLOCK_IMPULSE_PART_BUILDERS = {
+    "baseline": _block_impulse_feats_baseline,
+    "rel": _block_impulse_feats_rel,
+    "geom": _block_impulse_feats_geom,
+    "mass": _block_impulse_feats_mass,
+    "size": _block_impulse_feats_size,
+}
+
+
+def _make_block_impulse_combo_feature_fn(component_keys):
+    """Concatenate part feature vectors + single block_type column."""
+
+    def feature_fn(states):
+        rows = []
+        for sample in states:
+            row = []
+            for key in component_keys:
+                row.extend(BLOCK_IMPULSE_PART_BUILDERS[key](sample))
+            row.append(float(sample.get("block_type", 0)))
+            rows.append(row)
+        return np.array(rows)
+
+    feature_fn._component_keys = tuple(component_keys)
+    return feature_fn
+
+
+def _build_block_impulse_variant_registry():
+    """Curated variant builders (see BLOCK_IMPULSE_VARIANT_SPECS)."""
+    builders = {
+        name: _make_block_impulse_combo_feature_fn(parts)
+        for name, parts in BLOCK_IMPULSE_VARIANT_SPECS.items()
+    }
+    return BLOCK_IMPULSE_VARIANT_ORDER, builders
+
+
+BLOCK_IMPULSE_VARIANT_ORDER, BLOCK_IMPULSE_FEATURE_BUILDERS = (
+    _build_block_impulse_variant_registry()
+)
+
+
+def make_block_impulse_feature_vector(states):
+    """Pre-contact features for the primary block-impulse LR variant."""
+    return BLOCK_IMPULSE_FEATURE_BUILDERS[BLOCK_IMPULSE_PRIMARY_VARIANT](states)
+
+
+def make_block_impulse_feature_vector_rel(states):
+    return BLOCK_IMPULSE_PART_BUILDERS["rel"](states)
+
+
+def make_block_impulse_feature_vector_geom(states):
+    return BLOCK_IMPULSE_PART_BUILDERS["geom"](states)
+
+
+def make_block_impulse_feature_vector_mass(states):
+    return BLOCK_IMPULSE_PART_BUILDERS["mass"](states)
+
+
+def make_block_impulse_feature_vector_size(states):
+    return BLOCK_IMPULSE_PART_BUILDERS["size"](states)
+
+
+BLOCK_IMPULSE_VELOCITY_OUTPUTS = ("bird_vx", "bird_vy", "block_vx", "block_vy")
+
+
+def _train_block_impulse_lr_variant(
+    kb_event: dict,
+    feature_fn,
+    min_samples: int = BLOCK_IMPULSE_MIN_SAMPLES,
+    variant: str = "baseline",
+):
+    """One linear model per post-state variable for a given feature builder."""
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import r2_score
+
+    states = kb_event.get("states") or []
+    variables = kb_event.get("variables") or {}
+    if len(states) < min_samples:
+        return None
+
+    X = feature_fn(states)
+    lr_models = {"_feature_dim": int(X.shape[1]), "_variant": variant}
+    for var_name in BLOCK_IMPULSE_OUTPUT_VARS:
+        if var_name not in variables:
+            return None
+        y = np.array(variables[var_name]["value"], dtype=float)
+        if len(y) != len(X):
+            return None
+        model = LinearRegression()
+        model.fit(X, y)
+        pred = model.predict(X)
+        lr_models[var_name] = {
+            "model": model,
+            "r2": float(r2_score(y, pred)),
+            "rmse": float(np.sqrt(np.mean((y - pred) ** 2))),
+            "mae": float(np.mean(np.abs(y - pred))),
+            "coef": model.coef_.tolist(),
+            "intercept": float(model.intercept_),
+        }
+    return lr_models
+
+
+def train_block_impulse_lr(kb_event: dict, min_samples: int = BLOCK_IMPULSE_MIN_SAMPLES):
+    """Primary block+block pre-state LR (backward compatible entry point)."""
+    return _train_block_impulse_lr_variant(
+        kb_event,
+        make_block_impulse_feature_vector,
+        min_samples=min_samples,
+        variant=BLOCK_IMPULSE_PRIMARY_VARIANT,
+    )
+
+
+def train_block_impulse_lr_all_variants(
+    kb_event: dict, min_samples: int = BLOCK_IMPULSE_MIN_SAMPLES
+):
+    """Train primary variant only (multi-variant compare disabled)."""
+    out = {}
+    for name in BLOCK_IMPULSE_VARIANT_ORDER:
+        builder = BLOCK_IMPULSE_FEATURE_BUILDERS[name]
+        models = _train_block_impulse_lr_variant(
+            kb_event, builder, min_samples=min_samples, variant=name
+        )
+        if models:
+            out[name] = models
+    return out
+
+
+def predict_block_impulse_post_state(
+    lr_models: dict, pre_state: dict, variant: str = None
+):
+    if not lr_models:
+        return None
+    effective = lr_models.get("_variant") or variant or BLOCK_IMPULSE_PRIMARY_VARIANT
+    builder = BLOCK_IMPULSE_FEATURE_BUILDERS.get(
+        effective, make_block_impulse_feature_vector
+    )
+    X = builder([pre_state])
+    out = {}
+    for var_name in BLOCK_IMPULSE_OUTPUT_VARS:
+        entry = lr_models.get(var_name)
+        if not entry or "model" not in entry:
+            return None
+        out[var_name] = float(entry["model"].predict(X)[0])
+    return out
+
+
+def log_block_impulse_fit_report(
+    kb_event: dict,
+    lr_models: dict,
+    highlight_last: bool = True,
+    variant: str = None,
+    feature_fn=None,
+):
+    """Print R² / RMSE / MAE per output and optional last-sample actual vs predicted."""
+    if variant is None:
+        variant = BLOCK_IMPULSE_PRIMARY_VARIANT
+    if not lr_models or not kb_event.get("states"):
+        return
+    if feature_fn is None:
+        feature_fn = BLOCK_IMPULSE_FEATURE_BUILDERS.get(
+            variant, make_block_impulse_feature_vector
+        )
+    tag = f"[BLOCK IMPULSE LR {variant}]"
+    states = kb_event["states"]
+    variables = kb_event["variables"]
+    X = feature_fn(states)
+    n = len(states)
+    print(f"{tag} fit report n={n} features={X.shape[1]}")
+    for var_name in BLOCK_IMPULSE_OUTPUT_VARS:
+        entry = lr_models.get(var_name)
+        if not entry:
+            continue
+        print(
+            f"{tag}   {var_name}: R²={entry['r2']:.3f} "
+            f"RMSE={entry['rmse']:.2f} MAE={entry['mae']:.2f}"
+        )
+    if highlight_last and n > 0 and variant == BLOCK_IMPULSE_PRIMARY_VARIANT:
+        pre = states[-1]
+        meta = (kb_event.get("meta") or [{}])[-1]
+        pred = predict_block_impulse_post_state(lr_models, pre, variant=variant)
+        if pred:
+            print(
+                f"{tag} last sample block={meta.get('block_name', '?')} "
+                f"type={pre.get('block_type')} contact_frame={meta.get('contact_frame')}"
+            )
+            bx_act = [variables[k]["value"][-1] for k in BLOCK_IMPULSE_OUTPUT_VARS[:4]]
+            bx_prd = [pred[k] for k in BLOCK_IMPULSE_OUTPUT_VARS[:4]]
+            bl_act = [variables[k]["value"][-1] for k in BLOCK_IMPULSE_OUTPUT_VARS[4:]]
+            bl_prd = [pred[k] for k in BLOCK_IMPULSE_OUTPUT_VARS[4:]]
+            print(
+                f"{tag}   bird  actual=({bx_act[0]:.1f},{bx_act[1]:.1f},"
+                f"{bx_act[2]:.1f},{bx_act[3]:.1f}) pred=({bx_prd[0]:.1f},{bx_prd[1]:.1f},"
+                f"{bx_prd[2]:.1f},{bx_prd[3]:.1f})"
+            )
+            print(
+                f"{tag}   block actual=({bl_act[0]:.1f},{bl_act[1]:.1f},"
+                f"{bl_act[2]:.1f},{bl_act[3]:.1f}) pred=({bl_prd[0]:.1f},{bl_prd[1]:.1f},"
+                f"{bl_prd[2]:.1f},{bl_prd[3]:.1f})"
+            )
+            err_b = [bx_prd[i] - bx_act[i] for i in range(4)]
+            err_bl = [bl_prd[i] - bl_act[i] for i in range(4)]
+            print(
+                f"{tag}   err   bird=({err_b[0]:+.1f},{err_b[1]:+.1f},"
+                f"{err_b[2]:+.1f},{err_b[3]:+.1f}) block=({err_bl[0]:+.1f},{err_bl[1]:+.1f},"
+                f"{err_bl[2]:+.1f},{err_bl[3]:+.1f})"
+            )
+
+
+def log_block_impulse_velocity_compare(lr_by_variant: dict, n: int):
+    """Disabled: multi-variant R² side-by-side (primary-only training)."""
+    return
+    # --- previous multi-variant compare ---
+    # if not lr_by_variant:
+    #     return
+    # print(f"[BLOCK IMPULSE LR COMPARE] n={n} variants={len(BLOCK_IMPULSE_VARIANT_ORDER)}")
+    # for var_name in BLOCK_IMPULSE_VELOCITY_OUTPUTS:
+    #     chunk = []
+    #     for variant in BLOCK_IMPULSE_VARIANT_ORDER:
+    #         models = lr_by_variant.get(variant)
+    #         entry = (models or {}).get(var_name)
+    #         if entry:
+    #             chunk.append(f"{variant}={entry['r2']:.3f}")
+    #         else:
+    #             chunk.append(f"{variant}=—")
+    #     print(f"[BLOCK IMPULSE LR COMPARE]   {var_name}: " + " ".join(chunk))
+
+
+def update_block_impulse_learning(
+    kb: dict,
+    pre_state: dict,
+    post_state: dict,
+    meta: dict = None,
+    min_samples: int = BLOCK_IMPULSE_MIN_SAMPLES,
+):
+    """
+    Append one bird–block impulse sample and retrain local LR when n >= min_samples.
+    Does not inject into PDDL (local validation only).
+    """
+    event_name = "block_impulse"
+    if event_name not in kb:
+        kb[event_name] = {
+            "states": [],
+            "variables": {
+                var: {"value": []} for var in BLOCK_IMPULSE_OUTPUT_VARS
+            },
+            "meta": [],
+        }
+    kb[event_name]["states"].append(pre_state)
+    for var in BLOCK_IMPULSE_OUTPUT_VARS:
+        kb[event_name]["variables"][var]["value"].append(float(post_state[var]))
+    kb[event_name]["meta"].append(dict(meta or {}))
+
+    n_samples = len(kb[event_name]["states"])
+    print(
+        f"[BLOCK IMPULSE LEARN] stored sample {n_samples} "
+        f"block={ (meta or {}).get('block_name', '?') } "
+        f"pre_bird_v=({pre_state['bird_vx']:.1f},{pre_state['bird_vy']:.1f}) "
+        f"pre_block_v=({pre_state['block_vx']:.1f},{pre_state['block_vy']:.1f})"
+    )
+
+    if n_samples < min_samples:
+        print(
+            f"[BLOCK IMPULSE LR] need {min_samples - n_samples} more sample(s) "
+            f"before training (min={min_samples})"
+        )
+        return
+
+    lr_by_variant = train_block_impulse_lr_all_variants(
+        kb[event_name], min_samples=min_samples
+    )
+    if lr_by_variant:
+        kb[event_name]["lr_models"] = lr_by_variant.get(BLOCK_IMPULSE_PRIMARY_VARIANT)
+        kb[event_name]["lr_models_by_variant"] = lr_by_variant
+        for variant in BLOCK_IMPULSE_FIT_REPORT_VARIANTS:
+            models = lr_by_variant.get(variant)
+            if not models:
+                continue
+            builder = BLOCK_IMPULSE_FEATURE_BUILDERS[variant]
+            log_block_impulse_fit_report(
+                kb[event_name],
+                models,
+                highlight_last=True,
+                variant=variant,
+                feature_fn=builder,
+            )
+        # log_block_impulse_velocity_compare(lr_by_variant, n_samples)
+    else:
+        print("[BLOCK IMPULSE LR] training failed (check sample alignment)")
+
+
 # Platform slide v_x for PDDL: linear 4-feature LR collapses (~0.04 R²) when KB mixes
 # bounces and slides. Ratio on slide-like samples is injectable and stable.
 PLATFORM_SLIDE_POST_VY_MAX = 15.0
 PLATFORM_VX_RATIO_MIN_SAMPLES = 5
 PLATFORM_VX_RATIO_MIN_PRE_VX = 25.0
 # Keep samples that look like forward slide (not reverse bounce / sign flip).
-PLATFORM_VX_RATIO_MIN_RETENTION = 0.35
+# Lowered from 0.35 → 0.25 to include rolling_t05 samples with ratio ~0.33 that were
+# previously filtered out, causing the sim to use optimistic predictions (vx=51 vs actual=33).
+PLATFORM_VX_RATIO_MIN_RETENTION = 0.25
 PLATFORM_VX_RATIO_MAX_RETENTION = 1.05
 
 

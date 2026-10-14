@@ -3475,6 +3475,17 @@ def visualize_expected_vs_actual_hit(
                             color='saddlebrown', alpha=0.12)
 
         for name, data in platforms.items():
+            if data.get('_platform_sloped'):
+                x0 = data['_platform_surface_x0']
+                y0 = data['_platform_surface_y0']
+                x1 = data['_platform_surface_x1']
+                y1 = data['_platform_surface_y1']
+                ax_obj.plot(
+                    [x0, x1], [y0, y1], color='saddlebrown', linewidth=6,
+                    solid_capstyle='round',
+                    label='Platform (slope)' if name == 'platform_0' else '',
+                )
+                continue
             x = data.get('x_platform', 0);  y = data.get('y_platform', 0)
             w = data.get('platform_width', 20);  h = data.get('platform_height', 10)
             rect = Rectangle((x - w/2, y - h/2), w, h, color='saddlebrown',
@@ -3789,6 +3800,19 @@ def visualize_level_setup(problem_data: dict, world_model_params: dict = None,
     
     # Draw platforms (brown rectangles)
     for name, data in platforms.items():
+        if data.get('_platform_sloped'):
+            x0 = data['_platform_surface_x0']
+            y0 = data['_platform_surface_y0']
+            x1 = data['_platform_surface_x1']
+            y1 = data['_platform_surface_y1']
+            ax.plot(
+                [x0, x1], [y0, y1], color='saddlebrown', linewidth=6,
+                solid_capstyle='round',
+                label='Platform (slope)' if name == 'platform_0' else '',
+            )
+            mid_x, mid_y = (x0 + x1) / 2, (y0 + y1) / 2
+            ax.annotate(f'{name}', (mid_x, mid_y), fontsize=7, ha='center', va='center', color='white')
+            continue
         x = data.get('x_platform', 0)
         y = data.get('y_platform', 0)
         w = data.get('platform_width', 20)
