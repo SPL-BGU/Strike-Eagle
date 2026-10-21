@@ -2055,18 +2055,30 @@ class AngleCalibrator:
     # Mid-range knots (35–51°) fill the old 28→59 gap so invert(dial→pull) matches
     # SB6.6 instead of linear extrapolation (Fix 2).
     _BOOTSTRAP = (
-        (22.0, 8.5),
-        (24.0, 11.0),
-        (25.2, 14.4),
-        (26.5, 14.4),
-        (28.0, 23.4),
-        (35.0, 28.0),
-        (39.0, 32.0),
+        # Shallow knots refit 2026-10-18 (same data as the steep knots below):
+        # full force cannot launch below ~16° — pull 19 → 16.5° (n=56), so the
+        # old (22, 8.5)/(24, 11.0) knots let sim "kill" with 5–9° dials that
+        # actually flew ~16.5° into blocks.
+        (19.0, 16.5),
+        (21.0, 18.0),
+        (25.0, 23.4),
+        (30.0, 29.8),
+        (36.0, 33.7),
+        (40.0, 35.5),
         (44.0, 42.0),
         (51.0, 50.9),
         (59.0, 58.8),
-        (75.5, 73.9),
-        (81.5, 77.9),
+        # Steep knots refit 2026-10-18 from ~1.7k full-force shots (Oct runs,
+        # ACTUATOR pull vs SHOT DIAG POST θ, median per pull). The old
+        # (81.5, 77.9) knot under-read steep pulls by ~3°, so a 77° target was
+        # sent as an 80° pull and flew ~80° — near-pig lobs landed short.
+        (64.0, 63.4),
+        (68.0, 64.5),
+        (70.0, 68.4),
+        (72.0, 71.5),
+        (77.0, 76.5),
+        (80.0, 79.6),
+        (85.0, 84.0),
     )
 
     # Bootstrap (game_pull, measured_θ) at force≈0.85, derived from clean-execution
@@ -2083,8 +2095,17 @@ class AngleCalibrator:
         (44.0, 42.0),
         (51.0, 50.9),
         (59.0, 58.8),
-        (75.5, 73.9),
-        (81.5, 77.9),
+        # Steep knots refit 2026-10-18 from ~1.7k full-force shots (Oct runs,
+        # ACTUATOR pull vs SHOT DIAG POST θ, median per pull). The old
+        # (81.5, 77.9) knot under-read steep pulls by ~3°, so a 77° target was
+        # sent as an 80° pull and flew ~80° — near-pig lobs landed short.
+        (64.0, 63.4),
+        (68.0, 64.5),
+        (70.0, 68.4),
+        (72.0, 71.5),
+        (77.0, 76.5),
+        (80.0, 79.6),
+        (85.0, 84.0),
     )
 
     # Force at which _BOOTSTRAP_PARTIAL was measured. Between this and 1.0 we
@@ -2114,13 +2135,8 @@ class AngleCalibrator:
         force: float = 1.0,
     ) -> float:
         """Launch angle the game will produce for this PDDL dial (after pull clamping)."""
-        flight_target = self.pddl_flight_angle(pddl_dial)
-        # Steep SB6.6 lobs: game flight tracks the BamBirds pull angle, not the
-        # PDDL flight target. Shipped bootstrap extrapolates to ~79° for an
-        # 82.5° dial while observed launches are ~87° (multiple_forces 00033).
-        from .bambirds_shot_helper import actual_to_launch_deg, HIGH_ANGLE_BEGIN_RAD
-        if math.radians(flight_target) >= HIGH_ANGLE_BEGIN_RAD:
-            return actual_to_launch_deg(flight_target)
+        # Same pull→measured curve as pddl_shot_to_release_point at every angle
+        # (the old BamBirds steep-lob branch disagreed with the actuator by ~3°).
         game_pull = self.game_pull_for_pddl_dial(
             pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
         )
@@ -2236,9 +2252,9 @@ class AngleCalibrator:
         """
         PDDL dial to pass to forward sim so trajectory matches in-game launch.
 
-        Delegates to ``measured_flight_for_pddl_dial`` (bootstrap at low/mid
-        angles; BamBirds pull-angle model above ``HIGH_ANGLE_BEGIN_RAD``) so
-        sim and ``pddl_shot_to_release_point`` stay aligned on steep lobs.
+        Delegates to ``measured_flight_for_pddl_dial`` (same pull→measured
+        curve the actuator inverts) so sim and ``pddl_shot_to_release_point``
+        stay aligned on steep lobs.
         """
         measured = self.measured_flight_for_pddl_dial(
             pddl_dial, min_pull=min_pull, max_pull=max_pull, force=force,
@@ -2502,7 +2518,7 @@ def pddl_planned_launch_state(
 # tracking ``force`` linearly (i.e., clamped at v_max regardless of
 # multiplier), we've found max_pull; use the largest safe value.
 # 4.0 ≈ 4× finer angular bins vs baseline (run_20260822_190314 used 1.0).
-MODE_B_MAG_MULTIPLIER = 4.0
+MODE_B_MAG_MULTIPLIER = 2.0
 # Floor pullback (px) at force=1.0 when vision under-reports sling.height (~3–4 px
 # vs ~18 px observed in [MODE B DIAG] / game DragDetails). Without this, multiplier
 # alone cannot help when base_mag = sling_h * 5 * v_portion collapses to ~2 px.
@@ -2700,7 +2716,9 @@ def generate_pddl(problem_data: dict, init_angle, angel_rate, world_model: World
         # Force search fluents — v_bird_multiplier sweeps force_max→force_min at FORCE_RATE.
         # Starting at max means planner prefers full-force shots and only falls back to partial.
         f"(= (v_bird_multiplier) {force_max})",
-        f"(= (force_rate) {FORCE_RATE})",
+        # Pinned force (min == max): rate 0, else decreasing_force still fires once at
+        # the inclusive bound and drops v_bird_multiplier below force_min.
+        f"(= (force_rate) {0 if force_min >= force_max else FORCE_RATE})",
         f"(= (min_force) {force_min})",
         f"(= (max_force) {force_max})",
         # T1.2: ENHSP requires every numeric fluent it evaluates to have a
@@ -3205,11 +3223,20 @@ def parse_solution_to_actions(solution_path: str, init_angle, angel_rate,
     """Parse ENHSP solution into a list of (type, value) action tuples.
 
     Returns a list that may contain both ('set_force', force) and ('shoot', angle).
+
+    Only the first bird is parsed: the agent fires one bird per solve(), and
+    later pa-twang times are absolute plan times after switch_bird reset
+    (angle) to 0, so ``init_angle - n * rate`` yields bogus dials (e.g. -425°).
     """
     with open(solution_path) as solution_file:
         lines = solution_file.readlines()
-    relevant = [l for l in lines if action_filter(l)]
-    actions = [parse_action(l, init_angle, angel_rate, force_min, force_rate) for l in relevant]
+    actions = []
+    for line in lines:
+        if not action_filter(line):
+            continue
+        actions.append(parse_action(line, init_angle, angel_rate, force_min, force_rate))
+        if actions[-1][0] == 'shoot':
+            break
     return actions
 
 

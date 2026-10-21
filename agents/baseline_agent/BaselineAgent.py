@@ -152,15 +152,25 @@ class BaselineAgent(Thread):
             level = 1
         return level
 
-    @staticmethod
-    def _game_level_matches_target(game_level: int, target: int) -> bool:
-        """Compare server getCurrentLevel with 1-based protocol/loadNext level index."""
-        if game_level == target:
-            return True
-        # getCurrentLevel is 0-indexed on some Science Birds builds; loadNext is 1-based.
-        if game_level + 1 == target:
-            return True
-        return False
+    def _load_next(self, reason: str) -> int:
+        """Call load_next_available_level exactly once and record the level SB loaded.
+
+        The returned 1-based index is the only reliable level identity on this SB
+        build (getCurrentLevel always answers 1). In training mode with
+        attempt_limit_per_level=N, SB replays each level N times (WIN or LOSS) and
+        every load_next call consumes one of those attempts, so never call it more
+        than once per popup.
+        """
+        level = self.ar.load_next_available_level()
+        prev = self.current_level
+        self.current_level = level
+        print(f"[MAIN LOOP DEBUG] load_next ({reason}) -> SB level {level} (was {prev})")
+        self._on_sb_level_loaded(level)
+        return level
+
+    def _on_sb_level_loaded(self, sb_level: int) -> None:
+        """Hook for subclasses: SB just loaded 1-based level ``sb_level``."""
+        pass
 
     def check_my_score(self):
         """
@@ -226,22 +236,18 @@ class BaselineAgent(Thread):
             print(f"[MAIN LOOP DEBUG] Current game state: {state}")
             
             # If the level is solved , go to the next level
+            # If the level is solved , go to the next level
             if state == GameState.WON:
                 self.repeated_gt_counter = 0
                 # check for change of number of levels in the game
                 n_levels = self.update_no_of_levels()
 
-                # Science Birds "training" mode with attempt_limit_per_level>1 will
-                # replay the same level up to N times before auto-advancing. We do
-                # NOT try to force-jump via load_level() — it hangs on this SB build.
-                # Instead, rely on SB's built-in advance after the attempt budget is
-                # exhausted; the PDDLAgent dedup guard (_finalized_level_paths)
-                # ensures each unique level is logged exactly once.
-                dismissed = self.ar.load_next_available_level()
-                print(f"[MAIN LOOP DEBUG] WON on level {self.current_level} — "
-                      f"load_next returned {dismissed} (training-mode replay "
-                      f"expected until SB auto-advances after 8 attempts).")
-                self.current_level = dismissed
+                # Science Birds "training" mode with attempt_limit_per_level=N replays
+                # each level N times (WIN or LOSS) before auto-advancing. We do NOT
+                # force-jump via load_level() — it hangs on this SB build. The level
+                # index load_next returns drives the agent's protocol slot; replays of
+                # an already-finalized level are burned by PDDLAgent.
+                self._load_next(f"WON on SB level {self.current_level}")
                 # SKIPPED: get_novelty_info() blocks
                 # self.novelty_existence = self.ar.get_novelty_info()
 
@@ -252,30 +258,21 @@ class BaselineAgent(Thread):
                 self.repeated_gt_counter = 0
                 self.check_current_level_score()
 
-                if getattr(self, "_retry_current_level", False):
-                    # load_next is the only LOST-popup command that responds reliably.
-                    # Do NOT call restart_level or load_level here — they hang on the popup.
-                    self._retry_current_level = False
-                    target = self.current_level
-                    print(f"[MAIN LOOP DEBUG] LOST -> retry level {target}: "
-                          f"dismiss via load_next_available_level...")
-                    dismissed = self.ar.load_next_available_level()
-                    self._reload_target_level = target
-                    self._reload_dismissed_level = dismissed
+                # load_next is the only LOST-popup command that responds reliably.
+                # Do NOT call restart_level or load_level here — they hang on the popup.
+                # SB replays the same level until its attempt budget is used up, so a
+                # single load_next is both the retry and the advance.
+                retry = getattr(self, "_retry_current_level", False)
+                self._retry_current_level = False
+                target = self.current_level
+                level = self._load_next(
+                    f"LOST on SB level {target}, {'retry' if retry else 'no retry'}")
+                if retry:
                     self._reload_in_progress = True
-                    print(f"[MAIN LOOP DEBUG] load_next returned {dismissed}; "
-                          f"will verify level on PLAYING (target={target})")
-                else:
-                    # Not retrying: test level (no retries), or training level we
-                    # already finalized (WIN previously) or abandoned. Just dismiss
-                    # via load_next_available_level; SB will replay the same level
-                    # until its attempt budget is up, at which point it auto-advances.
-                    # The dedup guard keeps the CSV clean during any replays.
-                    dismissed = self.ar.load_next_available_level()
-                    print(f"[MAIN LOOP DEBUG] LOST on level {self.current_level} "
-                          f"(no retry) — load_next returned {dismissed} "
-                          f"(SB will replay until attempt budget exhausted).")
-                    self.current_level = dismissed
+                    if level != target:
+                        print(f"[MAIN LOOP DEBUG] WARNING: retry wanted SB level {target} but SB "
+                              f"loaded {level} (SB attempt budget exhausted before agent "
+                              f"max_train_attempts)")
                 # SKIPPED: get_novelty_info() blocks
                 # self.novelty_existence = self.ar.get_novelty_info()
                 self.tp = SimpleTrajectoryPlanner()
@@ -283,7 +280,7 @@ class BaselineAgent(Thread):
             elif state == GameState.LEVEL_SELECTION:
                 self.logger.info(
                     "unexpected level selection page, go to the last current level : " + str(self.current_level))
-                self.current_level = self.ar.load_next_available_level()
+                self._load_next("LEVEL_SELECTION")
                 # SKIPPED: get_novelty_info() blocks
                 # self.novelty_existence = self.ar.get_novelty_info()
 
@@ -295,7 +292,7 @@ class BaselineAgent(Thread):
                 self.repeated_gt_counter = 0
                 self.logger.info("unexpected main menu page, reload the level : %s" % self.current_level)
                 print(f"[MAIN LOOP DEBUG] MAIN_MENU detected - calling load_next_available_level()...")
-                self.current_level = self.ar.load_next_available_level()
+                self._load_next("MAIN_MENU")
                 print(f"[MAIN LOOP DEBUG] Level loaded: {self.current_level}")
                 # SKIPPED: get_novelty_info() was blocking - not needed for PDDL testing
                 # self.novelty_existence = self.ar.get_novelty_info()
@@ -304,7 +301,7 @@ class BaselineAgent(Thread):
 
             elif state == GameState.EPISODE_MENU:
                 self.logger.info("unexpected episode menu page, reload the level:  %s" % self.current_level)
-                self.current_level = self.ar.load_next_available_level()
+                self._load_next("EPISODE_MENU")
                 # SKIPPED: get_novelty_info() blocks
                 # self.novelty_existence = self.ar.get_novelty_info()
 
@@ -315,38 +312,12 @@ class BaselineAgent(Thread):
 
             elif state == GameState.PLAYING:
                 if getattr(self, "_reload_in_progress", False):
-                    target = self._reload_target_level
-                    dismissed = self._reload_dismissed_level
-                    game_level = self.ar.get_current_level()
+                    # Never call load_next / load_level here: each load_next burns one
+                    # SB attempt, and getCurrentLevel always answers 1 on this build,
+                    # so there is nothing to verify against.
                     self._reload_in_progress = False
-                    self._reload_target_level = None
-                    self._reload_dismissed_level = None
                     self.tp = SimpleTrajectoryPlanner()
-                    on_target = (
-                        self._game_level_matches_target(game_level, target)
-                        or dismissed == target
-                    )
-                    if on_target:
-                        print(f"[MAIN LOOP DEBUG] PLAYING — retry ready on game_level={game_level} "
-                              f"(target={target}, dismissed={dismissed}); "
-                              f"skip load_level, engaging solve")
-                    else:
-                        # Never load_level during retry — it hangs when already on target
-                        # but getCurrentLevel uses 0-based indexing. Step with load_next.
-                        print(f"[MAIN LOOP DEBUG] PLAYING — retry level mismatch "
-                              f"(game_level={game_level}, target={target}, "
-                              f"dismissed={dismissed}); stepping load_next...")
-                        for step in range(5):
-                            stepped = self.ar.load_next_available_level()
-                            game_level = self.ar.get_current_level()
-                            print(f"[MAIN LOOP DEBUG] retry step {step + 1}: "
-                                  f"load_next={stepped}, game_level={game_level}")
-                            if self._game_level_matches_target(game_level, target):
-                                break
-                        if not self._game_level_matches_target(game_level, target):
-                            print(f"[MAIN LOOP DEBUG] WARNING: retry could not align "
-                                  f"game_level={game_level} to target={target}; "
-                                  f"engaging solve anyway")
+                    print(f"[MAIN LOOP DEBUG] PLAYING — retry on SB level {self.current_level}")
                 mode = os.environ["mode"] if "mode" in os.environ else "test"
                 print(f"[MAIN LOOP DEBUG] PLAYING state detected! mode={mode}")
                 if mode == "train":
@@ -386,6 +357,8 @@ class BaselineAgent(Thread):
                 self.training_level_backup = 0
                 if hasattr(self, "_finalized_level_paths"):
                     self._finalized_level_paths.clear()
+                if hasattr(self, "_last_sb_level"):
+                    self._last_sb_level = None
                 print("[MAIN LOOP DEBUG] NEWTRIAL handled, continuing loop...")
 
             elif state == GameState.NEWTESTSET:

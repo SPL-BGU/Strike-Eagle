@@ -107,6 +107,10 @@ ENHSP_ROLL_PASS_A_TIMEOUT_SEC = 300.0
 ENHSP_DELTA_PLANNING = 2.0
 # Plan-cost / makespan cap (-dl) with (:metric minimize (total-time)); None = omit.
 ENHSP_PLAN_COST_BOUND = 400.0
+# ENHSP force search is pinned to full force: SB launch speed saturates at the Mode-B
+# pullback for every force in [0.65, 1.0] (measured |v| 175-199 at f=0.65-0.8 vs
+# planned 117-144, run_20261018_090303), so partial-force plans always overshoot.
+ENHSP_FORCE_MIN = FORCE_MAX
 # Platform inject labels too weak to trust sim-predicted slide-to-pig kills without sim_search.
 _UNTRUSTED_PLATFORM_INJECT_FOR_SLIDE_KILL = frozenset({
     "slide_placeholder",
@@ -287,9 +291,13 @@ class PDDLAgent(BaselineAgent):
         # (WIN on first solve, or ABANDONED after max_train_attempts LOSSes).
         self._finalized_level_paths = set()
         # 1-based index into generalization_protocol.get_all_levels_ordered().
-        # Must NOT use Science Birds load_next counter — it jumps on LOST (e.g. 1→6→31→56)
-        # and previously triggered premature protocol completion.
+        # Follows the level index returned by SB load_next (see _on_sb_level_loaded):
+        # the config XML lists levels in protocol order, and SB replays each level
+        # attempt_limit_per_level times before advancing. The old "1→6→31→56" jumps
+        # came from the retry loop calling load_next repeatedly (each call burns an
+        # SB attempt); the main loop now calls it exactly once per popup.
         self._generalization_protocol_slot = 1
+        self._last_sb_level = None
         self.scenario_filter = scenario_filter
 
         # Mode B pixel-nudge retry: remember winning release pixels and probe ±1px
@@ -3014,24 +3022,11 @@ class PDDLAgent(BaselineAgent):
                             abandoned=abandoned,
                         )
 
-                    if self.use_generalization_protocol and self.generalization_protocol is not None:
-                        _prev_slot = self._generalization_protocol_index()
-                        self._advance_generalization_protocol_index()
-                        print(
-                            f"[LOAD-PROBE] slot advance fired | {_prev_slot} -> "
-                            f"{self._generalization_protocol_index()} | "
-                            f"sb.current_level={getattr(self, 'current_level', None)}"
-                        )
+                    # No slot advance here: SB keeps replaying this level until its
+                    # attempt budget is used up (replays are burned), and the slot
+                    # follows SB's load_next index in _on_sb_level_loaded.
 
-                # Reset per-level retry state for the next level.
-                self._current_level_retry_index = 0
-                self._prev_attempt_plan_source = "planner"
-                self._current_level_fallback_history = []
-                self._retry_current_level = False
-                self._release_nudge_delta = None
-                self._skip_retry_diversify = False
-                self._retry_anchor_release = None
-                self._near_miss_active = False
+                self._reset_level_retry_state()
 
             # Reset per-attempt shot counter regardless of retry vs. finalize.
             self._current_level_attempts = 0
@@ -4006,6 +4001,47 @@ class PDDLAgent(BaselineAgent):
         # (this level is finalized; retries are meaningless).
         self._current_level_attempts = 0
 
+    def _reset_level_retry_state(self) -> None:
+        """Clear per-level retry state (level finalized, or SB moved to another level)."""
+        self._current_level_retry_index = 0
+        self._prev_attempt_plan_source = "planner"
+        self._current_level_fallback_history = []
+        self._retry_current_level = False
+        self._release_nudge_delta = None
+        self._skip_retry_diversify = False
+        self._retry_anchor_release = None
+        self._near_miss_active = False
+
+    def _on_sb_level_loaded(self, sb_level: int) -> None:
+        """Keep the protocol slot on the level SB actually loaded (1-based load_next index)."""
+        prev = self._last_sb_level
+        self._last_sb_level = sb_level
+        if prev is not None and sb_level != prev:
+            if abs(sb_level - prev) > 1:
+                print(f"[LEVEL-SYNC] WARNING: SB level jumped {prev} -> {sb_level}")
+            if self.use_generalization_protocol and self.generalization_protocol is not None:
+                prev_path = self.generalization_protocol.get_level_path_for_index(prev)
+                if prev_path and prev_path not in self._finalized_level_paths:
+                    print(f"[LEVEL-SYNC] WARNING: SB left level {prev} ({prev_path}) before the "
+                          f"agent finalized it — SB attempt budget smaller than max_train_attempts?")
+            # New level on screen: never carry retry state (nudges, diversify) across levels.
+            self._reset_level_retry_state()
+            self._current_level_attempts = 0
+        if not self.use_generalization_protocol or self.generalization_protocol is None:
+            return
+        n_levels = len(self.generalization_protocol.get_all_levels_ordered())
+        if not 1 <= sb_level <= n_levels:
+            print(f"[LEVEL-SYNC] WARNING: SB level {sb_level} outside protocol 1..{n_levels}; "
+                  f"keeping slot {self._generalization_protocol_index()}")
+            return
+        if sb_level != self._generalization_protocol_slot:
+            print(f"[LEVEL-SYNC] protocol slot {self._generalization_protocol_slot} -> {sb_level} "
+                  f"(SB load_next)")
+            self._generalization_protocol_slot = sb_level
+        path = self.generalization_protocol.get_level_path_for_index(sb_level)
+        state = "replay of finalized level (will burn)" if path in self._finalized_level_paths else "active"
+        print(f"[LEVEL-SYNC] SB level {sb_level} = {path} [{state}]")
+
     def _generalization_protocol_index(self) -> int:
         """1-based slot in Phy-Q ordered level list (independent of SB load_next)."""
         return max(1, int(getattr(self, "_generalization_protocol_slot", 1)))
@@ -4138,8 +4174,8 @@ class PDDLAgent(BaselineAgent):
     _RETRY_DIVERSIFY_SCHEDULE = (
         (+6.0, 0.0),
         (-6.0, 0.0),
-        (+12.0, -0.15),
-        (-12.0, -0.15),
+        (+12.0, 0.0),
+        (-12.0, 0.0),
     )
     # Probed after ENHSP parse to retain planner plans that sim can execute.
     _PRE_SIM_GATE_DIAL_DELTAS = (
@@ -5833,16 +5869,33 @@ class PDDLAgent(BaselineAgent):
         problem_data: dict,
         world_model_params: dict,
         planned_force: float = 1.0,
+        planner_only_gate: bool = False,
     ):
-        """Run joint (angle, force) sim search; return (actions, angle, force) or (None, None, None)."""
-        if not self._sim_search_enabled():
+        """Run joint (angle, force) sim search; return (actions, angle, force) or (None, None, None).
+
+        ``planner_only_gate=True`` runs even with sim override disabled: the
+        planner-only gates (ground-bounce / platform-short / shelter / clamp-min)
+        already decided the ENHSP plan misses, and skipping the search silently
+        left every near-pig test lob in place (run_20261018_105447).
+        """
+        if not planner_only_gate and not self._sim_search_enabled():
             return None, None, None
         owned_budget = self._plan_pick_deadline is None
         if owned_budget:
             self._begin_plan_pick_search_budget()
         try:
+            # TEST force clamp would override a sub-full pick after the fact,
+            # so search only the force that will actually be fired.
+            max_forces = None
+            if (
+                self._current_level_phase() == "test"
+                and getattr(self, "test_force_clamp_to_full", True)
+            ):
+                planned_force = float(getattr(self, "test_force_clamp_min", 1.0))
+                max_forces = 1
             search_angle, search_force = self._search_shot_by_sim(
-                problem_data, world_model_params, hint_force=planned_force
+                problem_data, world_model_params, hint_force=planned_force,
+                max_forces=max_forces,
             )
             if search_angle is None:
                 return None, None, None
@@ -6148,7 +6201,7 @@ class PDDLAgent(BaselineAgent):
         )
         print(
             f"[PDDL DEBUG] ENHSP dial rate={PDDL_ANGLE_RATE}°/t, "
-            f"force=[{FORCE_MIN:.1f}, {FORCE_MAX:.1f}] step={FORCE_RATE:.1f}"
+            f"force=[{ENHSP_FORCE_MIN:.1f}, {FORCE_MAX:.1f}] step={FORCE_RATE:.1f}"
         )
         write_problem_file(
             'agents/pddl/pddl_files/problem.pddl',
@@ -6158,7 +6211,7 @@ class PDDLAgent(BaselineAgent):
             agent_world_model,
             min_angle=planner_min,
             max_angle=planner_max,
-            force_min=FORCE_MIN,
+            force_min=ENHSP_FORCE_MIN,
             force_max=FORCE_MAX,
             indirect_roll_block_key=self._indirect_roll_block_goal_key(problem_data),
             plan_cost_bound=ENHSP_PLAN_COST_BOUND,
@@ -6279,7 +6332,7 @@ class PDDLAgent(BaselineAgent):
             print("[PDDL DEBUG] Parsing solution...")
             actions = parse_solution_to_actions(
                 'solution.pddl', planner_max, PDDL_ANGLE_RATE,
-                force_min=FORCE_MIN, force_rate=FORCE_RATE,
+                force_min=ENHSP_FORCE_MIN, force_rate=FORCE_RATE,
             )
             planned_force_ext, planned_angle = _extract_force_angle(actions)
             planned_force_check = float(planned_force_ext) if planned_force_ext is not None else 1.0
@@ -6939,7 +6992,8 @@ class PDDLAgent(BaselineAgent):
                         f"{reason} — invoking sim search for a viable alternative"
                     )
                     sim_actions, sim_angle, sim_force = self._try_sim_search_plan(
-                        problem_data, world_model_params, planned_force=planned_force
+                        problem_data, world_model_params, planned_force=planned_force,
+                        planner_only_gate=True,
                     )
                     if sim_actions is not None:
                         if clamp_min_gate:

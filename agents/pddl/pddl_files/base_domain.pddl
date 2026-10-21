@@ -49,7 +49,9 @@
         )
         :effect (and
             (decrease (angle) (* #t (angle_rate)))
-            (assign (angle_rad) (* (- (angle) (angle_bias))  0.01745329252))
+            ; Use the post-decrement angle: effects read pre-step values, so (angle) here
+            ; is still the old angle and the trig would lag the parsed dial by #t*rate.
+            (assign (angle_rad) (* (- (- (angle) (* #t (angle_rate))) (angle_bias))  0.01745329252))
             ;(assign (cosine) (- (+ (- 1 (/ (* (angle_rad) (angle_rad)) 2)) (/ (* (* (* (angle_rad) (angle_rad)) (angle_rad)) (angle_rad)) 24))))
             (
 	assign

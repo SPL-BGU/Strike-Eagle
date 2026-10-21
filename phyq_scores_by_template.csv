@@ -1,2 +1,2 @@
 template,train_pct,test_pct,gen_gap,train_n,test_n,train_win,train_loss,train_unsolved,test_win,test_loss,test_unsolved
-5,87.5,0.0,87.5,32,8,28,4,0,0,8,0
+2,96.875,50.0,46.875,32,2,31,1,0,1,1,0

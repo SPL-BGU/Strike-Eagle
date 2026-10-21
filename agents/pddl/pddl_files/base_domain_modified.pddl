@@ -49,7 +49,9 @@
         )
         :effect (and
             (decrease (angle) (* #t (angle_rate)))
-            (assign (angle_rad) (* (- (angle) (angle_bias))  0.01745329252))
+            ; Use the post-decrement angle: effects read pre-step values, so (angle) here
+            ; is still the old angle and the trig would lag the parsed dial by #t*rate.
+            (assign (angle_rad) (* (- (- (angle) (* #t (angle_rate))) (angle_bias))  0.01745329252))
             ;(assign (cosine) (- (+ (- 1 (/ (* (angle_rad) (angle_rad)) 2)) (/ (* (* (* (angle_rad) (angle_rad)) (angle_rad)) (angle_rad)) 24))))
             (
 	assign
@@ -154,7 +156,7 @@
             (assign (vy_bird ?b) 0)
             (increase (x_bird ?b) (* (/ #t 100) (* 1.0 (vx_bird ?b))))
             (increase (vx_bird ?b) (* (/ #t 100) (* (gravity) (platform_slide_accel ?pl))))
-            (decrease (vx_bird ?b) (* (/ #t 100) 29.7619))
+            (decrease (vx_bird ?b) (* (/ #t 100) 10.0000))
             (assign (mod) 0)
         )
     )
@@ -190,10 +192,10 @@
 
         )
         :effect (and
-            (assign (x_bird ?b) (+ -3.5426 (+ (* 1.0060 (x_bird ?b)) (+ (* 0.2175 (y_bird ?b)) (+ (* 0.0226 (vx_bird ?b)) (* -0.0029 (vy_bird ?b)))))))
-            (assign (y_bird ?b) (+ 4.4305 (+ (* -0.0014 (x_bird ?b)) (+ (* -0.3739 (y_bird ?b)) (+ (* 0.0023 (vx_bird ?b)) (* 0.0031 (vy_bird ?b)))))))
-            (assign (vx_bird ?b) (* 0.8333 (vx_bird ?b)))
-            (assign (vy_bird ?b) (+ -72.5776 (+ (* 0.1108 (x_bird ?b)) (+ (* -0.0164 (y_bird ?b)) (+ (* -0.0866 (vx_bird ?b)) (* -0.5158 (vy_bird ?b)))))))
+            (assign (x_bird ?b) (+ 0.0112 (+ (* 0.5204 (x_bird ?b)) (+ (* 0.0227 (y_bird ?b)) (+ (* 0.0057 (vx_bird ?b)) (* -0.0373 (vy_bird ?b)))))))
+            (assign (y_bird ?b) (+ 0.0047 (+ (* 0.5148 (x_bird ?b)) (+ (* -0.0213 (y_bird ?b)) (+ (* 0.0057 (vx_bird ?b)) (* 0.0018 (vy_bird ?b)))))))
+            (assign (vx_bird ?b) (* 1.0000 (vx_bird ?b)))
+            (assign (vy_bird ?b) (+ 0.0044 (+ (* 0.4953 (x_bird ?b)) (+ (* 0.0359 (y_bird ?b)) (+ (* 0.0128 (vx_bird ?b)) (* 0.0129 (vy_bird ?b)))))))
             (assign (mod) 2)
         )
     )
@@ -302,9 +304,9 @@
         )
         :effect (and
             ; Bird bounces off; block gets the learned push ratio of the bird's velocity
-            (assign (vx_block ?bl) (* 0.0000 (vx_bird ?b)))
-            (assign (vy_block ?bl) (* 0.0000 (vy_bird ?b)))
-            (assign (v_block ?bl) (* 0.0000 (v_bird ?b)))
+            (assign (vx_block ?bl) (* 0.1800 (vx_bird ?b)))
+            (assign (vy_block ?bl) (* 0.1800 (vy_bird ?b)))
+            (assign (v_block ?bl) (* 0.1800 (v_bird ?b)))
             ; Bird stops after bounce
             (assign (v_bird ?b) 0)
             (assign (vx_bird ?b) 0)
@@ -327,9 +329,9 @@
             (<= (* (block_life ?bl) (block_life ?bl) ) ( * ( + ( * (vx_bird ?b) (vx_bird ?b) ) (	* (vy_bird ?b) (vy_bird ?b) ) ) ( * (bird_block_damage ?b ?bl) (bird_block_damage ?b ?bl) ) ) ) )
         :effect (and
             ; Bird breaks through block; block gets the learned push ratio of the bird's velocity
-            (assign (vx_block ?bl) (* 0.0000 (vx_bird ?b)))
-            (assign (vy_block ?bl) (* 0.0000 (vy_bird ?b)))
-            (assign (v_block ?bl) (* 0.0000 (v_bird ?b)))
+            (assign (vx_block ?bl) (* 0.1800 (vx_bird ?b)))
+            (assign (vy_block ?bl) (* 0.1800 (vy_bird ?b)))
+            (assign (v_block ?bl) (* 0.1800 (v_bird ?b)))
             ; Bird stops after collision
             (assign (bounce_count ?b) 3)
         )
@@ -567,7 +569,7 @@
             (assign (vy_block ?bl) 0)
             (increase (x_block ?bl) (* (/ #t 100) (* 1.0 (vx_block ?bl))))
             (increase (vx_block ?bl) (* (/ #t 100) (* (gravity) (platform_slide_accel ?pl))))
-            (decrease (vx_block ?bl) (* (/ #t 100) 29.7619))
+            (decrease (vx_block ?bl) (* (/ #t 100) 10.0000))
             (assign (v_block ?bl) (vx_block ?bl))
             (assign (mod) 0)
         )
