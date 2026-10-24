@@ -82,7 +82,9 @@ from agents.pddl.pddl_files.pddl_parser import (
     PLAYFIELD_FLOOR_Y,
     pddl_flight_angle_deg, pddl_planned_launch_state, pddl_shot_to_release_point,
     INDIRECT_ROLL_BLOCK_GOAL_DELTA_X_PX,
+    mode_b_scaled_mag,
 )
+from agents.pddl.pivot_aim_shadow import PivotAimShadow
 from src.client.agent_client import GameState
 from agents.pddl.metrics import calculate_rmse, calculate_impact_rmse
 
@@ -313,10 +315,17 @@ class PDDLAgent(BaselineAgent):
             (1, 0), (-1, 0), (0, 1), (0, -1),
             (1, -1), (-1, 1),
         )
+        # A partial score alone is not a near-miss: block damage scores 300–1700
+        # on shots that never reach the pig (run_20261024_113225: 00004/00054/
+        # 00075/00015 burned all 4 retries on ±1px nudges of the same dial).
+        # Only nudge when the bird's surface came within this many px of a pig.
+        self._NEAR_MISS_PIG_GAP_PX: float = 20.0
         self.min_deg = min_deg
         self.max_deg = max_deg
         self.deg_step = deg_step
         self.angle_calibrator = AngleCalibrator()
+        # Log-only sidecar: learned launch pivot; never changes the release point.
+        self.pivot_shadow = PivotAimShadow()
         self._last_planned_angle = None
         self._last_planned_force = 1.0
         self._last_plan_uses_ground = False
@@ -2239,6 +2248,15 @@ class PDDLAgent(BaselineAgent):
             f"[SHOT DIAG PRE]   game_release (raw screen, sent to game)="
             f"({release_point.X}, {release_point.Y})"
         )
+        try:
+            self.pivot_shadow.log_pre_shot(
+                sling, int(release_point.X), int(release_point.Y),
+                planned_flight_deg=intended_flight_deg,
+                exec_flight_deg=pddl_flight_deg,
+                mag_px=mode_b_scaled_mag(float(sling.height), planned_force),
+            )
+        except Exception as e:
+            print(f"[PIVOT SHADOW] pre-shot log failed: {e}")
         print(f"[DEBUG] Release point (screen): ({release_point.X}, {release_point.Y})")
         print("[DEBUG] Calling shoot_and_record_ground_truth()...")
         batch_gt = self.ar.shoot_and_record_ground_truth(release_point.X, release_point.Y, 0, 0, 1, 0)
@@ -2622,7 +2640,12 @@ class PDDLAgent(BaselineAgent):
                   f"v=({launch['vx']:.1f}, {launch['vy']:.1f}) |v|={launch['v_meas']:.1f} "
                   f"θ_meas={launch['theta_deg']:.1f}° (exec angle={exec_angle:.1f}°, planned={angle:.1f}°, "
                   f"pddl flight θ={pddl_flight_deg:.1f}°, "
-                  f"θ_err={launch['theta_deg'] - pddl_flight_deg:+.1f}°)")
+                  f"θ_err={launch['theta_deg'] - pddl_flight_deg:+.1f}°, "
+                  f"fit_frames={launch.get('fit_frames', 'short')})")
+            try:
+                self.pivot_shadow.observe(launch["theta_deg"], fit_frames=launch.get("fit_frames"))
+            except Exception as e:
+                print(f"[PIVOT SHADOW] observe failed: {e}")
 
             self._log_sim_vs_game_comparison(
                 event_indexes_by_event,
@@ -2943,6 +2966,10 @@ class PDDLAgent(BaselineAgent):
             if should_retry_level:
                 self._prepare_release_override_for_retry(
                     level_path, score, this_attempt_number,
+                    pig_gap_px=self._min_bird_pig_gap(
+                        bird_observed_trajectory, groundtruth_trajectories,
+                        groundtruth_objects, active_bird_key,
+                    ),
                 )
                 # Bump retry counter and signal main loop to restart the same level.
                 self._current_level_retry_index = this_attempt_number
@@ -4216,16 +4243,44 @@ class PDDLAgent(BaselineAgent):
             f"(template {self._level_template_key(level_path)})"
         )
 
+    @staticmethod
+    def _min_bird_pig_gap(
+        bird_trajectory,
+        groundtruth_trajectories: dict,
+        groundtruth_objects: dict,
+        bird_key: Optional[str],
+    ) -> Optional[float]:
+        """Closest surface gap (px) between the shot bird and any pig over the GT
+        trajectory; negative = overlap. None when there is no bird or pig track."""
+        if bird_key is None or bird_trajectory is None or len(bird_trajectory) == 0:
+            return None
+        bird_dim = groundtruth_objects.get(bird_key, [14, 14])
+        r_bird = min(bird_dim) / 2
+        best = None
+        for pig_key, pig_traj in groundtruth_trajectories.items():
+            if not pig_key.startswith("pig") or not pig_traj:
+                continue
+            r_pig = min(groundtruth_objects.get(pig_key, [20, 20])) / 2
+            last = len(pig_traj) - 1
+            for i, bird_pos in enumerate(bird_trajectory):
+                pig_pos = pig_traj[min(i, last)]
+                gap = float(np.hypot(bird_pos[0] - pig_pos[0], bird_pos[1] - pig_pos[1])) - r_bird - r_pig
+                if best is None or gap < best:
+                    best = gap
+        return best
+
     def _prepare_release_override_for_retry(
         self,
         level_path: str,
         score: int,
         failed_attempt_number: int,
+        pig_gap_px: Optional[float] = None,
     ) -> None:
         """
         Before large dial diversification, probe ±1px release neighbours.
 
-        Only fires on partial-score near-misses (score > 0). Nudge is applied
+        Only fires on real near-misses: partial score (score > 0) AND the bird
+        passed within ``_NEAR_MISS_PIG_GAP_PX`` of a pig. Nudge is applied
         relative to the *current* ENHSP release (not a stale absolute anchor),
         so calibration drift between attempts does not pull the shot to the
         wrong pixel (run_20260829: 00015 nudged toward (90,341) while ENHSP
@@ -4236,6 +4291,15 @@ class PDDLAgent(BaselineAgent):
         self._near_miss_active = False
 
         if int(score) <= 0:
+            return
+        if pig_gap_px is None or pig_gap_px > self._NEAR_MISS_PIG_GAP_PX:
+            gap_str = "n/a" if pig_gap_px is None else f"{pig_gap_px:.1f}px"
+            print(
+                f"[PIXEL-NUDGE] Retry attempt {failed_attempt_number + 1}: "
+                f"partial score={score} but closest bird-pig gap {gap_str} "
+                f"> {self._NEAR_MISS_PIG_GAP_PX:.0f}px — not a near-miss, "
+                f"using dial diversification"
+            )
             return
 
         self._near_miss_active = True
@@ -6160,6 +6224,66 @@ class PDDLAgent(BaselineAgent):
             sim_problem_data=problem_data,
         )
 
+    # ENHSP-20 end-of-run summary labels → stats keys (values are ints / floats).
+    _ENHSP_SUMMARY_FIELDS = (
+        ("expanded", r"Expanded Nodes:\s*(\d+)"),
+        ("evaluated", r"States Evaluated:\s*(\d+)"),
+        ("dead_ends", r"Number of Dead-Ends detected:\s*(\d+)"),
+        ("duplicates", r"Number of Duplicates detected:\s*(\d+)"),
+        ("plan_len", r"Plan-Length:\s*(\d+)"),
+        ("ground_ms", r"Grounding Time:\s*(\d+)"),
+        ("plan_ms", r"Planning Time \(msec\):\s*(\d+)"),
+        ("heur_ms", r"Heuristic Time \(msec\):\s*(\d+)"),
+        ("search_ms", r"Search Time \(msec\):\s*(\d+)"),
+    )
+
+    @staticmethod
+    def _parse_enhsp_stats(output) -> dict:
+        """Extract search statistics from ENHSP stdout.
+
+        Uses the final summary when present; otherwise (timeout / killed) falls
+        back to the last periodic progress line
+        ``Time: Ns ; Expanded Nodes: X (...); Evaluated States: Y``.
+        """
+        import re
+
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        output = output or ""
+        stats = {}
+        for key, pattern in PDDLAgent._ENHSP_SUMMARY_FIELDS:
+            # Line-anchored so progress lines ("---Time: 10s ; Expanded Nodes: …") don't match.
+            m = re.search(r"^\s*" + pattern, output, re.MULTILINE)
+            if m:
+                stats[key] = int(m.group(1))
+        if "expanded" not in stats:
+            progress = re.findall(
+                r"Time:\s*(\d+)s\s*;\s*Expanded Nodes:\s*(\d+).*?Evaluated States:\s*(\d+)",
+                output,
+            )
+            if progress:
+                t_s, exp, ev = progress[-1]
+                stats.update(
+                    expanded=int(exp), evaluated=int(ev),
+                    search_ms=int(t_s) * 1000, partial=True,
+                )
+        return stats
+
+    @staticmethod
+    def _log_enhsp_stats(pass_label: str, status: str, output, wall_sec: float):
+        stats = PDDLAgent._parse_enhsp_stats(output)
+        fields = " ".join(
+            f"{key}={stats[key]}"
+            for key, _ in PDDLAgent._ENHSP_SUMMARY_FIELDS
+            if key in stats
+        )
+        if stats.get("partial"):
+            fields += " (last progress line)"
+        print(
+            f"[ENHSP STATS] pass={pass_label!r} status={status} "
+            f"wall={wall_sec:.1f}s {fields or 'no stats in output'}"
+        )
+
     def _run_enhsp_planner_single(
         self,
         problem_data: dict,
@@ -6288,6 +6412,7 @@ class PDDLAgent(BaselineAgent):
                 os.remove('solution.pddl')
                 print("[PDDL DEBUG] Deleted old solution file")
 
+            enhsp_t0 = time.time()
             result = subprocess.run(
                 enhsp_cmd,
                 env=enhsp_env,
@@ -6297,6 +6422,15 @@ class PDDLAgent(BaselineAgent):
             )
             print("[PDDL DEBUG] ENHSP planner finished")
             planner_output = (result.stdout or '') + (result.stderr or '')
+            if "unsolvable" in planner_output.lower():
+                enhsp_status = "unsolvable"
+            elif os.path.exists('solution.pddl'):
+                enhsp_status = "solved"
+            else:
+                enhsp_status = "no_solution"
+            self._log_enhsp_stats(
+                pass_label, enhsp_status, result.stdout, time.time() - enhsp_t0,
+            )
 
             if "unsolvable" in planner_output.lower():
                 print("[PDDL DEBUG] *** PLANNER REPORTED: Problem unsolvable ***")
@@ -6394,6 +6528,7 @@ class PDDLAgent(BaselineAgent):
             return actions, planner_output
         except subprocess.TimeoutExpired as e:
             print(f"[PDDL DEBUG] EXCEPTION: {type(e).__name__}: {e}")
+            self._log_enhsp_stats(pass_label, "timeout", e.stdout, enhsp_timeout)
             return None, (
                 f"{e}\nENHSP planner timeout (multi-pass may retry)\n"
                 "ENHSP_NO_SOLUTION"

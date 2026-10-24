@@ -764,7 +764,10 @@ def _m5_leaf_coef_intercept(models):
     return coef, intercept
 
 
-def m5_collision_leaves_for_pddl(m5: M5ModelTree, bird_param: str = "?b", debug: bool = False, var_label: str = ""):
+def m5_collision_leaves_for_pddl(
+    m5: M5ModelTree, bird_param: str = "?b", debug: bool = False, var_label: str = "",
+    y_split_offset: float = 0.0,
+):
     """
     Serialize an M5ModelTree into leaf paths and affine models for PDDL collision injection.
 
@@ -773,6 +776,10 @@ def m5_collision_leaves_for_pddl(m5: M5ModelTree, bird_param: str = "?b", debug:
         Empty list means the caller should fall back to the General (single affine) model.
 
     Column order for coef: x, y, v_x, v_y — same as make_feature_vector / inject_domain_file.
+
+    y_split_offset is added to y-split thresholds: trees are trained in the floor-relative
+    learning frame (y − GROUND_LEVEL) while the domain tests raw PDDL ``y_bird``.
+    Leaf coef/intercept are returned in the learning frame; the caller shifts them.
     """
     label = f"[{var_label}] " if var_label else ""
 
@@ -838,7 +845,8 @@ def m5_collision_leaves_for_pddl(m5: M5ModelTree, bird_param: str = "?b", debug:
         if col is None or th is None:
             ok["v"] = False
             return
-        left_atom, right_atom = _m5_pddl_split_atoms(int(col), float(th), bird)
+        th = float(th) + (y_split_offset if int(col) == 1 else 0.0)
+        left_atom, right_atom = _m5_pddl_split_atoms(int(col), th, bird)
         recurse(children[0], path + [left_atom])
         recurse(children[1], path + [right_atom])
 

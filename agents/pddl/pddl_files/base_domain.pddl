@@ -130,7 +130,7 @@
             (= (active_bird) (bird_id ?b))
             (bird_released ?b)
             (not (platform_slide_active ?b))
-            (> (y_bird ?b) 0)
+            (> (y_bird ?b) {SE-ground-y})
         )
         :effect (and
             (increase (y_bird ?b) (* (/ #t 100) (* 1.0 (vy_bird ?b))))
@@ -186,7 +186,7 @@
         :precondition (and
             (= (active_bird) (bird_id ?b))
             (bird_released ?b)
-            (<= (y_bird ?b) 0)
+            (<= (y_bird ?b) {SE-ground-y})
             (> (vx_bird ?b) 0)
             ;(> (v_bird ?b) 20)
 

@@ -200,6 +200,38 @@ LAUNCH_ESTIMATE_FRAME_RATE = 0.02
 LAUNCH_ESTIMATE_N_VEL = 5
 LAUNCH_ESTIMATE_N_POS = 3
 LAUNCH_ESTIMATE_SKIP = 0
+# Full-segment ballistic fit: grow the window frame by frame while every GT point
+# stays within this many px of the fitted parabola (GT is integer-pixel, so ±0.5
+# is rounding). The first larger miss is a contact/bounce — stop there.
+LAUNCH_FIT_MAX_RESID_PX = 1.5
+LAUNCH_FIT_MIN_FRAMES = 12
+
+
+def _fit_ballistic_prefix(traj: np.ndarray, frame_rate: float):
+    """
+    Fit x = x0 + vx·t, y = y0 + vy·t − g·t²/2 (g free) over the longest clean
+    prefix of ``traj``. Returns None when the segment is too short.
+
+    The 6-frame fit this replaces read shallow launches up to ~7° off
+    (re-measured 243 shots, Oct 2026): over a few integer-pixel frames vy is
+    mostly rounding noise, and θ error ≈ vx·Δvy/|v|² is largest when vx is.
+    """
+    if len(traj) < LAUNCH_FIT_MIN_FRAMES:
+        return None
+    best = None
+    for n in range(LAUNCH_FIT_MIN_FRAMES, len(traj) + 1):
+        t = np.arange(n, dtype=float) * frame_rate
+        A = np.column_stack([np.ones(n), t, -0.5 * t ** 2])
+        cy, *_ = np.linalg.lstsq(A, traj[:n, 1], rcond=None)
+        cx = np.polyfit(t, traj[:n, 0], 1)
+        resid = max(
+            np.abs(traj[:n, 1] - A @ cy).max(),
+            np.abs(traj[:n, 0] - np.polyval(cx, t)).max(),
+        )
+        if resid > LAUNCH_FIT_MAX_RESID_PX and best is not None:
+            break
+        best = {"x0": cx[1], "y0": cy[0], "vx": cx[0], "vy": cy[1], "g": cy[2], "n": n}
+    return best
 
 
 def estimate_launch_from_trajectory(
@@ -210,14 +242,15 @@ def estimate_launch_from_trajectory(
         frame_rate: float = LAUNCH_ESTIMATE_FRAME_RATE,
 ):
     """
-    Estimate release position and initial velocity from the first frames of a GT segment.
+    Estimate release position and initial velocity from a GT flight segment.
 
-    Position: mean of the first n_pos points (after skip).
-    Velocity:
-      - vx: linear regression of x(t) (horizontal velocity is constant, no drag).
-      - vy: quadratic fit of y(t) = vy0*t + a*t² + c when n_vel >= 2, else linear.
-            The quadratic fit recovers the true initial vy at t=0, correcting for the
-            gravity-induced deceleration that a linear fit would average away.
+    Primary: ballistic fit over the longest clean prefix of the segment (after
+    skip) — release is the fitted t=0 point, θ = atan2(vy, vx). Gravity is a free
+    parameter, so θ does not depend on ``frame_rate``.
+
+    Fallback for segments shorter than LAUNCH_FIT_MIN_FRAMES:
+      - Position: mean of the first n_pos points.
+      - vx: linear regression of x(t); vy: quadratic fit of y(t) when n_vel >= 2.
     """
     traj = np.asarray(trajectory, dtype=float)
     if traj.ndim != 2 or traj.shape[1] < 2:
@@ -226,6 +259,19 @@ def estimate_launch_from_trajectory(
     n_available = len(traj) - skip
     if n_available < 2:
         raise ValueError(f"need at least {skip + 2} trajectory points, got {len(traj)}")
+
+    fit = _fit_ballistic_prefix(traj[skip:], frame_rate)
+    if fit is not None:
+        vx, vy = float(fit["vx"]), float(fit["vy"])
+        return {
+            "release": np.array([fit["x0"], fit["y0"]], dtype=float),
+            "vx": vx,
+            "vy": vy,
+            "v_meas": float(np.hypot(vx, vy)),
+            "theta_deg": float(np.degrees(np.arctan2(vy, vx))),
+            "fit_frames": int(fit["n"]),
+            "g_fit": float(fit["g"]),
+        }
 
     n_pos = max(1, min(n_pos, n_available))
     n_vel = max(1, min(n_vel, n_available - 1))

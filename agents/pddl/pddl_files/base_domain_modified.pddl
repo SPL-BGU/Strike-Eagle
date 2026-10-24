@@ -130,7 +130,7 @@
             (= (active_bird) (bird_id ?b))
             (bird_released ?b)
             (not (platform_slide_active ?b))
-            (> (y_bird ?b) 0)
+            (> (y_bird ?b) 360.0)
         )
         :effect (and
             (increase (y_bird ?b) (* (/ #t 100) (* 1.0 (vy_bird ?b))))
@@ -156,7 +156,7 @@
             (assign (vy_bird ?b) 0)
             (increase (x_bird ?b) (* (/ #t 100) (* 1.0 (vx_bird ?b))))
             (increase (vx_bird ?b) (* (/ #t 100) (* (gravity) (platform_slide_accel ?pl))))
-            (decrease (vx_bird ?b) (* (/ #t 100) 10.0000))
+            (decrease (vx_bird ?b) (* (/ #t 100) 19.3498))
             (assign (mod) 0)
         )
     )
@@ -186,16 +186,16 @@
         :precondition (and
             (= (active_bird) (bird_id ?b))
             (bird_released ?b)
-            (<= (y_bird ?b) 0)
+            (<= (y_bird ?b) 360.0)
             (> (vx_bird ?b) 0)
             ;(> (v_bird ?b) 20)
 
         )
         :effect (and
-            (assign (x_bird ?b) (+ 0.0112 (+ (* 0.5204 (x_bird ?b)) (+ (* 0.0227 (y_bird ?b)) (+ (* 0.0057 (vx_bird ?b)) (* -0.0373 (vy_bird ?b)))))))
-            (assign (y_bird ?b) (+ 0.0047 (+ (* 0.5148 (x_bird ?b)) (+ (* -0.0213 (y_bird ?b)) (+ (* 0.0057 (vx_bird ?b)) (* 0.0018 (vy_bird ?b)))))))
+            (assign (x_bird ?b) (+ 20.9730 (+ (* 0.9979 (x_bird ?b)) (+ (* -0.0595 (y_bird ?b)) (+ (* 0.0202 (vx_bird ?b)) (* -0.0114 (vy_bird ?b)))))))
+            (assign (y_bird ?b) (+ 783.0673 (+ (* -0.0005 (x_bird ?b)) (+ (* -1.1571 (y_bird ?b)) (+ (* 0.0053 (vx_bird ?b)) (* 0.0063 (vy_bird ?b)))))))
             (assign (vx_bird ?b) (* 1.0000 (vx_bird ?b)))
-            (assign (vy_bird ?b) (+ 0.0044 (+ (* 0.4953 (x_bird ?b)) (+ (* 0.0359 (y_bird ?b)) (+ (* 0.0128 (vx_bird ?b)) (* 0.0129 (vy_bird ?b)))))))
+            (assign (vy_bird ?b) (+ -1881.9635 (+ (* 0.0463 (x_bird ?b)) (+ (* 5.0588 (y_bird ?b)) (+ (* -0.2796 (vx_bird ?b)) (* -0.5589 (vy_bird ?b)))))))
             (assign (mod) 2)
         )
     )
@@ -304,9 +304,9 @@
         )
         :effect (and
             ; Bird bounces off; block gets the learned push ratio of the bird's velocity
-            (assign (vx_block ?bl) (* 0.1800 (vx_bird ?b)))
-            (assign (vy_block ?bl) (* 0.1800 (vy_bird ?b)))
-            (assign (v_block ?bl) (* 0.1800 (v_bird ?b)))
+            (assign (vx_block ?bl) (* 0.0500 (vx_bird ?b)))
+            (assign (vy_block ?bl) (* 0.0500 (vy_bird ?b)))
+            (assign (v_block ?bl) (* 0.0500 (v_bird ?b)))
             ; Bird stops after bounce
             (assign (v_bird ?b) 0)
             (assign (vx_bird ?b) 0)
@@ -329,9 +329,9 @@
             (<= (* (block_life ?bl) (block_life ?bl) ) ( * ( + ( * (vx_bird ?b) (vx_bird ?b) ) (	* (vy_bird ?b) (vy_bird ?b) ) ) ( * (bird_block_damage ?b ?bl) (bird_block_damage ?b ?bl) ) ) ) )
         :effect (and
             ; Bird breaks through block; block gets the learned push ratio of the bird's velocity
-            (assign (vx_block ?bl) (* 0.1800 (vx_bird ?b)))
-            (assign (vy_block ?bl) (* 0.1800 (vy_bird ?b)))
-            (assign (v_block ?bl) (* 0.1800 (v_bird ?b)))
+            (assign (vx_block ?bl) (* 0.0500 (vx_bird ?b)))
+            (assign (vy_block ?bl) (* 0.0500 (vy_bird ?b)))
+            (assign (v_block ?bl) (* 0.0500 (v_bird ?b)))
             ; Bird stops after collision
             (assign (bounce_count ?b) 3)
         )
@@ -463,8 +463,8 @@
         )
         :effect (and
             (assign (y_bird ?b) (+ (+ (platform_line_c ?pl) (* (platform_slope ?pl) (x_bird ?b))) (* (bird_radius ?b) 0.35)))
-            (assign (vx_bird ?b) (* 1.0000 (vx_bird ?b)))
-            (assign (v_bird ?b) (* 1.0000 (vx_bird ?b)))
+            (assign (vx_bird ?b) (* (vx_bird ?b) 0.35))
+            (assign (v_bird ?b) (* (vx_bird ?b) 0.35))
             (assign (vy_bird ?b) 0)
             (platform_slide_active ?b)
             (bird_sliding ?b ?pl)
@@ -569,7 +569,7 @@
             (assign (vy_block ?bl) 0)
             (increase (x_block ?bl) (* (/ #t 100) (* 1.0 (vx_block ?bl))))
             (increase (vx_block ?bl) (* (/ #t 100) (* (gravity) (platform_slide_accel ?pl))))
-            (decrease (vx_block ?bl) (* (/ #t 100) 10.0000))
+            (decrease (vx_block ?bl) (* (/ #t 100) 19.3498))
             (assign (v_block ?bl) (vx_block ?bl))
             (assign (mod) 0)
         )

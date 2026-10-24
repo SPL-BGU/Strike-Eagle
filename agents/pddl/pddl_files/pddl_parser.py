@@ -305,7 +305,7 @@ def _lr_var_assign_line(lr_models: dict, var: str) -> Optional[str]:
         coef = model.coef_
         intercept = float(model.intercept_)
     fluent = _COLLISION_PDDL_FLUENT[var]
-    rhs = format_affine_assign_rhs(coef, intercept)
+    rhs = _learned_affine_rhs(coef, intercept, output_is_y=(var == "y"))
     return f"(assign ({fluent} ?b) {rhs})"
 
 
@@ -365,7 +365,7 @@ def _lr_var_assign_line_for_v_bird(lr_models: dict, var: str) -> Optional[str]:
         coef = model.coef_
         intercept = float(model.intercept_)
     # Use same formula but output to v_bird instead of vx_bird
-    rhs = format_affine_assign_rhs(coef, intercept)
+    rhs = _learned_affine_rhs(coef, intercept)
     return f"(assign (v_bird ?b) {rhs})"
 
 
@@ -425,7 +425,7 @@ def _build_platform_slide_placeholder() -> str:
 def _build_ground_roll_placeholder() -> str:
     """PDDL rolling effect after ground contact — same speed retention as platform slide."""
     surf = PLATFORM_SURFACE_RADIUS_FACTOR
-    y_expr = f"(* (bird_radius ?b) {surf})"
+    y_expr = f"(+ {PLAYFIELD_FLOOR_Y:.1f} (* (bird_radius ?b) {surf}))"
     return _build_surface_roll_effect(y_expr)
 # Terrain surface in PDDL coords (640 - screen_y); matches segments.GROUND_LEVEL and
 # event is_ground_collision (relative y = pddl_y - PLAYFIELD_FLOOR_Y).
@@ -435,10 +435,16 @@ GROUND_CONTACT_CENTER_SLACK = 3.0
 _LEARNING_Y_OFFSET = PLAYFIELD_FLOOR_Y
 
 
-def format_affine_assign_rhs(coefs, intercept, bird_var="?b", threshold=1e-8, precision=4):
+def format_affine_assign_rhs(
+    coefs, intercept, bird_var="?b", threshold=1e-8, precision=4,
+    y_frame_offset=0.0, output_is_y=False,
+):
     """
     Build nested (+ … (* c (fluent ?b)) …) PDDL numeric expression for affine bird fluents.
     coefs: length-4 iterable matching x, y, vx, vy.
+
+    y_frame_offset: models trained with y_learn = y_pddl − offset (floor-relative) are
+    rewritten to take raw ``y_bird``; with output_is_y the result is shifted back by +offset.
     """
     c = np.asarray(coefs, dtype=float).reshape(-1)
     if c.size < 4:
@@ -447,7 +453,9 @@ def format_affine_assign_rhs(coefs, intercept, bird_var="?b", threshold=1e-8, pr
         c = pad
     else:
         c = c[:4]
-    bias = float(intercept)
+    bias = float(intercept) - float(y_frame_offset) * float(c[1])
+    if output_is_y:
+        bias += float(y_frame_offset)
     fmt = f"{{:.{precision}f}}"
 
     def nest_terms(term_list):
@@ -682,7 +690,7 @@ def _build_rolling_lr_effect(lr_models: dict) -> Optional[str]:
                 return None
             coef = model.coef_
             intercept = float(model.intercept_)
-        rhs = format_affine_assign_rhs(coef, intercept)
+        rhs = _learned_affine_rhs(coef, intercept, output_is_y=(var == "y"))
         lines.append(f"(assign ({fluent} ?b) {rhs})")
     lines.append("(assign (mod) 2)")
     return "\n            ".join(lines)
@@ -752,7 +760,10 @@ def _build_collision_effect_m5(collision_vars, bounce_mode="ground"):
         mc = vd.get("model_comparison")
         m5 = mc.get("m5_model") if isinstance(mc, dict) else None
 
-        leaves = m5_collision_leaves_for_pddl(m5, debug=COLLISION_INJECT_DEBUG, var_label=vn)
+        leaves = m5_collision_leaves_for_pddl(
+            m5, debug=COLLISION_INJECT_DEBUG, var_label=vn,
+            y_split_offset=_LEARNING_Y_OFFSET,
+        )
         if not leaves:
             _collision_inject_log(f"M5 not ready for '{vn}' ({bounce_mode})")
             return None
@@ -764,7 +775,7 @@ def _build_collision_effect_m5(collision_vars, bounce_mode="ground"):
     for vn in _COLLISION_VAR_ORDER:
         pb = _COLLISION_PDDL_FLUENT[vn]
         for path, coef, intercept in per_var_leaves[vn]:
-            rhs = format_affine_assign_rhs(coef, intercept)
+            rhs = _learned_affine_rhs(coef, intercept, output_is_y=(vn == "y"))
             if not path:
                 lines.append(f"(assign ({pb} ?b) {rhs})")
             else:
@@ -779,6 +790,13 @@ def _build_collision_effect_m5(collision_vars, bounce_mode="ground"):
     body = "\n            ".join(lines)
     _collision_inject_log(f"M5 {bounce_mode} injection: {len(lines)} statements")
     return body
+
+
+def _learned_affine_rhs(coef, intercept, output_is_y: bool = False) -> str:
+    """PDDL rhs for a learning-frame (y − PLAYFIELD_FLOOR_Y) affine model on raw y_bird."""
+    return format_affine_assign_rhs(
+        coef, intercept, y_frame_offset=_LEARNING_Y_OFFSET, output_is_y=output_is_y,
+    )
 
 
 def _learning_y_to_pddl(learning_y: float) -> float:
@@ -2035,78 +2053,59 @@ class AngleCalibrator:
     """
     Convert PDDL planner dial angle to game slingshot pull angle.
 
-    PDDL flight uses (dial - ANGLE_BIAS_DEGREES). The slingshot does not obey a fixed
-    offset: shallow pulls lose much more angle than steep ones. This class inverts
+    PDDL flight uses (dial - ANGLE_BIAS_DEGREES). The measured pull → launch curve
+    is near-linear (launch ≈ pull − 1°, see ``_BOOTSTRAP``); this class inverts
     (game_pull → measured launch) so measured ≈ PDDL flight angle.
 
     Force-dependence:
-        Same pull produces different measured launch angles at different forces —
-        the game's short-pullback release physics vary with pullback distance.
-        For example (from run logs):
-            pull=17.9°, force=1.00 → measured=20.2°
-            pull=17.9°, force=0.85 → measured=13.4°  (−7° at same pull)
-        We keep two bootstrap curves — force≈1.0 (``_BOOTSTRAP``) and force≈0.85
-        (``_BOOTSTRAP_PARTIAL``) — and linearly blend them by ``force`` in
-        [0.85, 1.0]. Force outside that band uses the nearer curve (conservative:
-        below 0.85 keeps the partial-force curve rather than extrapolating).
+        The blend machinery below supports separate force≈1.0 (``_BOOTSTRAP``)
+        and force≈0.85 (``_BOOTSTRAP_PARTIAL``) curves, linearly blended by
+        ``force`` in [0.85, 1.0] and clamped to the nearer curve outside it.
+        The −7° partial-force gap it was built for (pull 17.9° → 20.2° vs 13.4°)
+        came from the 6-frame launch estimate; re-measured with full-segment
+        fits, force 0.7–0.9 lands on the full-force curve, so both tables are
+        currently the same.
     """
 
     # Bootstrap (game_pull, measured_θ) at force≈1.0 from Science Birds calibration.
-    # Mid-range knots (35–51°) fill the old 28→59 gap so invert(dial→pull) matches
-    # SB6.6 instead of linear extrapolation (Fix 2).
+    # Refit 2026-10-23 from 215 full-force shots (runs 20261021_084150,
+    # 20261021_141009, 20261021_142751, 20261023_182359), θ re-measured with the
+    # full-segment ballistic fit in estimate_launch_from_trajectory. Earlier knots
+    # were fit to the 6-frame estimate, which read shallow launches up to ~7°
+    # high; its kinks at 36–40° and 64–68° are not in the game and made the
+    # actuator over-pull there by 1.5–4°. The game is near-linear (θ ≈ pull − 1°)
+    # and deterministic per release pixel. Max |knot − shot| = 1.2°.
+    # No data below pull 15 (GAME_PULL_MIN), so np.interp holds 13.7° there.
     _BOOTSTRAP = (
-        # Shallow knots refit 2026-10-18 (same data as the steep knots below):
-        # full force cannot launch below ~16° — pull 19 → 16.5° (n=56), so the
-        # old (22, 8.5)/(24, 11.0) knots let sim "kill" with 5–9° dials that
-        # actually flew ~16.5° into blocks.
-        (19.0, 16.5),
-        (21.0, 18.0),
-        (25.0, 23.4),
-        (30.0, 29.8),
-        (36.0, 33.7),
-        (40.0, 35.5),
-        (44.0, 42.0),
-        (51.0, 50.9),
-        (59.0, 58.8),
-        # Steep knots refit 2026-10-18 from ~1.7k full-force shots (Oct runs,
-        # ACTUATOR pull vs SHOT DIAG POST θ, median per pull). The old
-        # (81.5, 77.9) knot under-read steep pulls by ~3°, so a 77° target was
-        # sent as an 80° pull and flew ~80° — near-pig lobs landed short.
-        (64.0, 63.4),
-        (68.0, 64.5),
-        (70.0, 68.4),
-        (72.0, 71.5),
-        (77.0, 76.5),
-        (80.0, 79.6),
-        (85.0, 84.0),
+        (15.0, 13.7),
+        (20.0, 18.7),
+        (23.0, 21.4),
+        (25.0, 23.6),
+        (28.0, 26.8),
+        (35.0, 33.7),
+        (42.0, 40.5),
+        (45.0, 43.5),
+        (48.0, 46.9),
+        (51.0, 49.5),
+        (54.0, 53.0),
+        (57.0, 56.1),
+        (60.0, 58.6),
+        (63.0, 62.2),
+        (66.0, 65.2),
+        (69.0, 68.1),
+        (72.0, 71.0),
+        (75.0, 74.0),
+        (78.0, 76.9),
+        (81.0, 80.3),
+        (85.0, 84.2),
     )
 
-    # Bootstrap (game_pull, measured_θ) at force≈0.85, derived from clean-execution
-    # observations in run_20260819_112711 + run_20260816_181229 (|angle-err|≤6°,
-    # unclamped pulls). At shallow pulls the game produces a much flatter launch
-    # for partial force; at pull ≥ 51° the two curves converge, so beyond that we
-    # inherit the force=1.0 shape (measured values pinned to _BOOTSTRAP).
-    _BOOTSTRAP_PARTIAL = (
-        (17.9, 13.4),
-        (24.0, 22.7),
-        (29.0, 26.0),
-        (35.0, 28.0),
-        (39.0, 32.0),
-        (44.0, 42.0),
-        (51.0, 50.9),
-        (59.0, 58.8),
-        # Steep knots refit 2026-10-18 from ~1.7k full-force shots (Oct runs,
-        # ACTUATOR pull vs SHOT DIAG POST θ, median per pull). The old
-        # (81.5, 77.9) knot under-read steep pulls by ~3°, so a 77° target was
-        # sent as an 80° pull and flew ~80° — near-pig lobs landed short.
-        (64.0, 63.4),
-        (68.0, 64.5),
-        (70.0, 68.4),
-        (72.0, 71.5),
-        (77.0, 76.5),
-        (80.0, 79.6),
-        (85.0, 84.0),
-    )
+    # Bootstrap (game_pull, measured_θ) at force≈0.85. The 2026-10-23 re-measure
+    # (34 shots, force 0.7–0.9, pulls 15–81) found partial-force launches on the
+    # full-force curve within ~0.6°, at the same |v|≈181 (the Mode B pullback
+    # floor keeps the drag at the game's radius). The old flatter shallow knots
+    # (35→28°, 39→32°) were 6-frame-estimator artifacts.
+    _BOOTSTRAP_PARTIAL = _BOOTSTRAP
 
     # Force at which _BOOTSTRAP_PARTIAL was measured. Between this and 1.0 we
     # linearly blend the two curves; outside this band we clamp to the nearer
@@ -3031,6 +3030,9 @@ def inject_domain_file(
 
     with open(path, "r") as file:
         new_content = file.read()
+
+    # Floor in raw PDDL y (same frame as problem objects / forward sim).
+    new_content = new_content.replace("{SE-ground-y}", f"{PLAYFIELD_FLOOR_Y:.1f}")
 
     ground_sentinel = "{SE-collision-ground-effect}"
     if ground_sentinel in new_content:
